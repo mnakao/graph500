@@ -20,9 +20,11 @@
 
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/shm.h>
 
-#include <vector>
 #include <algorithm>
+#include <vector>
+#include <deque>
 
 #include "mpi_workarounds.h"
 #include "utils_core.h"
@@ -142,6 +144,64 @@ void* page_aligned_xmalloc(const size_t size)
 		throw "OutOfMemoryExpception";
 	}
 	return p;
+}
+
+void* shared_malloc(MPI_Comm comm, size_t nbytes) {
+	int rank; MPI_Comm_rank(comm, &rank);
+	key_t shm_key;
+	int shmid;
+	void* addr;
+
+	if(rank == 0) {
+		timeval tv; gettimeofday(&tv, NULL);
+		shm_key = tv.tv_usec;
+		for(int i = 0; i < 1000; ++i) {
+			shmid = shmget(++shm_key, nbytes,
+					IPC_CREAT | IPC_EXCL | 0600);
+			if(shmid != -1) break;
+#ifndef NDEBUG
+			perror("shmget try");
+#endif
+		}
+		if(shmid == -1) {
+			perror("shmget");
+			MPI_Abort(MPI_COMM_WORLD, 1);
+		}
+		addr = shmat(shmid, NULL, 0);
+		if(addr == (void*)-1) {
+			perror("Shared memory attach failure");
+		}
+	}
+
+	MPI_Bcast(&shm_key, 1, MpiTypeOf<key_t>::type, 0, comm);
+
+	if(rank != 0) {
+		shmid = shmget(shm_key, 0, 0);
+		if(shmid == -1) {
+			perror("shmget");
+		}
+		addr = shmat(shmid, NULL, 0);
+		if(addr == (void*)-1) {
+			perror("Shared memory attach failure");
+		}
+	}
+
+	MPI_Barrier(comm);
+
+	if(rank == 0) {
+		// release the memory when the last process is detached.
+		if(shmctl(shmid, IPC_RMID, NULL) == -1) {
+			perror("shmctl(shmid, IPC_RMID, NULL)");
+		}
+	}
+
+	return addr;
+}
+
+void shared_free(void* shm) {
+	if(shmdt(shm) == -1) {
+		perror("shmdt(shm)");
+	}
 }
 
 //-------------------------------------------------------------//
@@ -574,7 +634,9 @@ public:
 	}
 	T* get_offsets() { return &thread_offsets_[buffer_width_*omp_get_thread_num()]; }
 
-	void check() {
+	const T* get_partition_offsets() const { return partition_offsets_; }
+
+	bool check() const {
 #ifndef	NDEBUG
 		const int width = buffer_width_;
 		// check offset of each threads
@@ -585,6 +647,7 @@ public:
 			}
 		}
 #endif
+		return true;
 	}
 private:
 	int num_partitions_;
@@ -624,8 +687,8 @@ public:
 
 	~ScatterContext()
 	{
-		free(thread_counts_);
-		free(send_counts_);
+		::free(thread_counts_);
+		::free(send_counts_);
 	}
 
 	int* get_counts() {
@@ -762,7 +825,7 @@ void scatter(const Mapping mapping, int data_count, MPI_Comm comm)
 
 	typename Mapping::send_type* recv_data = scatter.scatter(partitioned_data);
 	int recv_count = scatter.get_recv_count();
-	free(partitioned_data); partitioned_data = NULL;
+	::free(partitioned_data); partitioned_data = NULL;
 
 	int i;
 #pragma omp parallel for lastprivate(i) schedule(static)
@@ -817,7 +880,7 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 	// send and receive requests
 	typename Mapping::send_type* restrict reply_verts = scatter.scatter(partitioned_data);
 	int recv_count = scatter.get_recv_count();
-	free(partitioned_data);
+	::free(partitioned_data);
 
 	// make reply data
 	typename Mapping::recv_type* restrict reply_data = static_cast<typename Mapping::recv_type*>(
@@ -830,7 +893,7 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 
 	// send and receive reply
 	typename Mapping::recv_type* restrict recv_data = scatter.gather(reply_data);
-	free(reply_data);
+	::free(reply_data);
 
 	// apply received data to edges
 #pragma omp parallel for
@@ -839,7 +902,7 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 	}
 
 	scatter.free(recv_data);
-	free(local_indices);
+	::free(local_indices);
 }
 
 } // namespace MpiCollective { //
@@ -1278,6 +1341,288 @@ int varint_encode_stream_gpu_compat_signed(const int64_t* input, int length, uin
 	return out_ptr - output;
 }
 
+int varint_get_sparsity_factor(int64_t range, int64_t num_values)
+{
+	if(num_values == 0) return 0;
+	const double sparsity = (double)range / (double)num_values;
+	int scale;
+	if(sparsity < 1.0)
+		scale = 1;
+	else if(sparsity < 128)
+		scale = 2;
+	else if(sparsity < 128LL*128)
+		scale = 3;
+	else if(sparsity < 128LL*128*128)
+		scale = 4;
+	else if(sparsity < 128LL*128*128*128)
+		scale = 5;
+	else if(sparsity < 128LL*128*128*128*128)
+		scale = 6;
+	else if(sparsity < 128LL*128*128*128*128*128)
+		scale = 7;
+	else if(sparsity < 128LL*128*128*128*128*128*128)
+		scale = 8;
+	else if(sparsity < 128LL*128*128*128*128*128*128*128)
+		scale = 9;
+	else
+		scale = 10;
+	return scale;
+}
+
+namespace memory {
+
+template <typename T>
+class Pool {
+public:
+	Pool()
+	{
+	}
+	virtual ~Pool() {
+		clear();
+	}
+
+	virtual T* get() {
+		if(free_list_.empty()) {
+			return allocate_new();
+		}
+		T* buffer = free_list_.back();
+		free_list_.pop_back();
+		return buffer;
+	}
+
+	virtual void free(T* buffer) {
+		free_list_.push_back(buffer);
+	}
+
+	bool empty() const {
+		return free_list_.size() == 0;
+	}
+
+	size_t size() const {
+		return free_list_.size();
+	}
+
+	void clear() {
+		for(int i = 0; i < (int)free_list_.size(); ++i) {
+			free_list_[i]->~T();
+			::free(free_list_[i]);
+		}
+		free_list_.clear();
+	}
+
+protected:
+	std::vector<T*> free_list_;
+
+	virtual T* allocate_new() {
+		return new (malloc(sizeof(T))) T();
+	}
+};
+
+template <typename T>
+class ConcurrentPool : public Pool<T> {
+	typedef Pool<T> super_;
+public:
+	ConcurrentPool()
+		: Pool<T>()
+	{
+		pthread_mutex_init(&thread_sync_, NULL);
+	}
+	virtual ~ConcurrentPool()
+	{
+		pthread_mutex_lock(&thread_sync_);
+	}
+
+	virtual T* get() {
+		pthread_mutex_lock(&thread_sync_);
+		if(this->free_list_.empty()) {
+			pthread_mutex_unlock(&thread_sync_);
+			T* new_buffer = this->allocate_new();
+			return new_buffer;
+		}
+		T* buffer = this->free_list_.back();
+		this->free_list_.pop_back();
+		pthread_mutex_unlock(&thread_sync_);
+		return buffer;
+	}
+
+	virtual void free(T* buffer) {
+		pthread_mutex_lock(&thread_sync_);
+		this->free_list_.push_back(buffer);
+		pthread_mutex_unlock(&thread_sync_);
+	}
+
+	/*
+	bool empty() const { return super_::empty(); }
+	size_t size() const { return super_::size(); }
+	void clear() { super_::clear(); }
+	*/
+protected:
+	pthread_mutex_t thread_sync_;
+};
+
+template <typename T>
+class vector_w : public std::vector<T*>
+{
+	typedef std::vector<T*> super_;
+public:
+	~vector_w() {
+		for(typename super_::iterator it = this->begin(); it != this->end(); ++it) {
+			(*it)->~T();
+			::free(*it);
+		}
+		super_::clear();
+	}
+};
+
+template <typename T>
+class deque_w : public std::deque<T*>
+{
+	typedef std::deque<T*> super_;
+public:
+	~deque_w() {
+		for(typename super_::iterator it = this->begin(); it != this->end(); ++it) {
+			(*it)->~T();
+			::free(*it);
+		}
+		super_::clear();
+	}
+};
+
+template <typename T>
+class Store {
+public:
+	Store() {
+	}
+	void init(Pool<T>* pool) {
+		pool_ = pool;
+		filled_length_ = 0;
+		buffer_length_ = 0;
+		resize_buffer(16);
+	}
+	~Store() {
+		for(int i = 0; i < filled_length_; ++i){
+			pool_->free(buffer_[i]);
+		}
+		filled_length_ = 0;
+		buffer_length_ = 0;
+		::free(buffer_); buffer_ = NULL;
+	}
+
+	void submit(T* value) {
+		const int offset = filled_length_++;
+
+		if(buffer_length_ == filled_length_)
+			expand();
+
+		buffer_[offset] = value;
+	}
+
+	void clear() {
+		for(int i = 0; i < filled_length_; ++i){
+			buffer_[i]->clear();
+			assert (buffer_[i]->size() == 0);
+			pool_->free(buffer_[i]);
+		}
+		filled_length_ = 0;
+	}
+
+	T* front() {
+		if(filled_length_ == 0) {
+			push();
+		}
+		return buffer_[filled_length_ - 1];
+	}
+
+	void push() {
+		submit(pool_->get());
+	}
+
+	int64_t size() const { return filled_length_; }
+	T* get(int index) const { return buffer_[index]; }
+private:
+
+	void resize_buffer(int allocation_size)
+	{
+		T** new_buffer = (T**)malloc(allocation_size*sizeof(buffer_[0]));
+		if(buffer_length_ != 0) {
+			memcpy(new_buffer, buffer_, filled_length_*sizeof(buffer_[0]));
+			::free(buffer_);
+		}
+		buffer_ = new_buffer;
+		buffer_length_ = allocation_size;
+	}
+
+	void expand()
+	{
+		if(filled_length_ == buffer_length_)
+			resize_buffer(std::max<int64_t>(buffer_length_*2, 16));
+	}
+
+	int64_t filled_length_;
+	int64_t buffer_length_;
+	T** buffer_;
+	Pool<T>* pool_;
+};
+
+template <typename T>
+class ConcurrentStack
+{
+public:
+	ConcurrentStack()
+	{
+		pthread_mutex_init(&thread_sync_, NULL);
+	}
+
+	~ConcurrentStack()
+	{
+		pthread_mutex_destroy(&thread_sync_);
+	}
+
+	void push(const T& d)
+	{
+		pthread_mutex_lock(&thread_sync_);
+		stack_.push_back(d);
+		pthread_mutex_unlock(&thread_sync_);
+	}
+
+	bool pop(T* ret)
+	{
+		pthread_mutex_lock(&thread_sync_);
+		if(stack_.size() == 0) {
+			pthread_mutex_unlock(&thread_sync_);
+			return false;
+		}
+		*ret = stack_.back(); stack_.pop_back();
+		pthread_mutex_unlock(&thread_sync_);
+		return true;
+	}
+
+	std::vector<T> stack_;
+	pthread_mutex_t thread_sync_;
+};
+
+struct SpinBarrier {
+	volatile int step, cnt;
+	int max;
+	explicit SpinBarrier(int num_threads) {
+		step = cnt = 0;
+		max = num_threads;
+	}
+	void barrier() {
+		int cur_step = step;
+		int wait_cnt = __sync_add_and_fetch(&cnt, 1);
+		assert (wait_cnt <= max);
+		if(wait_cnt == max) {
+			cnt = 0;
+			__sync_add_and_fetch(&step, 1);
+			return ;
+		}
+		while(step == cur_step) ;
+	}
+};
+
+} // namespace memory
+
 namespace profiling {
 
 class ProfilingInformationStore {
@@ -1335,7 +1680,7 @@ private:
 
 		if(mpi.isMaster()) {
 			for(int i = 0; i < num_times; ++i) {
-				fprintf(IMD_OUT, "Time of %s (%d): Avg: %f, Max: %f, (ms)\n", times_[i].content,
+				fprintf(stderr, "Time of %s, %d, Avg, %f, Max, %f, (ms)\n", times_[i].content,
 						times_[i].number,
 						sum_times[i] / mpi.size_2d * 1000.0,
 						max_times[i] * 1000.0);
@@ -1388,12 +1733,9 @@ private:
 
 		if(mpi.isMaster()) {
 			for(int i = 0; i < num_times; ++i) {
-				int64_t sum = sum_times[i], avg = sum_times[i] / mpi.size_2d, maximum = max_times[i];
-				fprintf(IMD_OUT, "%s (%d): Sum: %f %s, Avg: %f %s, Max: %f %s\n", counters_[i].content,
-						counters_[i].number,
-						displayValue(sum), displaySuffix(sum),
-						displayValue(avg), displaySuffix(avg),
-						displayValue(maximum), displaySuffix(maximum));
+				int64_t sum = sum_times[i], avg = sum_times[i] / mpi.size, maximum = max_times[i];
+				fprintf(stderr, "%s, %d, Sum, %ld, Avg, %ld, Max, %ld\n", counters_[i].content,
+						counters_[i].number, sum, avg, maximum);
 			}
 		}
 

@@ -14,6 +14,8 @@
 
 #include "low_level_func.h"
 
+#if LOW_LEVEL_FUNCTION
+
 #ifdef __sparc_v9__
 
 inline int64_t atomic_add_64_(int64_t* ptr, int64_t val) {
@@ -974,5 +976,5 @@ int64_t bfs_receiver_processing_v1(
 	return num_nq_vertices;
 }
 
-
+#endif // #if LOW_LEVEL_FUNCTION
 

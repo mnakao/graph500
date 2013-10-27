@@ -18,6 +18,10 @@
 
 using std::ptrdiff_t;
 
+#ifdef __cplusplus
+#define restrict __restrict__
+#endif
+
 //-------------------------------------------------------------//
 // For generic typing
 //-------------------------------------------------------------//

@@ -244,6 +244,39 @@ private:
 	uint16_t *rail_;
 };
 
+class Rail32bit {
+public:
+	static const int bytes_per_edge = 4;
+
+	Rail32bit() : rail_(NULL) { }
+	~Rail32bit() { this->free(); }
+	void alloc(int64_t length) {
+		rail_ = static_cast<uint32_t*>(cache_aligned_xmalloc(length*sizeof(uint32_t)));
+#ifndef NDEBUG
+		memset(rail_, 0x00, length*sizeof(rail_[0]));
+#endif
+	}
+	void free() { ::free(rail_); rail_ = NULL; }
+
+	int64_t operator()(int64_t index) const {
+		return   static_cast<int64_t>(rail_[index]);
+	}
+	uint16_t low_bits(int64_t index) const { return rail_[index]; }
+	void set(int64_t index, int64_t value) {
+		rail_[index] = static_cast<uint32_t>(value);
+	}
+	void move(int64_t to, int64_t from, int64_t size) {
+		memmove(rail_ + to, rail_ + from, sizeof(rail_[0])*size);
+	}
+	void copy_from(int64_t to, Rail32bit& array, int64_t from, int64_t size) {
+		memmove(rail_ + to, array.rail_ + from, sizeof(rail_[0])*size);
+	}
+
+	uint32_t* get_ptr() { return rail_; }
+private:
+	uint32_t *rail_;
+};
+
 class Pack64bit {
 public:
 	static const int bytes_per_edge = 8;
