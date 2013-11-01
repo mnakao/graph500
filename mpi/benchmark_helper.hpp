@@ -234,7 +234,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
 			xMPI_Alloc_mem(EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
-	int num_loops = edge_list->beginRead();
+	int num_loops = edge_list->beginRead(true);
 	edge_list->beginWrite();
 
 	if(mpi.isMaster()) fprintf(IMD_OUT, "%d iterations.\n", num_loops);
@@ -297,7 +297,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::no_
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
 			xMPI_Alloc_mem(EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
-	int num_loops = edge_list->beginRead();
+	int num_loops = edge_list->beginRead(true);
 	edge_list->beginWrite();
 
 	const int rmask = ((1 << get_msb_index(mpi.size_2dr)) - 1);

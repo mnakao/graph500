@@ -8,6 +8,8 @@
 #ifndef UTILS_IMPL_HPP_
 #define UTILS_IMPL_HPP_
 
+#include <stdint.h>
+
 // for affinity setting //
 #include <unistd.h>
 
@@ -41,12 +43,15 @@ struct MPI_GLOBALS {
 	int rank_2d;
 	int rank_2dr;
 	int rank_2dc;
+	int rank_z;
 	int size_2d;
 	int size_2dr;
 	int size_2dc;
+	int size_z;
 	MPI_Comm comm_2d;
 	MPI_Comm comm_2dr;
 	MPI_Comm comm_2dc;
+	MPI_Comm comm_z;
 	bool isPadding2D;
 
 	// utility method
@@ -150,7 +155,7 @@ void* shared_malloc(MPI_Comm comm, size_t nbytes) {
 	int rank; MPI_Comm_rank(comm, &rank);
 	key_t shm_key;
 	int shmid;
-	void* addr;
+	void* addr = NULL;
 
 	if(rank == 0) {
 		timeval tv; gettimeofday(&tv, NULL);
@@ -170,6 +175,7 @@ void* shared_malloc(MPI_Comm comm, size_t nbytes) {
 		addr = shmat(shmid, NULL, 0);
 		if(addr == (void*)-1) {
 			perror("Shared memory attach failure");
+			addr = NULL;
 		}
 	}
 
@@ -180,9 +186,12 @@ void* shared_malloc(MPI_Comm comm, size_t nbytes) {
 		if(shmid == -1) {
 			perror("shmget");
 		}
+		else {
 		addr = shmat(shmid, NULL, 0);
-		if(addr == (void*)-1) {
-			perror("Shared memory attach failure");
+			if(addr == (void*)-1) {
+				perror("Shared memory attach failure");
+				addr = NULL;
+			}
 		}
 	}
 
@@ -194,7 +203,6 @@ void* shared_malloc(MPI_Comm comm, size_t nbytes) {
 			perror("shmctl(shmid, IPC_RMID, NULL)");
 		}
 	}
-
 	return addr;
 }
 
@@ -242,21 +250,19 @@ const int cpu_to_proc_map[] = { 0,0,0,0, 0,0,0,0, 2,2,2,2, 2,2,2,2, 1,1,1,1, 1,1
 const int cpu_to_proc_map[] = { 0,0,0,0, 0,2,0,2, 0,2,0,2, 2,1,2,1, 2,1,2,1, 1,1,1,1 };
 #endif
 
-void setNumaAffinity(bool round_robin)
-{
-	if(numa_available() < 0) {
-		fprintf(IMD_OUT, "No NUMA support available on this system.\n");
-		return ;
+void testSharedMemory() {
+	int* mem = shared_malloc(mpi.comm_z, sizeof(int));
+	int ref_val = 0;
+	if(mpi.rank_z == 0) {
+		*mem = ref_val = mpi.rank;
 	}
-	int NUM_SOCKET = numa_max_node() + 1;
-	if(round_robin) {
-		int part = (mpi.size_ + NUM_SOCKET -1) / NUM_SOCKET;
-		numa_run_on_node(mpi.rank / part);
-		numa_set_preferred(mpi.rank / part);
-	}
-	else {
-		numa_run_on_node(mpi.rank % NUM_SOCKET);
-		numa_set_preferred(mpi.rank % NUM_SOCKET);
+	MPI_Bcast(&ref_val, 1, MpiTypeOf<int>::type, 0, mpi.comm_z);
+	int result = (*mem == ref_val), global_result;
+	shared_free(mem);
+	MPI_Allreduce(&result, &global_result, 1, MpiTypeOf<int>::type, MPI_LOR, mpi.comm_2d);
+	if(global_result == false) {
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Shared memory test failed!! Please, check MPI_NUM_NODE.\n");
+		MPI_Abort(mpi.comm_2d, 1);
 	}
 }
 
@@ -348,7 +354,25 @@ void setAffinity()
 		}
 	}
 	else if(max_procs_per_node > 1) {
-		setNumaAffinity(dist_round_robin ? 1 : 0);
+		if(numa_available() < 0) {
+			fprintf(IMD_OUT, "No NUMA support available on this system.\n");
+			return ;
+		}
+		int NUM_SOCKET = numa_max_node() + 1;
+		if(dist_round_robin) {
+			mpi.rank_z = mpi.rank / num_node;
+			MPI_Comm_split(mpi.comm_2d, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
+		}
+		else {
+			mpi.rank_z = mpi.rank % max_procs_per_node;
+			MPI_Comm_split(mpi.comm_2d, mpi.rank / max_procs_per_node, mpi.rank_z, &mpi.comm_z);
+		}
+		numa_run_on_node(mpi.rank_z % NUM_SOCKET);
+		numa_set_preferred(mpi.rank_z % NUM_SOCKET);
+
+		// test shared memory
+		testSharedMemory();
+
 		if(mpi.rank == mpi.size_-1) { /* print from max rank node for easy debugging */
 		  fprintf(IMD_OUT, "NUMA node affinity is enabled.\n");
 		}
@@ -908,6 +932,44 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 } // namespace MpiCollective { //
 
 //-------------------------------------------------------------//
+// For print functions
+//-------------------------------------------------------------//
+
+double to_giga(int64_t v) { return v / (1024.0*1024.0*1024.0); }
+double to_mega(int64_t v) { return v / (1024.0*1024.0); }
+double diff_percent(int64_t v, int64_t sum, int demon) {
+	double avg = sum / (double)demon;
+	return (v - avg) / avg * 100.0;
+}
+const char* minimum_type(int64_t max_value) {
+	if(     max_value < (int64_t(1) <<  7)) return "int8_t";
+	else if(max_value < (int64_t(1) <<  8)) return "uint8_t";
+	else if(max_value < (int64_t(1) << 15)) return "int16_t";
+	else if(max_value < (int64_t(1) << 16)) return "uint16_t";
+	else if(max_value < (int64_t(1) << 31)) return "int32_t";
+	else if(max_value < (int64_t(1) << 32)) return "uint32_t";
+	else return "int64_t";
+}
+
+template <typename T> struct TypeName { };
+template <> struct TypeName<int8_t> { static const char* value; };
+const char* TypeName<int8_t>::value = "int8_t";
+template <> struct TypeName<uint8_t> { static const char* value; };
+const char* TypeName<uint8_t>::value = "uint8_t";
+template <> struct TypeName<int16_t> { static const char* value; };
+const char* TypeName<int16_t>::value = "int16_t";
+template <> struct TypeName<uint16_t> { static const char* value; };
+const char* TypeName<uint16_t>::value = "uint16_t";
+template <> struct TypeName<int32_t> { static const char* value; };
+const char* TypeName<int32_t>::value = "int32_t";
+template <> struct TypeName<uint32_t> { static const char* value; };
+const char* TypeName<uint32_t>::value = "uint32_t";
+template <> struct TypeName<int64_t> { static const char* value; };
+const char* TypeName<int64_t>::value = "int64_t";
+template <> struct TypeName<uint64_t> { static const char* value; };
+const char* TypeName<uint64_t>::value = "uint64_t";
+
+//-------------------------------------------------------------//
 // Other functions
 //-------------------------------------------------------------//
 
@@ -942,9 +1004,11 @@ inline size_t get_blocks(size_t size, size_t width)
 // VarInt Encoding
 //-------------------------------------------------------------//
 
-enum VARINT_CODING_ENUM {
-	VARINT_MAX_CODE_LENGTH_32 = 5,
-	VARINT_MAX_CODE_LENGTH_64 = 9,
+namespace vlq {
+
+enum CODING_ENUM {
+	MAX_CODE_LENGTH_32 = 5,
+	MAX_CODE_LENGTH_64 = 9,
 };
 
 #define VARINT_ENCODE_MACRO_32(p, v, l) \
@@ -1133,7 +1197,7 @@ else { \
 	l = 9; \
 }
 
-int varint_encode_stream(const uint32_t* input, int length, uint8_t* output)
+int encode(const uint32_t* input, int length, uint8_t* output)
 {
 	uint8_t* p = output;
 	for(int k = 0; k < length; ++k) {
@@ -1145,7 +1209,7 @@ int varint_encode_stream(const uint32_t* input, int length, uint8_t* output)
 	return p - output;
 }
 
-int varint_encode_stream(const uint64_t* input, int length, uint8_t* output)
+int encode(const uint64_t* input, int length, uint8_t* output)
 {
 	uint8_t* p = output;
 	for(int k = 0; k < length; ++k) {
@@ -1157,7 +1221,7 @@ int varint_encode_stream(const uint64_t* input, int length, uint8_t* output)
 	return p - output;
 }
 
-int varint_encode_stream_signed(const uint64_t* input, int length, uint8_t* output)
+int encode_signed(const uint64_t* input, int length, uint8_t* output)
 {
 	uint8_t* p = output;
 	for(int k = 0; k < length; ++k) {
@@ -1170,7 +1234,7 @@ int varint_encode_stream_signed(const uint64_t* input, int length, uint8_t* outp
 	return p - output;
 }
 
-int varint_decode_stream(const uint8_t* input, int length, uint32_t* output)
+int decode(const uint8_t* input, int length, uint32_t* output)
 {
 	const uint8_t* p = input;
 	const uint8_t* p_end = input + length;
@@ -1185,7 +1249,7 @@ int varint_decode_stream(const uint8_t* input, int length, uint32_t* output)
 	return n;
 }
 
-int varint_decode_stream(const uint8_t* input, int length, uint64_t* output)
+int decode(const uint8_t* input, int length, uint64_t* output)
 {
 	const uint8_t* p = input;
 	const uint8_t* p_end = input + length;
@@ -1200,7 +1264,7 @@ int varint_decode_stream(const uint8_t* input, int length, uint64_t* output)
 	return n;
 }
 
-int varint_decode_stream_signed(const uint8_t* input, int length, uint64_t* output)
+int decode_signed(const uint8_t* input, int length, uint64_t* output)
 {
 	const uint8_t* p = input;
 	const uint8_t* p_end = input + length;
@@ -1215,9 +1279,9 @@ int varint_decode_stream_signed(const uint8_t* input, int length, uint64_t* outp
 	return n;
 }
 
-int varint_encode_stream_gpu_compat(const uint32_t* input, int length, uint8_t* output)
+int encode_gpu_compat(const uint32_t* input, int length, uint8_t* output)
 {
-	enum { MAX_CODE_LENGTH = VARINT_MAX_CODE_LENGTH_32, SIMD_WIDTH = 32 };
+	enum { MAX_CODE_LENGTH = MAX_CODE_LENGTH_32, SIMD_WIDTH = 32 };
 	uint8_t tmp_buffer[SIMD_WIDTH][MAX_CODE_LENGTH];
 	uint8_t code_length[SIMD_WIDTH];
 	int count[MAX_CODE_LENGTH + 1];
@@ -1256,9 +1320,9 @@ int varint_encode_stream_gpu_compat(const uint32_t* input, int length, uint8_t* 
 	return out_ptr - output;
 }
 
-int varint_encode_stream_gpu_compat(const uint64_t* input, int length, uint8_t* output)
+int encode_gpu_compat(const uint64_t* input, int length, uint8_t* output)
 {
-	enum { MAX_CODE_LENGTH = VARINT_MAX_CODE_LENGTH_64, SIMD_WIDTH = 32 };
+	enum { MAX_CODE_LENGTH = MAX_CODE_LENGTH_64, SIMD_WIDTH = 32 };
 	uint8_t tmp_buffer[SIMD_WIDTH][MAX_CODE_LENGTH];
 	uint8_t code_length[SIMD_WIDTH];
 	int count[MAX_CODE_LENGTH + 1];
@@ -1297,9 +1361,9 @@ int varint_encode_stream_gpu_compat(const uint64_t* input, int length, uint8_t* 
 	return out_ptr - output;
 }
 
-int varint_encode_stream_gpu_compat_signed(const int64_t* input, int length, uint8_t* output)
+int encode_gpu_compat_signed(const int64_t* input, int length, uint8_t* output)
 {
-	enum { MAX_CODE_LENGTH = VARINT_MAX_CODE_LENGTH_64, SIMD_WIDTH = 32 };
+	enum { MAX_CODE_LENGTH = MAX_CODE_LENGTH_64, SIMD_WIDTH = 32 };
 	uint8_t tmp_buffer[SIMD_WIDTH][MAX_CODE_LENGTH];
 	uint8_t code_length[SIMD_WIDTH];
 	int count[MAX_CODE_LENGTH + 1];
@@ -1341,7 +1405,7 @@ int varint_encode_stream_gpu_compat_signed(const int64_t* input, int length, uin
 	return out_ptr - output;
 }
 
-int varint_get_sparsity_factor(int64_t range, int64_t num_values)
+int sparsity_factor(int64_t range, int64_t num_values)
 {
 	if(num_values == 0) return 0;
 	const double sparsity = (double)range / (double)num_values;
@@ -1368,6 +1432,177 @@ int varint_get_sparsity_factor(int64_t range, int64_t num_values)
 		scale = 10;
 	return scale;
 }
+
+struct PacketIndex {
+	uint32_t offset;
+	uint16_t length;
+	uint16_t num_int;
+};
+
+class BitmapEncoder {
+public:
+	/**
+	 * BitmapF::operator (int64_t)
+	 * BitmapF::BitsPerWord
+	 * BitmapF::BitmapType
+	 */
+	template <typename BitmapF, bool b64 = false>
+	bool bitmap_to_stream(
+			const BitmapF& bitmap, int64_t bitmap_size,
+			void* output, int64_t* data_size,
+			int64_t max_size)
+	{
+		typedef BitmapF::BitmapType BitmapType;
+
+		out_len = max_size;
+		head = sizeof(uint32_t);
+		tail = max_size - sizeof(PacketIndex);
+		outbuf = output;
+
+		assert ((data_size % sizeof(uint32_t)) == 0);
+		const int max_threads = omp_get_max_threads();
+		const int max_packet_size = std::min<int64_t>(16*1024,
+				((data_size - 32) / max_threads) & ~15);
+		const int64_t threshold = max_size;
+		bool b_break = false;
+
+#pragma omp parallel reduction(|:b_break)
+		{
+			uint8_t* buf;
+			PacketIndex* pk_idx;
+			int remain_packet_length = max_packet_size;
+			if(reserve_packet(&buf, &pk_idx, max_packet_size) == false) {
+				fprintf(IMD_OUT, "Not enough buffer: bitmap_to_stream\n");
+				throw "Not enough buffer: bitmap_to_stream";
+			}
+			uint8_t* ptr = buf;
+			int num_int = 0;
+
+			int64_t chunk_size = (bitmap_size + max_threads - 1) / max_threads;
+			int64_t i_start = chunk_size * omp_get_thread_num();
+			int64_t i_end = std::min(i_start + chunk_size, bitmap_size);
+			int64_t prev_val = 0;
+
+			for(int64_t i = i_start; i < i_end; ++i) {
+				BitmapType bmp_val = bitmap(i);
+				while(bmp_val != BitmapType(0)) {
+					uint32_t bit_idx = __builtin_ctz(bmp_val);
+					int64_t new_val = BitmapF::BitsPerWord * i + bit_idx;
+					int64_t diff = new_val - prev_val;
+
+					if(remain_packet_length < (b64 ? MAX_CODE_LENGTH_64 : MAX_CODE_LENGTH_32)) {
+						pk_idx->length = ptr - buf;
+						pk_idx->num_int = num_int;
+						if(reserve_packet(&buf, &pk_idx, max_packet_size) == false) {
+							b_break = true;
+							i = i_end;
+							break;
+						}
+						num_int = 0;
+						remain_packet_length = max_packet_size;
+					}
+
+					int len;
+					if(b64) { VARINT_ENCODE_MACRO_64(ptr, diff, len); }
+					else { VARINT_ENCODE_MACRO_32(ptr, diff, len); }
+					ptr += len;
+					++num_int;
+
+					prev_val = new_val;
+					bmp_val &= bmp_val - 1;
+				}
+			}
+		} // #pragma omp parallel reduction(|:b_break)
+
+		if(b_break) {
+			*data_size = threshold;
+			return false;
+		}
+
+		*data_size = compact_output();
+		return true;
+	}
+private:
+	int64_t head, tail;
+	int64_t out_len;
+	uint8_t* outbuf;
+
+	bool reserve_packet(uint8_t** ptr, PacketIndex** pk_idx, int req_size) {
+		assert ((req_size % sizeof(uint32_t)) == 0);
+		int64_t next_head, next_tail;
+#pragma omp critical
+		{
+			*ptr = outbuf + head;
+			next_head = head = head + req_size;
+			next_tail = tail = tail - sizeof(PacketIndex);
+		}
+		*pk_idx = outbuf + next_tail;
+		(*pk_idx)->offset = head / sizeof(uint32_t);
+		(*pk_idx)->length = 0;
+		(*pk_idx)->num_int = 0;
+		return next_head <= next_tail;
+	}
+
+	int64_t compact_output() {
+		int num_packet = (out_len - tail) / sizeof(PacketIndex) - 1;
+		PacketIndex* pk_tail = (PacketIndex*)&outbuf[out_len] - 2;
+		PacketIndex* pk_head = (PacketIndex*)&outbuf[out_len - tail];
+		for(int i = 0; i < (num_packet/2); ++i) {
+			std::swap(pk_tail[-i], pk_head[i]);
+		}
+		pk_tail[1].offset = tail / sizeof(uint32_t); // bann hei
+
+#define O_TO_S(offset) ((offset)*sizeof(uint32_t))
+#define L_TO_S(length) roundup<sizeof(uint32_t)>(length)
+#define TO_S(offset, length) (O_TO_S(offset) + L_TO_S(length))
+		int i = 0;
+		for( ; i < num_packet; ++i) {
+			// When the empty region length is larger than 32 bytes, break.
+			if(O_TO_S(pk_head[i+1].offset - pk_head[i].offset) - L_TO_S(pk_head[i].length) > 32)
+				break;
+		}
+#if VERVOSE_MODE
+		fprintf(IMD_OUT, "Move %ld length\n", out_len - sizeof(PacketIndex) - O_TO_S(pk_head[i+1].offset));
+#endif
+		for( ; i < num_packet; ++i) {
+			memmove(outbuf + TO_S(pk_head[i].offset, pk_head[i].length),
+					outbuf + O_TO_S(pk_head[i+1].offset),
+					(i+1 < num_packet) ? L_TO_S(pk_head[i+1].length) : num_packet*sizeof(PacketIndex));
+			pk_head[i+1].offset = pk_head[i].offset + L_TO_S(pk_head[i].length) / sizeof(uint32_t);
+		}
+
+		*(uint32_t*)outbuf = pk_head[num_packet].offset;
+		return O_TO_S(pk_head[num_packet].offset) + num_packet*sizeof(PacketIndex);
+#undef O_TO_S
+#undef L_TO_S
+#undef TO_S
+	}
+
+}; // class BitmapEncoder
+
+template <typename Callback, bool b64 = false>
+void decode_stream(void* stream, int64_t data_size, Callback cb) {
+	assert (data_size >= 4);
+	uint8_t* srcbuf = (uint8_t*)stream;
+	uint32_t packet_index_start = *(uint32_t*)srcbuf;
+	int64_t pk_offset = packet_index_start * sizeof(uint32_t);
+	int num_packets = (data_size - pk_offset) / sizeof(PacketIndex);
+	PacketIndex* pk_head = (PacketIndex*)(srcbuf + pk_offset);
+
+	for(int i = 0; i < num_packets; ++i) {
+		uint8_t* ptr = srcbuf + pk_head[i].offset * sizeof(uint32_t);
+		int num_int = pk_head[i].num_int;
+		for(int c = 0; c < num_int; ++c) {
+			int len;
+			if(b64) { int64_t v; VARINT_DECODE_MACRO_64(ptr, v, len); cb(v); }
+			else { int32_t v; VARINT_DECODE_MACRO_32(ptr, v, len); cb(v); }
+			ptr += len;
+		}
+		assert (ptr == srcbuf + pk_head[i].length + pk_head[i].offset * sizeof(uint32_t));
+	}
+}
+
+} // namespace vlq {
 
 namespace memory {
 

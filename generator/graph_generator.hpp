@@ -55,16 +55,17 @@ public:
 		, write_buffer_filled_size_(0)
 		, write_buffer_size_(0)
 	{
+		edge_memory_size_ = nLocalEdges * 103 / 100 + CHUNK_SIZE; // add 3%
+#if VERVOSE_MODE
+		if(mpi.isMaster()) {
+			fprintf(IMD_OUT, "Allocating edge list memory (%"PRId64" * %d bytes)\n", edge_memory_size_*sizeof(EdgeType), mpi.size_2d);
+		}
+#endif
+		edge_memory_ = static_cast<EdgeType*>
+			(cache_aligned_xmalloc(edge_memory_size_*sizeof(EdgeType)));
+
 		if(filepath == NULL) {
 			data_in_file_ = false;
-			edge_memory_size_ = nLocalEdges * 103 / 100 + CHUNK_SIZE; // add 3%
-#if VERVOSE_MODE
-			if(mpi.isMaster()) {
-				fprintf(IMD_OUT, "Allocating edge list memory (%"PRId64" * %d bytes)\n", edge_memory_size_*sizeof(EdgeType), mpi.size_2d);
-			}
-#endif
-			edge_memory_ = static_cast<EdgeType*>
-				(cache_aligned_xmalloc(edge_memory_size_*sizeof(EdgeType)));
 		}
 		else {
 			data_in_file_ = true;
@@ -84,8 +85,8 @@ public:
 
 	~EdgeListStorage()
 	{
+		free(edge_memory_); edge_memory_ = NULL;
 		if(data_in_file_ == false) {
-			free(edge_memory_); edge_memory_ = NULL;
 		}
 		else {
 			MPI_File_close(&edge_file_); edge_file_ = NULL;
@@ -94,19 +95,24 @@ public:
 	}
 
 	// return the number of loops each process must do
-	int beginRead()
+	int beginRead(bool release_buffer)
 	{
 		assert (read_enabled_ == false);
 		read_enabled_ = true;
 		read_block_index_ = 0;
 		if(data_in_file_) {
-			read_buffer_ = static_cast<EdgeType*>(cache_aligned_xmalloc(CHUNK_SIZE*2*sizeof(EdgeType)));
-			EdgeType *buffer_to_read, *buffer_for_user;
-			getReadBuffer(&buffer_to_read, &buffer_for_user);
-			if(edge_filled_size_ > 0) {
-				int read_count = static_cast<int>(std::min<int64_t>(edge_filled_size_, CHUNK_SIZE));
-				MPI_File_iread_at(edge_file_, 0,
-						buffer_to_read, read_count, MpiTypeOf<EdgeType>::type, &read_request_);
+			if(release_buffer) {
+				free(edge_memory_); edge_memory_ = NULL;
+			}
+			if(edge_memory_ == NULL) {
+				read_buffer_ = static_cast<EdgeType*>(cache_aligned_xmalloc(CHUNK_SIZE*2*sizeof(EdgeType)));
+				EdgeType *buffer_to_read, *buffer_for_user;
+				getReadBuffer(&buffer_to_read, &buffer_for_user);
+				if(edge_filled_size_ > 0) {
+					int read_count = static_cast<int>(std::min<int64_t>(edge_filled_size_, CHUNK_SIZE));
+					MPI_File_iread_at(edge_file_, 0,
+							buffer_to_read, read_count, MpiTypeOf<EdgeType>::type, &read_request_);
+				}
 			}
 		}
 		return (max_edge_size_among_all_procs_ + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -125,7 +131,7 @@ public:
 		else {
 			int filled_count = static_cast<int>
 				(std::min<int64_t>(edge_filled_size_ - read_offset, CHUNK_SIZE));
-			if(data_in_file_ == false) {
+			if(edge_memory_ != NULL) {
 				*pp_buffer = edge_memory_ + read_offset;
 				++read_block_index_; read_offset += CHUNK_SIZE;
 			}
@@ -151,7 +157,7 @@ public:
 	{
 		assert (read_enabled_ == true);
 
-		if(data_in_file_) {
+		if(edge_memory_ == NULL) {
 			if(edge_filled_size_ > read_block_index_*CHUNK_SIZE) {
 				// break reading loop
 				MPI_Wait(&read_request_, MPI_STATUS_IGNORE);
@@ -252,7 +258,7 @@ private:
 	}
 
 	void writeInternal(EdgeType* edge_data, int count) {
-		if(data_in_file_ == false) {
+		if(edge_memory_ != NULL) {
 			if(write_offset_ + count > edge_memory_size_) {
 				fprintf(IMD_OUT, "Warning: re-allocation edge memory buffer !!");
 				EdgeType* new_memory = static_cast<EdgeType*>(realloc(edge_memory_, (write_offset_ + count)*sizeof(EdgeType)));
@@ -263,14 +269,13 @@ private:
 				edge_memory_size_ = write_offset_ + count;
 			}
 			memcpy(edge_memory_ + write_offset_, edge_data, count*sizeof(EdgeType));
-			write_offset_ += count;
 		}
-		else {
+		if(data_in_file_) {
 			MPI_Status write_result;
 			MPI_File_write_at(edge_file_, write_offset_,
 					edge_data, count, MpiTypeOf<EdgeType>::type, &write_result);
-			write_offset_ += count;
 		}
+		write_offset_ += count;
 	}
 
 	void reduceWriteBuffer()

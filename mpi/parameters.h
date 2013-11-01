@@ -9,9 +9,17 @@
 #define PARAMETERS_H_
 
 // Project includes
-#define VERVOSE_MODE 0
+#define VERVOSE_MODE 1
 #define PROFILING_MODE 0
 #define DETAILED_PROF_MODE 0
+
+#define BFELL 1
+#define LAZY_UPDATE 0
+#define BF_DEEPER_ASYNC 1
+
+typedef uint8_t SortIdx;
+#define BFELL_SORT 256
+
 #define SHARED_VISITED_OPT 1
 
 #define FAKE_VERTEX_SORTING 0 // benchmark: 0
@@ -27,7 +35,7 @@
 #define BFS_BACKWARD_PREFETCH 1
 #define GRAPH_BITVECTOR 1
 #define GRAPH_BITVECTOR_OFFSET 1
-#define LOW_LEVEL_FUNCTION 1
+#define LOW_LEVEL_FUNCTION 0
 #define BIT_SCAN_TABLE 1
 #define AVOID_BUSY_WAIT 0
 #define EDGES_IN_RAIL 1
@@ -101,10 +109,9 @@ enum {
 	PRE_ALLOCATE_COMM_BUFFER = 14,
 	MAX_EXTRA_SEND_BUFFER = 6,
 
-	PREFETCH_DIST = 16,
+	BOTTOM_UP_BUFFER = 8,
 
-	COMM_V0_TAG = 0,
-	COMM_V1_TAG = 1,
+	PREFETCH_DIST = 16,
 
 	DENOM_SHARED_VISITED_PART = 16,
 
