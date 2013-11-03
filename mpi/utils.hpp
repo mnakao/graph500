@@ -43,14 +43,17 @@ struct MPI_GLOBALS {
 	int rank_2d;
 	int rank_2dr;
 	int rank_2dc;
+	int rank_y;
 	int rank_z;
 	int size_2d;
 	int size_2dr;
 	int size_2dc;
+	int size_y;
 	int size_z;
 	MPI_Comm comm_2d;
 	MPI_Comm comm_2dr;
 	MPI_Comm comm_2dc;
+	MPI_Comm comm_y;
 	MPI_Comm comm_z;
 	bool isPadding2D;
 
@@ -272,6 +275,14 @@ void setAffinity()
 	cpu_set_t set;
 	int i;
 
+	// Initialize comm_[yz]
+	mpi.comm_y = mpi.comm_2dc;
+	mpi.comm_z = MPI_COMM_SELF;
+	mpi.size_y = mpi.size_2dr;
+	mpi.size_z = 1;
+	mpi.rank_y = mpi.rank_2dc;
+	mpi.rank_z = 0;
+
 	const char* num_node_str = getenv("MPI_NUM_NODE");
 	if(num_node_str == NULL) {
 		if(mpi.rank == mpi.size_ - 1) {
@@ -359,6 +370,7 @@ void setAffinity()
 			return ;
 		}
 		int NUM_SOCKET = numa_max_node() + 1;
+		mpi.size_z = mpi.size_2d / num_node;
 		if(dist_round_robin) {
 			mpi.rank_z = mpi.rank / num_node;
 			MPI_Comm_split(mpi.comm_2d, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
@@ -1000,6 +1012,13 @@ inline size_t get_blocks(size_t size, size_t width)
 	return (size + width - 1) / width;
 }
 
+template <typename T>
+void get_partition(T size, int num_part, int part_idx, T& start, T& end) {
+	T part_size = (size + num_part - 1) / num_part;
+	start = std::min(part_size * part_idx, size);
+	end = std::min(start + part_size, size);
+}
+
 //-------------------------------------------------------------//
 // VarInt Encoding
 //-------------------------------------------------------------//
@@ -1441,7 +1460,26 @@ struct PacketIndex {
 
 class BitmapEncoder {
 public:
+
+	static int calc_max_packet_size(int64_t max_data_size) {
+		int max_threads = omp_get_max_threads();
+		return ((max_data_size/max_threads) > 32*1024) ? 16*1024 : 256;
+	}
+
+	static int64_t calc_capacity_of_values(int64_t bitmap_size, int num_bits_per_word, int64_t max_data_size) {
+		int64_t num_bits = bitmap_size * num_bits_per_word;
+		int packet_overhead = sizeof(PacketIndex) + MAX_CODE_LENGTH_64;
+
+		int max_packet_size = calc_max_packet_size(max_data_size);
+		int packet_min_bytes = max_packet_size - MAX_CODE_LENGTH_64*2;
+
+		int64_t min_data_bytes = num_bits / 8 - max_packet_size * omp_get_max_threads();
+		double overhead_factor = 1 + (double)packet_overhead / (double)packet_min_bytes;
+		return (min_data_bytes / overhead_factor) - (num_bits / 128);
+	}
+
 	/**
+	 * bitmap is executed along only one pass
 	 * BitmapF::operator (int64_t)
 	 * BitmapF::BitsPerWord
 	 * BitmapF::BitmapType
@@ -1461,8 +1499,7 @@ public:
 
 		assert ((data_size % sizeof(uint32_t)) == 0);
 		const int max_threads = omp_get_max_threads();
-		const int max_packet_size = std::min<int64_t>(16*1024,
-				((data_size - 32) / max_threads) & ~15);
+		const int max_packet_size = calc_max_packet_size(max_size);
 		const int64_t threshold = max_size;
 		bool b_break = false;
 

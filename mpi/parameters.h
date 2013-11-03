@@ -36,7 +36,7 @@ typedef uint8_t SortIdx;
 #define GRAPH_BITVECTOR 1
 #define GRAPH_BITVECTOR_OFFSET 1
 #define LOW_LEVEL_FUNCTION 0
-#define BIT_SCAN_TABLE 1
+#define BIT_SCAN_TABLE 0
 #define AVOID_BUSY_WAIT 0
 #define EDGES_IN_RAIL 1
 

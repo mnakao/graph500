@@ -20,8 +20,6 @@
 #include "double_linked_list.h"
 #include "fiber.hpp"
 
-#include "low_level_func.h"
-
 namespace bfs_detail {
 using namespace BFS_PARAMS;
 
@@ -40,13 +38,12 @@ struct FoldCommBuffer {
 	ListEntry free_link;
 	ListEntry extra_buf_link;
 };
-/*
+
 struct FoldPacket {
-	int num_edges;
-	int64_t v0_list[PACKET_LENGTH];
-	uint32_t v1_list[PACKET_LENGTH]; // SCALE - lgsize <= 32
+	int length; // init = 0
+	int64_t src; // init = -1;
+	uint32_t data[PACKET_LENGTH];
 };
-*/
 
 template <typename TwodVertex>
 class BfsAsyncCommumicator
@@ -260,7 +257,7 @@ public:
 	 * it also process the tasks in the fiber_man_ except the tasks that have the lowest priority (0).
 	 * This feature realize the fixed memory consumption.
 	 */
-	void send(int32_t* stream, int length, int target)
+	void send(uint32_t* stream, int length, int target)
 	{
 		assert(length > 0);
 
@@ -725,6 +722,7 @@ class BfsBase
 public:
 	typedef typename PARAMS::BitmapType BitmapType;
 	typedef BfsBase<TwodVertex, PARAMS> ThisType;
+	typedef Graph2DCSR<TwodVertex> GraphType;
 	enum {
 		// Number of CQ bitmap entries represent as 1 bit in summary.
 		// Since the type of bitmap entry is int32_t and 1 cache line is composed of 32 bitmap entries,
@@ -817,7 +815,7 @@ public:
 		deallocate_memory();
 	}
 
-	Graph2DCSR<TwodVertex> graph_;
+	GraphType graph_;
 
 // protected:
 
@@ -1104,213 +1102,6 @@ public:
 			}
 		}
 	}
-
-	int64_t get_compressed_stream_length(int64_t num_packets, int64_t content_length)
-	{
-#if DEBUG_PRINT
-		if(mpi.isMaster()) printf("L:%d: get_compressed_stream_length: sizeof(bfs_detail::PacketIndex)=%d, offsetof(bfs_detail::CompressedStream, stream)=%d"
-				", num_packets=%"PRId64", content_length=%"PRId64"\n", __LINE__,
-				(int)sizeof(bfs_detail::PacketIndex), (int)offsetof(bfs_detail::CompressedStream, d), num_packets, content_length);
-#endif
-		return num_packets*sizeof(bfs_detail::PacketIndex) +
-				roundup<sizeof(bfs_detail::PacketIndex)>(content_length) +
-				offsetof(bfs_detail::CompressedStream, d);
-	}
-
-	bool expand_batch_wrtie_packet(int64_t* vertex_buffer, int num_vertices,
-			int64_t threshold, bfs_detail::CompressedStream* output, bool cq_or_visited)
-	{
-		using namespace BFS_PARAMS;
-		using namespace bfs_detail;
-
-		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
-		PacketIndex* local_packet_index = tlb->packet_index;
-		uint8_t* local_stream_buffer = tlb->stream_buffer;
-		// encode using varint
-		int stream_buffer_offset = 0;
-		int num_packets = get_blocks<PACKET_LENGTH>(num_vertices);
-		for(int k = 0; k < num_packets; ++k) {
-			int num_vertices_in_this_packet = std::min<int>(PACKET_LENGTH, num_vertices - k*PACKET_LENGTH);
-			int64_t* vertex_buffer_k = vertex_buffer + k*PACKET_LENGTH;
-			// compute differentials
-#ifndef NDEBUG
-			int64_t num_local_vertices = get_actual_number_of_local_vertices();
-			for(int64_t r = 0; r < num_vertices_in_this_packet; ++r) {
-				assert (vertex_buffer_k[r] >= 0);
-				assert (vertex_buffer_k[r] < num_local_vertices);
-			}
-#endif
-			for(int r = num_vertices_in_this_packet - 1; r > 0; --r) {
-				vertex_buffer_k[r] -= vertex_buffer_k[r-1];
-				assert (vertex_buffer_k[r] >= 0);
-			}
-			int length = varint_encode(vertex_buffer_k,
-					num_vertices_in_this_packet, local_stream_buffer + stream_buffer_offset,
-					cq_or_visited ? bfs_detail::VARINT_EXPAND_CQ : bfs_detail::VARINT_EXPAND_SV);
-			local_packet_index[k].length = length;
-			local_packet_index[k].num_int = num_vertices_in_this_packet;
-#if DEBUG_PRINT
-			if(mpi.isMaster()) printf("L:%d:SPacket (length,num_vertices)=(%d,%d)\n", __LINE__,
-					length, num_vertices_in_this_packet);
-#endif
-			stream_buffer_offset += length;
-		}
-		// store to global buffer
-		int64_t copy_packet_offset;
-		int64_t copy_offset;
-		int64_t total_num_packet;
-		int64_t total_stream_length;
-#pragma omp critical
-		{
-			copy_packet_offset = d_->num_tmp_packets_;
-			copy_offset = d_->tmp_packet_offset_;
-			total_num_packet = copy_packet_offset + num_packets;
-			total_stream_length = copy_offset + stream_buffer_offset;
-			d_->num_tmp_packets_ = total_num_packet;
-			d_->tmp_packet_offset_ = total_stream_length;
-		}
-		if(get_compressed_stream_length
-				(total_num_packet, total_stream_length) >= threshold)
-		{
-			return false;
-		}
-		memcpy(tmp_packet_index_ + copy_packet_offset,
-				local_packet_index, sizeof(PacketIndex)*num_packets);
-		memcpy(output->d.stream + copy_offset,
-				local_stream_buffer, sizeof(local_stream_buffer[0]) * stream_buffer_offset);
-		return true;
-	}
-
-#if BFS_EXPAND_COMPRESSION
-	// return : true if creating succeeded,
-	// 			false if stream length exceeded the length of bitmap
-	bool expand_create_stream(const BitmapType* bitmap, bfs_detail::CompressedStream* output, int64_t* data_size, bool cq_or_visited)
-	{
-		using namespace BFS_PARAMS;
-		using namespace bfs_detail;
-
-		d_->num_tmp_packets_ = 0;
-		d_->tmp_packet_offset_ = 0;
-
-		const int64_t bitmap_size = get_bitmap_size_local();
-		const int64_t threshold = bitmap_size * sizeof(BitmapType);
-		bool b_break = false;
-
-#pragma omp parallel reduction(|:b_break)
-		{
-			int64_t* local_buffer = thread_local_buffer_[omp_get_thread_num()]->decode_buffer;
-			int local_buffer_offset = 0;
-
-			int64_t chunk_size = (bitmap_size + omp_get_num_threads() - 1) / omp_get_num_threads();
-			int64_t i_start = chunk_size * omp_get_thread_num();
-			int64_t i_end = std::min(i_start + chunk_size, bitmap_size);
-
-			for(int64_t i = i_start; i < i_end; ++i) {
-				const BitmapType bitmap_i = bitmap[i];
-				if(bitmap_i == 0) {
-					continue;
-				}
-				// read bitmap and store to temporary buffer
-				for(int bit_idx = 0; bit_idx < NUMBER_PACKING_EDGE_LISTS; ++bit_idx) {
-					if(bitmap_i & (int64_t(1) << bit_idx)) {
-						local_buffer[local_buffer_offset++] = i*NUMBER_PACKING_EDGE_LISTS + bit_idx;
-					}
-				}
-
-				if(local_buffer_offset >= PACKET_LENGTH*BATCH_PACKETS)
-				{
-					if(expand_batch_wrtie_packet(local_buffer,
-							PACKET_LENGTH*BATCH_PACKETS, threshold, output, cq_or_visited) == false)
-					{
-						b_break = true;
-						break;
-					}
-					local_buffer_offset -= PACKET_LENGTH*BATCH_PACKETS;
-					memcpy(local_buffer, local_buffer + PACKET_LENGTH*BATCH_PACKETS,
-							sizeof(local_buffer[0]) * local_buffer_offset);
-				}
-			}
-			// flush local buffer
-			if(b_break == false) {
-				if(expand_batch_wrtie_packet(local_buffer,
-						local_buffer_offset, threshold, output, cq_or_visited) == false)
-				{
-					b_break = true;
-				}
-			}
-		} // #pragma omp parallel reduction(|:b_break)
-
-		if(b_break) {
-			*data_size = threshold;
-			return false;
-		}
-
-		// write packet index
-		int packet_index_start = get_blocks<sizeof(PacketIndex)>(d_->tmp_packet_offset_);
-		output->packet_index_start = packet_index_start;
-		// copy sb_index to tail plist
-		memcpy(&output->d.index[packet_index_start],
-				tmp_packet_index_, sizeof(tmp_packet_index_[0])*d_->num_tmp_packets_);
-
-		*data_size = get_compressed_stream_length(d_->num_tmp_packets_, d_->tmp_packet_offset_);
-#if DEBUG_PRINT
-			if(mpi.isMaster()) printf("L:%d:Expand Send Packet (num_packet,stream_offset,packet_index_start)=(%d,%d,%d)\n", __LINE__,
-					(int)d_->num_tmp_packets_, (int)d_->tmp_packet_offset_, packet_index_start);
-#endif
-		return true;
-	}
-#else // #if BFS_EXPAND_COMPRESSION
-	// return : true if creating succeeded,
-	// 			false if stream length exceeded the length of bitmap
-	bool expand_create_stream(const BitmapType* bitmap, uint32_t* output, int64_t* data_size, bool cq_or_visited)
-	{
-		using namespace BFS_PARAMS;
-
-		d_->tmp_packet_offset_ = 0; // use tmp_packet_offset_ as offset of output buffer
-
-		const int64_t bitmap_size = get_bitmap_size_local();
-
-#pragma omp parallel
-		{
-			uint32_t* local_buffer = (uint32_t*)thread_local_buffer_[omp_get_thread_num()]->decode_buffer;
-			int local_buffer_offset = 0;
-
-			int64_t chunk_size = (bitmap_size + omp_get_num_threads() - 1) / omp_get_num_threads();
-			int64_t i_start = chunk_size * omp_get_thread_num();
-			int64_t i_end = std::min(i_start + chunk_size, bitmap_size);
-
-			for(int64_t i = i_start; i < i_end; ++i) {
-				const BitmapType bitmap_i = bitmap[i];
-				if(bitmap_i == 0) {
-					continue;
-				}
-				// read bitmap and store to temporary buffer
-				for(int bit_idx = 0; bit_idx < NUMBER_PACKING_EDGE_LISTS; ++bit_idx) {
-					if(bitmap_i & (BitmapType(1) << bit_idx)) {
-						local_buffer[local_buffer_offset++] = i*NUMBER_PACKING_EDGE_LISTS + bit_idx;
-					}
-				}
-
-				if(local_buffer_offset >= PACKET_LENGTH*BATCH_PACKETS)
-				{
-					int64_t offset = __sync_fetch_and_add(&d_->tmp_packet_offset_, local_buffer_offset);
-					memcpy(output + offset, local_buffer, sizeof(output[0])*local_buffer_offset);
-					local_buffer_offset = 0;
-				}
-			}
-			// flush local buffer
-			int64_t offset = __sync_fetch_and_add(&d_->tmp_packet_offset_, local_buffer_offset);
-			memcpy(output + offset, local_buffer, sizeof(output[0])*local_buffer_offset);
-		} // #pragma omp parallel
-
-		*data_size = d_->tmp_packet_offset_;
-#if DEBUG_PRINT
-			if(mpi.isMaster()) printf("L:%d:Expand Send (num_vertices)=(%d)\n", __LINE__,
-					(int)d_->tmp_packet_offset_);
-#endif
-		return true;
-	}
-#endif // #if BFS_EXPAND_COMPRESSION
 
 	enum EXPAND_PHASE {
 		EXPAND_FORWARD,
@@ -2056,138 +1847,138 @@ public:
 		fiber_man_.enter_processing();
 	}
 
-	void fold_send_packet(FoldPacket* packet, int target)
-	{
-#if VLQ_COMPRESSION
-		for(int r = packet->num_edges - 1; r > 0; --r) {
-			packet->v0_list[r] -= packet->v0_list[r-1];
-			assert(packet->v0_list[r] >= 0);
+	//-------------------------------------------------------------//
+	// expand phase
+	//-------------------------------------------------------------//
+
+	template <typename CVT>
+	TwodVertex* flatten_nq(int& size, CVT cvt) {
+		int num_threads = omp_get_max_threads();
+		int th_offset[num_threads+1] = {0};
+		int num_buffers = nq_.stack_.size();
+		TwodVertex* flatten;
+		TwodVertex high_cmask = TwodVertex(mpi.rank_2dc) << graph_.lgl_;
+#pragma omp parallel
+		{
+			int tid = omp_get_thread_num();
+			int size = 0;
+#pragma omp for schedule(static) nowait
+			for(int i = 0; i < num_buffers; ++i) {
+				size += nq_.stack_[i]->length;
+			}
+			th_offset[tid+1] = size;
+#pragma omp barrier
+#pragma omp single
+			{
+				for(int i = 0; i < num_threads; ++i) {
+					th_offset[i+1] += th_offset[i];
+				}
+				flatten = (TwodVertex*)malloc(th_offset[num_threads]*sizeof(TwodVertex));
+			} // implicit barrier
+			int offset = th_offset[tid];
+#pragma omp for schedule(static) nowait
+			for(int i = 0; i < num_buffers; ++i) {
+				int len = nq_.stack_[i]->length;
+				cvt(flatten + offset, nq_.stack_[i]->v, len);
+				nq_.stack_[i]->length = 0;
+				offset += len;
+			}
+			assert (offset == th_offset[tid+1]);
+		} // implicit barrier
+		for(int i = 0; i < num_buffers; ++i) {
+			// Since there are no need to lock pool when the free memory is added,
+			// we invoke Pool::free method explicitly.
+			nq_empty_buffer_.memory::Pool<QueuedVertexes>::free(nq_.stack_[i]);
 		}
-#if 0
-		printf("num_edges = %d\n", packet->num_edges);
-#endif
-		uint8_t* stream_buffer = thread_local_buffer_[omp_get_thread_num()]->stream_buffer;
-		int stream_length = varint_encode(packet->v0_list, packet->num_edges, stream_buffer, bfs_detail::VARINT_FOLD);
-		comm_.fold_send(stream_buffer, packet->v1_list, stream_length, packet->num_edges, target);
-#else
-		comm_.fold_send(packet->edges, packet->num_edges, target);
-#endif
+		size = th_offset[num_threads];
+		return flatten;
 	}
 
-#if LOW_LEVEL_FUNCTION
-	struct ExtractEdge : public Runnable {
-		virtual void run() {
-			using namespace BFS_PARAMS;
-#if PROFILING_MODE
-			ts_commit_.reset();
-			profiling::TimeKeeper tk_all;
-#endif
-			/*
-			BitmapType* cq_bitmap = this_->cq_bitmap_;
-			BitmapType* cq_summary = this_->cq_summary_;
-			BitmapType* shared_visited = this_->shared_visited_;
-			BitmapType* bv_bitmap = this_->graph_.bv_bitmap_;
-			const int64_t* row_starts = this_->graph_.row_starts_;
-			const IndexArray& index_array = this_->graph_.index_array_;
-			const int log_local_verts = this_->graph_.log_local_verts();
-			const int64_t local_verts_mask = this_->get_number_of_local_vertices() - 1;
-			int64_t i_start = i_start_, i_end = i_end_;
-			FoldPacket* packet_array =
-					this_->thread_local_buffer_[omp_get_thread_num()]->fold_packet;
-			int64_t num_edge_relax = 0;
-			*/
-			ThreadLocalBuffer* tlb = this_->thread_local_buffer_[omp_get_thread_num()];
-		//	const int log_local_verts = this_->graph_.log_local_verts();
-			BitmapType* const cq_summary = this_->cq_summary_;
+	void allgather_nq_without_compression(TwodVertex* nq, int nq_size, MPI_Comm comm, int comm_size) {
+		int recv_size[comm_size];
+		int recv_off[comm_size+1];
+		MPI_Allgather(&nq_size, 1, MPI_INT, recv_size, 1, MPI_INT, comm);
+		recv_off[0] = 0;
+		for(int i = 0; i < comm_size; ++i) {
+			recv_off[i+1] = recv_off[i] + recv_size[0];
+		}
+		cq_size_ = recv_off[comm_size];
+		TwodVertex* recv_buf = (TwodVertex*)((cq_size_*sizeof(TwodVertex) > cq_buf_size_) ?
+				(cq_extra_buf_ = malloc(cq_size_*sizeof(TwodVertex))) :
+				cq_buf_);
+		MPI_Allgatherv(nq, nq_size, MpiTypeOf<TwodVertex>::type,
+				recv_buf, recv_size, recv_off, MpiTypeOf<TwodVertex>::type, comm);
+		cq_bitmap_ = NULL;
+		cq_list_ = recv_buf;
+	}
 
-			// TODO: optimize
-			params.cq_bitmap = this_->cq_bitmap_;
-			params.cq_summary = cq_summary;
-			params.visited_bitmap = this_->shared_visited_;
-			params.bv_bitmap = this_->graph_.bv_bitmap_;
-			params.bv_offsets = this_->graph_.bv_offsets_;
-			params.bv_row_starts = this_->graph_.bv_row_starts_;
-#if EDGES_IN_RAIL
-			params.idx_array = this_->graph_.index_array_.get_ptr();
-#else
-			params.idx_high = this_->graph_.index_array_.get_ptr_high();
-			params.idx_low = this_->graph_.index_array_.get_ptr_low();
-#endif
-#if BIT_SCAN_TABLE
-			params.bit_scan_table = this_->bit_scan_table_;
-#endif
-			params.v0_high_c = (int64_t(mpi.rank_2dc) << this_->graph_.log_local_v0());
-			params.local_verts_mask = this_->get_number_of_local_vertices() - 1;
-			params.log_local_verts = this_->graph_.log_local_verts();
-		//	params.log_r = get_msb_index(mpi.size_2dr);
-		//	params.swizzed_r = (int64_t(mpi.rank_2dr) << log_local_verts);
-#if VERVOSE_MODE
-			params.num_edge_relax = 0;
-#endif
-		//	params.num_active_vertices = 0;
-			params.submit_packetf = submit_packet_;
-			params.context = this;
-			params.row_array = tlb->row_buffer;
-#if PROFILING_MODE
-			params.time_vertex_scan = 0;
-#endif
-
-			packet_array_ = tlb->fold_packet;
-
-			int64_t i_start = i_start_, i_end = i_end_;
-			for(int64_t i = i_start; i < i_end; ++i) {
-				BitmapType summary_i = cq_summary[i];
-				if(summary_i == 0) continue;
-				params.cur_summary = summary_i;
-				params.summary_idx = i;
-
-				bfs_forward_extract_edge(packet_array_, &params);
-
-				// write zero after read
-				cq_summary[i] = 0;
-			} // for(int64_t i = i_start; i < i_end; ++i) {
-			//
-#if PROFILING_MODE
-			profiling::TimeSpan ts_all;
-			ts_all += tk_all;
-			ts_all -= ts_commit_;
-			ts_all -= params.time_vertex_scan;
-			this_->extract_edge_time_ += ts_all;
-			this_->commit_time_ += ts_commit_;
-			this_->vertex_scan_time_ += params.time_vertex_scan;
-#endif
-			volatile int* jobs_ptr = &this_->d_->num_remaining_extract_jobs_;
-			if(__sync_fetch_and_add(jobs_ptr, -1) == 1) {
-				this_->fiber_man_.submit_array(this_->sched_.fold_end_job, mpi.size_2dc, 0);
+	void top_down_expand() {
+		// expand NQ within a processor column
+		// convert NQ to a SRC format
+		struct LocalToSrc {
+			const TwodVertex high_cmask = TwodVertex(mpi.rank_2dc) << graph_.lgl_;
+			void operator ()(TwodVertex* dst, TwodVertex* src, int length) const {
+				for(int i = 0; i < length; ++i) {
+					dst[i] = src[i] | high_cmask;
+				}
 			}
-#if VERVOSE_MODE
-			__sync_fetch_and_add(&this_->d_->num_edge_relax_, params.num_edge_relax);
-#endif
-		}
-		static void submit_packet_(void* this__, int target) {
-			static_cast<ExtractEdge*>(this__)->internal_submit_packet(target);
-		}
-		void internal_submit_packet(int target) {
-#if PROFILING_MODE
-			profiling::TimeKeeper tk_commit;
-#endif
-			this_->fold_send_packet(&packet_array_[target], target);
-#if PROFILING_MODE
-			ts_commit_ += tk_commit;
-#endif
-		}
-		FoldPacket* packet_array_;
-		BfsExtractContext params;
-		ThisType* this_;
-		int64_t i_start_, i_end_;
-#if PROFILING_MODE
-		profiling::TimeSpan ts_commit_;
-#endif
-	};
+		};
+		int nq_size;
+		TwodVertex* flatten = flatten_nq(nq_size, LocalToSrc());
+		allgather_nq_without_compression(flatten, nq_size, mpi.comm_2dr, mpi.size_2dc );
+	}
+	void top_down_switch_expand() {
+		// expand NQ within a processor row
+		// convert NQ to a DST format
+		struct LocalToDst {
+			const TwodVertex high_rmask = TwodVertex(mpi.rank_2dr) << graph_.lgl_;
+			void operator ()(TwodVertex* dst, TwodVertex* src, int length) const {
+				for(int i = 0; i < length; ++i) {
+					dst[i] = src[i] | high_rmask;
+				}
+			}
+		};
+		int nq_size;
+		TwodVertex* flatten = flatten_nq(nq_size, LocalToDst());
+		allgather_nq_without_compression(flatten, nq_size, mpi.comm_2dc, mpi.size_2dr);
 
-#else // #if LOW_LEVEL_FUNCTION
+		// update bitmap
+		// TODO: initialize shared_visited_
+#pragma omp parallel for
+		for(int i = 0; i < cq_size_; ++i) {
+			TwodVertex v = cq_list_[i];
+			TwodVertex word_idx = v / NBPE;
+			int bit_idx = v % NBPE;
+			BitmapType mask = BitmapType(1) << bit_idx;
+			__sync_fetch_and_or(&shared_visited_[word_idx], mask); // TODO: this is slow ?
+		}
+	}
+	void bottom_up_expand() {
+		//
+		enum { NBUF = BFS_PARAMS::BOTTOM_UP_BUFFER };
+		int bitmap_width = get_bitmap_size_local();
+		int half_bitmap_width = bitmap_width / 2;
+		int total_phase = mpi.size_2dc*2;
+		BitmapType* new_visited = (BitmapType*)cq_buf_ + half_bitmap_width * (total_phase % NBUF);
+		BitmapType* old_visited = local_visited_;
+		int max_capacity = vlq::BitmapEncoder::calc_capacity_of_values(
+				bitmap_width, NBPE, bitmap_width*sizeof(BitmapType));
+		int threashold = std::min<int>(max_capacity, bitmap_width*sizeof(BitmapType)/2);
+		if(max_nq_size_ < threashold) {
+			// list
+		}
+		else {
+			// bitmap
+			//MPI_Allgather
+		}
+	}
+	void switch_to_top_down_expand() { }
 
-	struct ExtractEdge : public Runnable {
+	//-------------------------------------------------------------//
+	// top-down search
+	//-------------------------------------------------------------//
+
+	struct TopDownSender : public Runnable {
 		virtual void run() {
 			using namespace BFS_PARAMS;
 #if PROFILING_MODE
@@ -2195,206 +1986,63 @@ public:
 			profiling::TimeKeeper tk_commit;
 			profiling::TimeSpan ts_commit;
 #endif
-			BitmapType* cq_bitmap = this_->cq_bitmap_;
-			BitmapType* cq_summary = this_->cq_summary_;
-			BitmapType* shared_visited = this_->shared_visited_;
-#if GRAPH_BITVECTOR
-			BitmapType* bv_bitmap = this_->graph_.bv_bitmap_;
-#endif
-			const int64_t* row_starts = this_->graph_.row_starts_;
-			const IndexArray& index_array = this_->graph_.index_array_;
-			const int log_local_verts = this_->graph_.log_local_verts();
-			const int64_t local_verts_mask = this_->get_number_of_local_vertices() - 1;
-#if VERTEX_SORTING
-			const int64_t threshold = this_->get_number_of_local_vertices() / BFS_PARAMS::DENOM_SHARED_VISITED_PART;
-#endif // #if VERTEX_SORTING
-			int64_t i_start = i_start_, i_end = i_end_;
-			FoldPacket* packet_array =
+			//
+			TwodVertex* cq_list = (TwodVertex*)this_->cq_bitmap_;
+			TwodVertex cq_size = (TwodVertex*)this_->cq_size_;
+			bfs_detail::FoldPacket* packet_array =
 					this_->thread_local_buffer_[omp_get_thread_num()]->fold_packet;
-
-#if SHARED_VISITED_STRIPE
-			const int log_size_c = get_msb_index(mpi.size_2dc);
-			const int64_t mask2 = TwodVertex(NUMBER_CQ_SUMMARIZING*NUMBER_PACKING_EDGE_LISTS) - 1;
-			const int64_t mask1 = this_->get_number_of_local_vertices() - 1 - mask2;
-#endif
+			int lgl = graph_.log_local_verts();
+			uint32_t local_mask = (uint32_t(1) << lgl) - 1;
 #if VERVOSE_MODE
 			int64_t num_edge_relax = 0;
 #endif
 
-			for(int64_t i = i_start; i < i_end; ++i) {
-				BitmapType summary_i = cq_summary[i];
-				if(summary_i == 0) continue;
-				for(int ii = 0; ii < (int)sizeof(cq_summary[0])*8; ++ii) {
-					if(summary_i & (BitmapType(1) << ii)) {
-						int64_t cq_base_offset = ((int64_t)i*sizeof(cq_summary[0])*8 + ii)*NUMBER_CQ_SUMMARIZING;
-						for(int k = 0; k < NUMBER_CQ_SUMMARIZING; ++k) {
-							int64_t e0 = cq_base_offset + k;
-#if GRAPH_BITVECTOR
-							BitmapType bitmap_k = cq_bitmap[e0] & bv_bitmap[e0];
-#else
-							BitmapType bitmap_k = cq_bitmap[e0];
-#endif
-							if(bitmap_k == 0) {
-#if GRAPH_BITVECTOR
-								// write zero after read
-								cq_bitmap[e0] = 0;
-#endif
-								continue;
-							}
-							// TODO: this_->graph_.log_local_v0()
-							int64_t v0_high = (e0 << LOG_PACKING_EDGE_LISTS) |
-									(int64_t(mpi.rank_2dc) << this_->graph_.log_local_v0());
-#if BFS_FORWARD_PREFETCH // for FUJITSU
-							int64_t tmp_index[128];
-							int64_t tmp_word_idx[128];
-							BitmapType tmp_mask[128];
-							for(int64_t ri = row_starts[e0]; ri < row_starts[e0+1]; ri += 128) {
-								int64_t ri_end = std::min(ri + 128, row_starts[e0+1]);
-								int num_tmp_edges = 0;
-								for(int64_t rii = ri; rii < ri_end; ++rii) {
-									int8_t row_lowbits = (int8_t)(index_array.low_bits(rii) % NUMBER_PACKING_EDGE_LISTS);
-									if ((bitmap_k & (int64_t(1) << row_lowbits)) != 0){
-										int64_t index = index_array(rii);
-										int64_t c1 = index >> LOG_PACKING_EDGE_LISTS;
-#if VERTEX_SORTING
-										int64_t v1_local = c1 & local_verts_mask;
-#if SHARED_VISITED_OPT
-										if(v1_local < threshold) {
-											tmp_index[num_tmp_edges] = index;
-											tmp_word_idx[num_tmp_edges] = c1 / NUMBER_PACKING_EDGE_LISTS;
-											int bit_idx = c1 % NUMBER_PACKING_EDGE_LISTS;
-											tmp_mask[num_tmp_edges] = BitmapType(1) << bit_idx;
-											++num_tmp_edges;
-										}
-										else
-#endif
-										{
-											int64_t target = c1 >> log_local_verts;
-											int64_t v0_swizzled = v0_high | row_lowbits;
+			TwodVertex i_start, i_end;
+			get_partition(cq_size, num_tasks_, task_idx_, i_start, i_end);
+			for(TwodVertex i = i_start; i < i_end; ++i) {
+				TwodVertex src = cq_list[i];
+				TwodVertex word_idx = src / NBPE;
+				int bit_idx = src % NBPE;
+				BitmapType row_bitmap_i = this_->graph_.row_bitmap_[word_idx];
+				BitmapType mask = BitmapType(1) << bit_idx;
+				if(row_bitmap_i & mask) {
+					uint32_t pred[2] = { (-(int64_t)src) >> 32, uint32_t(-(int64_t)src) };
+					BitmapType low_mask = (BitmapType(1) << bit_idx) - 1;
+					TwodVertex non_zero_off = this_->graph_.row_sums_[word_idx] +
+							__builtin_popcount(this_->graph_.row_bitmap_[word_idx] & low_mask);
+					SortIdx sorted_idx = this_->graph_.sorted_idx_[non_zero_off];
+					typename GraphType::BlockOffset& blk_off = this_->graph_.blk_off[non_zero_off];
+					SortIdx* blk_col_len = this_->graph_.col_len_ + blk_off.length_start;
+					TwodVertex* edge_array = this_->graph_.edge_array_ + blk_off.edge_start;
 
-											FoldPacket* packet = &packet_array[target];
-											packet->v0_list[packet->num_edges] = v0_swizzled;
-											packet->v1_list[packet->num_edges] = v1_local;
-											if(++packet->num_edges == PACKET_LENGTH) {
+					TwodVertex c = 0;
+					for( ; sorted_idx < blk_col_len[c]; ++c, edge_array += blk_col_len[c]) {
+						TwodVertex tgt = edge_array[sorted_idx];
+						int dest = tgt >> lgl;
+						uint32_t tgt_local = tgt & local_mask;
+						bfs_detail::FoldPacket& pk = packet_array[dest];
+						if(pk.length > PACKET_SIZE-3) { // low probability
 #if PROFILING_MODE
-												tk_commit.getSpanAndReset();
+							tk_commit.getSpanAndReset();
 #endif
-												this_->fold_send_packet(packet, target);
+							this_->comm_.send(pk.data, pk.length, dest);
 #if PROFILING_MODE
-												ts_commit += tk_commit;
+							ts_commit += tk_commit;
 #endif
-												packet->num_edges = 0;
-											}
-										}
-#else // #if VERTEX_SORTING
-										tmp_index[num_tmp_edges] = index;
-										tmp_word_idx[num_tmp_edges] = c1 / NUMBER_PACKING_EDGE_LISTS;
-										int bit_idx = c1 % NUMBER_PACKING_EDGE_LISTS;
-										tmp_mask[num_tmp_edges] = BitmapType(1) << bit_idx;
-										++num_tmp_edges;
-#endif // #if VERTEX_SORTING
-									}
-								}
-#ifdef __FUJITSU
-#pragma loop prefetch
-#endif
-								for(int e = 0; e < num_tmp_edges; ++e) {
-									int64_t word_idx = tmp_word_idx[e];
-									BitmapType mask = tmp_mask[e];
-									if((shared_visited[word_idx] & mask) ||
-									 (__sync_fetch_and_or(&shared_visited[word_idx], mask) & mask))
-									{
-										continue;
-									}
-
-									int8_t row_lowbits = tmp_index[e] % NUMBER_PACKING_EDGE_LISTS;
-									int64_t c1 = tmp_index[e] >> LOG_PACKING_EDGE_LISTS;
-									int64_t v1_local = c1 & local_verts_mask;
-									int64_t target = c1 >> log_local_verts;
-									int64_t v0_swizzled = v0_high | row_lowbits;
-
-									FoldPacket* packet = &packet_array[target];
-									packet->v0_list[packet->num_edges] = v0_swizzled;
-									packet->v1_list[packet->num_edges] = v1_local;
-									if(++packet->num_edges == PACKET_LENGTH) {
-#if PROFILING_MODE
-										tk_commit.getSpanAndReset();
-#endif
-										this_->fold_send_packet(packet, target);
-#if PROFILING_MODE
-										ts_commit += tk_commit;
-#endif
-										packet->num_edges = 0;
-									}
-								}
-#if VERVOSE_MODE
-								num_edge_relax += num_tmp_edges;
-#endif
-							}
-#else
-							for(int64_t ri = row_starts[e0]; ri < row_starts[e0+1]; ++ri) {
-								int8_t row_lowbits = (int8_t)(index_array.low_bits(ri) % NUMBER_PACKING_EDGE_LISTS);
-								if ((bitmap_k & (int64_t(1) << row_lowbits)) != 0){
-									int64_t c1 = index_array(ri) >> LOG_PACKING_EDGE_LISTS;
-									int64_t v1_local = c1 & local_verts_mask;
-									int64_t target = c1 >> log_local_verts;
-#if SHARED_VISITED_OPT
-									if(v1_local < threshold) {
-										// --- new algorithm begin ---
-#if SHARED_VISITED_STRIPE
-										int64_t sv_idx = (target*NUMBER_CQ_SUMMARIZING*NUMBER_PACKING_EDGE_LISTS) |
-												((c1 & mask1) << log_size_c) | (c1 & mask2);
-#else
-										int64_t sv_idx = c1;
-#endif
-										int64_t word_idx = sv_idx / NUMBER_PACKING_EDGE_LISTS;
-										int bit_idx = sv_idx % NUMBER_PACKING_EDGE_LISTS;
-										BitmapType mask = BitmapType(1) << bit_idx;
-
-#if 0
-										if(shared_visited[word_idx] & mask) {
-#pragma omp atomic
-											shared_visited[word_idx] |= mask;
-											continue;
-										}
-#else
-										if((shared_visited[word_idx] & mask) ||
-										 (__sync_fetch_and_or(&shared_visited[word_idx], mask) & mask))
-										{
-											continue;
-										}
-#endif
-										// --- new algorithm end ---
-									}
-#endif
-									// TODO:
-									int64_t v0_swizzled = v0_high | row_lowbits;
-
-									FoldPacket* packet = &packet_array[target];
-									packet->v0_list[packet->num_edges] = v0_swizzled;
-									packet->v1_list[packet->num_edges] = v1_local;
-									if(++packet->num_edges == PACKET_LENGTH) {
-#if PROFILING_MODE
-										tk_commit.getSpanAndReset();
-#endif
-										this_->fold_send_packet(packet, target);
-#if PROFILING_MODE
-										ts_commit += tk_commit;
-#endif
-										packet->num_edges = 0;
-									}
-								}
-							}
-#endif
-							// write zero after read
-							cq_bitmap[e0] = 0;
+							pk.length = 0;
 						}
+						if(pk.src != src) { // TODO: use conditional branch
+							pk.data[pk.length+0] = pred[0];
+							pk.data[pk.length+1] = pred[1];
+							pk.length += 2;
+						}
+						pk.data[pk.length] = tgt_local;
 					}
+#if VERVOSE_MODE
+					num_edge_relax += c;
+#endif
 				}
-				// write zero after read
-				cq_summary[i] = 0;
 			}
-			//
 #if PROFILING_MODE
 			profiling::TimeSpan ts_all;
 			ts_all += tk_all;
@@ -2411,30 +2059,165 @@ public:
 #endif
 		}
 		ThisType* this_;
-		int64_t i_start_, i_end_;
+		int num_tasks_, task_idx_;
 	};
 
-#endif // #if LOW_LEVEL_FUNCTION
+	struct TopDownSendEnd : public Runnable {
+		virtual void run() {
+			// flush buffer
+#if PROFILING_MODE
+			profiling::TimeKeeper tk_all;
+			profiling::TimeKeeper tk_commit;
+			profiling::TimeSpan ts_commit;
+#endif
+			for(int i = 0; i < omp_get_num_threads(); ++i) {
+				bfs_detail::FoldPacket* packet_array =
+						this_->thread_local_buffer_[i]->fold_packet;
+				bfs_detail::FoldPacket& pk = packet_array[target_];
+				if(pk.length > 0) {
+#if PROFILING_MODE
+					tk_commit.getSpanAndReset();
+#endif
+					this_->comm_.send(pk.data, pk.length, target_);
+#if PROFILING_MODE
+					ts_commit += tk_commit;
+#endif
+					packet_array[target_].length = 0;
+					packet_array[target_].src = -1;
+				}
+			}
+#if PROFILING_MODE
+			tk_commit.getSpanAndReset();
+#endif
+			this_->comm_.send_end(target_);
+#if PROFILING_MODE
+			ts_commit += tk_commit;
+			profiling::TimeSpan ts_all;
+			ts_all += tk_all;
+			ts_all -= ts_commit;
+			this_->extract_edge_time_ += ts_all;
+			this_->commit_time_ += ts_commit;
+#endif
+		}
+		ThisType* this_;
+		int target_;
+	};
 
-	void botto_up_print_stt(int64_t num_blocks, int64_t num_vertexes) {
+	struct TopDownReceiver : public Runnable {
+		TopDownReceiver(ThisType* this__, bfs_detail::FoldCommBuffer* data__)
+			: this_(this__), data_(data__) 	{ }
+		virtual void run() {
+#if PROFILING_MODE
+			profiling::TimeKeeper tk_all;
+			profiling::TimeKeeper tk_commit;
+#endif
+
+			using namespace BFS_PARAMS;
+			ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
+			QueuedVertexes* buf = tlb->cur_buffer;
+			if(buf == NULL) buf = nq_empty_buffer_.get();
+			BitmapType* visited = this_->local_visited_;
+			int64_t* restrict const pred = this_->pred_;
+			const int cur_level = this_->current_level_;
+			uint32_t* stream = data_->stream;
+			int length = data_->length;
+			int64_t pred_v = -1;
+
+			// for id converter //
+			int lgr = this_->graph_.lgr_;
+			int lgl = this_->graph_.lgl_;
+			int lgsize = lgr + this_->graph_.lgc_;
+			int64_t lmask = ((int64_t(1) << lgl) - 1);
+			int r = data_->target;
+			// ------------------- //
+
+			for(int i = 0; i < length; ) {
+				uint32_t v = stream[i];
+				if(int32_t(v) < 0) {
+					int64_t src = -((int64_t(v) << 32) | stream[i+1]);
+					pred_v = ((src & lmask) << lgsize) | ((src >> lgl) << lgr) | int64_t(r) |
+							(int64_t(cur_level) << 48);
+					i += 2;
+				}
+				else {
+					TwodVertex tgt_local = v;
+					const TwodVertex word_idx = tgt_local / NBPE;
+					const int bit_idx = tgt_local % NBPE;
+					const BitmapType mask = BitmapType(1) << bit_idx;
+
+					if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
+						if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
+							assert (pred[tgt_local] == -1);
+							pred[tgt_local] = pred_v;
+							if(buf->full()) {
+								nq_.push(buf); buf = nq_empty_buffer_.get();
+							}
+							buf->append_nocheck(tgt_local);
+						}
+					}
+					i += 1;
+				}
+			}
+			tlb->cur_buffer = buf;
+			this_->comm_.relase_buffer(data_);
+#if PROFILING_MODE
+			this_->recv_proc_time_ += tk_all;
+#endif
+			delete this;
+		}
+		ThisType* const this_;
+		bfs_detail::FoldCommBuffer* data_;
+	};
+
+	virtual void fold_received(bfs_detail::FoldCommBuffer* data)
+	{
+		fiber_man_.submit(new TopDownReceiver(this, data), 1);
+	}
+
+	virtual void fold_finish()
+	{
+		fiber_man_.end_processing();
+	}
+
+	//-------------------------------------------------------------//
+	// bottom-up search
+	//-------------------------------------------------------------//
+
+	void botto_up_print_stt(int64_t num_blocks, int64_t num_vertexes, int* nq_count) {
 		int64_t send_stt[2] = { num_vertexes, num_blocks };
 		int64_t sum_stt[2];
 		int64_t max_stt[2];
 		MPI_Reduce(send_stt, sum_stt, 2, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
-		MPI_Reduce(send_stt, max_stt, 2, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
+		MPI_Reduce(send_stt, max_stt, 2, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
 		if(mpi.isMaster()) {
 			fprintf(IMD_OUT, "Bottom-Up using List. Total %f M Vertexes / %f M Blocks = %f Max %f %%+ Vertexes %f %%+ Blocks\n",
 					to_mega(sum_stt[0]), to_mega(sum_stt[1]), to_mega(sum_stt[0]) / to_mega(sum_stt[1]),
 					diff_percent(max_stt[0], sum_stt[0], mpi.size_2d),
 					diff_percent(max_stt[1], sum_stt[1], mpi.size_2d));
 		}
+		int count_length = mpi.size_2dc;
+		int start_proc = mpi.rank_2dc;
+		int size_mask = mpi.size_2d - 1;
+		int64_t phase_count[count_length];
+		int64_t phase_recv[count_length];
+		for(int i = 0; i < count_length; ++i) {
+			phase_count[i] = nq_count[(start_proc + i) & size_mask];
+		}
+		MPI_Reduce(phase_count, phase_recv, count_length, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
+		if(mpi.isMaster()) {
+			int64_t total_nq = 0;
+			for(int i = 0; i < count_length; ++i) {
+				total_nq += phase_recv[i];
+			}
+			fprintf(IMD_OUT, "Bottom-Up: %"PRId64" vertexes found. Break down ...\n", total_nq);
+			for(int i = 0; i < count_length; ++i) {
+				fprintf(IMD_OUT, "step %d / %d  %f M Vertexes ( %f %% )\n",
+						i+1, count_length, to_mega(phase_recv[i]), (double)phase_recv[i] / (double)total_nq);
+			}
+		}
 	}
 
-	//-------------------------------------------------------------//
-	// Backward search
-	//-------------------------------------------------------------//
-
-	void bottom_up_search_bitmap_process_step(
+	int bottom_up_search_bitmap_process_step(
 			BitmapType* phase_bitmap,
 			TwodVertex phase_bmp_off,
 			TwodVertex half_bitmap_width)
@@ -2442,156 +2225,174 @@ public:
 		struct BottomUpRow {
 			SortIdx orig, sorted;
 		};
+		int num_bufs_nq_before = nq_.stack_.size();
+		int visited_count = 0;
+#pragma omp parallel reduction(+:visited_count)
+		{
+			ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
+			QueuedVertexes* buf = tlb->cur_buffer;
+			if(buf == NULL) buf = nq_empty_buffer_.get();
+			visited_count -= buf->length;
 
-		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
-		QueuedVertexes* buf = tlb->cur_buffer;
-		if(buf == NULL) buf = nq_empty_buffer_.get();
+			TwodVertex num_blks = half_bitmap_width * NBPE / BFELL_SORT;
+#pragma omp for
+			for(TwodVertex blk_idx = 0; blk_idx < num_blks; ++blk_idx) {
 
-		TwodVertex num_blks = half_bitmap_width * NBPE / BFELL_SORT;
-		for(TwodVertex blk_idx = 0; blk_idx < num_blks; ++blk_idx) {
+				TwodVertex blk_bmp_off = blk_idx * BFELL_SORT / NBPE;
+				BitmapType* blk_row_bitmap = graph_.row_bitmap_ + phase_bmp_off + blk_bmp_off;
+				BitmapType* blk_bitmap = phase_bitmap + blk_bmp_off;
+				TwodVertex* blk_row_sums = graph_.row_sums_ + phase_bmp_off + blk_bmp_off;
+				SortIdx sorted_idx = graph_.sorted_idx_;
+				BottomUpRow rows[BFELL_SORT];
+				int num_active_rows = 0;
 
-			TwodVertex blk_bmp_off = blk_idx * BFELL_SORT / NBPE;
-			BitmapType* blk_row_bitmap = graph_.row_bitmap_ + phase_bmp_off + blk_bmp_off;
-			BitmapType* blk_bitmap = phase_bitmap + blk_bmp_off;
-			TwodVertex* blk_row_sums = graph_.row_sums_ + phase_bmp_off + blk_bmp_off;
-			SortIdx sorted_idx = graph_.sorted_idx_;
-			BottomUpRow rows[BFELL_SORT];
-			int num_active_rows = 0;
+				for(int bmp_idx = 0; bmp_idx < BFELL_SORT / NBPE; ++bmp_idx) {
+					BitmapType row_bmp_i = blk_row_bitmap[bmp_idx];
+					BitmapType unvis_i = ~(blk_bitmap[bmp_idx]) & row_bmp_i;
+					if(unvis_i == BitmapType(0)) continue;
+					TwodVertex bmp_row_sums = blk_row_sums[bmp_idx];
+					do {
+						uint32_t visb_idx = __builtin_ctz(unvis_i);
+						BitmapType mask = (BitmapType(1) << visb_idx) - 1;
+						TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcount(row_bmp_i & mask);
+						rows[num_active_rows].orig = bmp_idx * NBPE + visb_idx;
+						rows[num_active_rows].sorted = sorted_idx[non_zero_idx];
+						++num_active_rows;
+						unvis_i &= unvis_i - 1;
+					} while(unvis_i != BitmapType(0));
+				}
 
-			for(int bmp_idx = 0; bmp_idx < BFELL_SORT / NBPE; ++bmp_idx) {
-				BitmapType row_bmp_i = blk_row_bitmap[bmp_idx];
-				BitmapType unvis_i = ~(blk_bitmap[bmp_idx]) & row_bmp_i;
-				if(unvis_i == BitmapType(0)) continue;
-				TwodVertex bmp_row_sums = blk_row_sums[bmp_idx];
-				do {
-					uint32_t visb_idx = __builtin_ctz(unvis_i);
-					BitmapType mask = (BitmapType(1) << visb_idx) - 1;
-					TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcount(row_bmp_i & mask);
-					rows[num_active_rows].orig = bmp_idx * NBPE + visb_idx;
-					rows[num_active_rows].sorted = sorted_idx[non_zero_idx];
-					++num_active_rows;
-					unvis_i &= unvis_i - 1;
-				} while(unvis_i != BitmapType(0));
-			}
+				TwodVertex phase_blk_off = phase_bmp_off * NBPE / BFELL_SORT;
+				int64_t edge_offset = graph_.blk_off[phase_blk_off + blk_idx].edge_start;
+				int64_t length_start = graph_.blk_off[phase_blk_off + blk_idx].length_start;
+				TwodVertex* col_edge_array = graph_.edge_array_ + edge_offset;
+				SortIdx* col_len = graph_.col_len_ + length_start;
+				TwodVertex blk_vertex_base = phase_bmp_off * NBPE + blk_idx * BFELL_SORT;
 
-			TwodVertex phase_blk_off = phase_bmp_off * NBPE / BFELL_SORT;
-			int64_t edge_offset = graph_.blk_off[phase_blk_off + blk_idx].edge_start;
-			int64_t length_start = graph_.blk_off[phase_blk_off + blk_idx].length_start;
-			TwodVertex* col_edge_array = graph_.edge_array_ + edge_offset;
-			SortIdx* col_len = graph_.col_len_ + length_start;
-			TwodVertex blk_vertex_base = phase_bmp_off * NBPE + blk_idx * BFELL_SORT;
-
-			int c = 0;
-			for( ; num_active_rows > 0; ++c) {
-				SortIdx next_col_len = col_len[c + 1];
-				int i = num_active_rows - 1;
-#if 0
-				for( ; i >= 7; i -= 8) {
-					BottomUpRow* cur_rows = &rows[i-7];
-					TwodVertex src = {
-							col_edge_array[cur_rows[0].sorted],
-							col_edge_array[cur_rows[1].sorted],
-							col_edge_array[cur_rows[2].sorted],
-							col_edge_array[cur_rows[3].sorted],
-							col_edge_array[cur_rows[4].sorted],
-							col_edge_array[cur_rows[5].sorted],
-							col_edge_array[cur_rows[6].sorted],
-							col_edge_array[cur_rows[7].sorted],
-					};
-					bool connected = {
-							shared_visited_[src[0] / NBPE] & (BitmapType(1) << (src[0] % NBPE)),
-							shared_visited_[src[1] / NBPE] & (BitmapType(1) << (src[1] % NBPE)),
-							shared_visited_[src[2] / NBPE] & (BitmapType(1) << (src[2] % NBPE)),
-							shared_visited_[src[3] / NBPE] & (BitmapType(1) << (src[3] % NBPE)),
-							shared_visited_[src[4] / NBPE] & (BitmapType(1) << (src[4] % NBPE)),
-							shared_visited_[src[5] / NBPE] & (BitmapType(1) << (src[5] % NBPE)),
-							shared_visited_[src[6] / NBPE] & (BitmapType(1) << (src[6] % NBPE)),
-							shared_visited_[src[7] / NBPE] & (BitmapType(1) << (src[7] % NBPE)),
-					};
-					for(int s = 7; s >= 0; --s) {
-						if(connected[s]) {
+				int c = 0;
+				for( ; num_active_rows > 0; ++c) {
+					SortIdx next_col_len = col_len[c + 1];
+					int i = num_active_rows - 1;
+	#if 0
+					for( ; i >= 7; i -= 8) {
+						BottomUpRow* cur_rows = &rows[i-7];
+						TwodVertex src = {
+								col_edge_array[cur_rows[0].sorted],
+								col_edge_array[cur_rows[1].sorted],
+								col_edge_array[cur_rows[2].sorted],
+								col_edge_array[cur_rows[3].sorted],
+								col_edge_array[cur_rows[4].sorted],
+								col_edge_array[cur_rows[5].sorted],
+								col_edge_array[cur_rows[6].sorted],
+								col_edge_array[cur_rows[7].sorted],
+						};
+						bool connected = {
+								shared_visited_[src[0] / NBPE] & (BitmapType(1) << (src[0] % NBPE)),
+								shared_visited_[src[1] / NBPE] & (BitmapType(1) << (src[1] % NBPE)),
+								shared_visited_[src[2] / NBPE] & (BitmapType(1) << (src[2] % NBPE)),
+								shared_visited_[src[3] / NBPE] & (BitmapType(1) << (src[3] % NBPE)),
+								shared_visited_[src[4] / NBPE] & (BitmapType(1) << (src[4] % NBPE)),
+								shared_visited_[src[5] / NBPE] & (BitmapType(1) << (src[5] % NBPE)),
+								shared_visited_[src[6] / NBPE] & (BitmapType(1) << (src[6] % NBPE)),
+								shared_visited_[src[7] / NBPE] & (BitmapType(1) << (src[7] % NBPE)),
+						};
+						for(int s = 7; s >= 0; --s) {
+							if(connected[s]) {
+								// add to next queue
+								int orig = cur_rows[s].orig;
+								blk_bitmap[orig / NBPE] |= (BitmapType(1) << (orig % NBPE));
+								if(buf->full()) {
+									nq_.push(buf); buf = nq_empty_buffer_.get();
+								}
+								buf->append_nocheck(src[s], blk_vertex_base + orig);
+								// end this row
+								cur_rows[s] = rows[--num_active_rows];
+							}
+							else if(cur_rows[s].sorted >= next_col_len) {
+								// end this row
+								cur_rows[s] = rows[--num_active_rows];
+							}
+						}
+					}
+	#elif 0
+					for( ; i >= 3; i -= 4) {
+						BottomUpRow* cur_rows = &rows[i-3];
+						TwodVertex src[4] = {
+								col_edge_array[cur_rows[0].sorted],
+								col_edge_array[cur_rows[1].sorted],
+								col_edge_array[cur_rows[2].sorted],
+								col_edge_array[cur_rows[3].sorted],
+						};
+						bool connected[4] = {
+								shared_visited_[src[0] / NBPE] & (BitmapType(1) << (src[0] % NBPE)),
+								shared_visited_[src[1] / NBPE] & (BitmapType(1) << (src[1] % NBPE)),
+								shared_visited_[src[2] / NBPE] & (BitmapType(1) << (src[2] % NBPE)),
+								shared_visited_[src[3] / NBPE] & (BitmapType(1) << (src[3] % NBPE)),
+						};
+						for(int s = 0; s < 4; ++s) {
+							if(connected[s]) { // TODO: use conditional branch
+								// add to next queue
+								int orig = cur_rows[s].orig;
+								blk_bitmap[orig / NBPE] |= (BitmapType(1) << (orig % NBPE));
+								if(buf->full()) { // TODO: remove this branch
+									nq_.push(buf); buf = nq_empty_buffer_.get();
+								}
+								buf->append_nocheck(src[s], blk_vertex_base + orig);
+								// end this row
+								cur_rows[s] = rows[--num_active_rows];
+							}
+							else if(cur_rows[s].sorted >= next_col_len) {
+								// end this row
+								cur_rows[s] = rows[--num_active_rows];
+							}
+						}
+					}
+	#endif
+					for( ; i >= 0; --i) {
+						SortIdx row = rows[i].sorted;
+						TwodVertex src = col_edge_array[row];
+						if(shared_visited_[src / NBPE] & (BitmapType(1) << (src % NBPE))) {
 							// add to next queue
-							int orig = cur_rows[s].orig;
+							int orig = rows[i].orig;
 							blk_bitmap[orig / NBPE] |= (BitmapType(1) << (orig % NBPE));
 							if(buf->full()) {
 								nq_.push(buf); buf = nq_empty_buffer_.get();
 							}
-							buf->append_nocheck(src[s], blk_vertex_base + orig);
+							buf->append_nocheck(src, blk_vertex_base + orig);
 							// end this row
-							cur_rows[s] = rows[--num_active_rows];
+							rows[i] = rows[--num_active_rows];
 						}
-						else if(cur_rows[s].sorted >= next_col_len) {
+						else if(row >= next_col_len) {
 							// end this row
-							cur_rows[s] = rows[--num_active_rows];
+							rows[i] = rows[--num_active_rows];
 						}
 					}
+					col_edge_array += col_len[c];
 				}
-#elif 0
-				for( ; i >= 3; i -= 4) {
-					BottomUpRow* cur_rows = &rows[i-3];
-					TwodVertex src[4] = {
-							col_edge_array[cur_rows[0].sorted],
-							col_edge_array[cur_rows[1].sorted],
-							col_edge_array[cur_rows[2].sorted],
-							col_edge_array[cur_rows[3].sorted],
-					};
-					bool connected[4] = {
-							shared_visited_[src[0] / NBPE] & (BitmapType(1) << (src[0] % NBPE)),
-							shared_visited_[src[1] / NBPE] & (BitmapType(1) << (src[1] % NBPE)),
-							shared_visited_[src[2] / NBPE] & (BitmapType(1) << (src[2] % NBPE)),
-							shared_visited_[src[3] / NBPE] & (BitmapType(1) << (src[3] % NBPE)),
-					};
-					for(int s = 0; s < 4; ++s) {
-						if(connected[s]) {
-							// add to next queue
-							int orig = cur_rows[s].orig;
-							blk_bitmap[orig / NBPE] |= (BitmapType(1) << (orig % NBPE));
-							if(buf->full()) {
-								nq_.push(buf); buf = nq_empty_buffer_.get();
-							}
-							buf->append_nocheck(src[s], blk_vertex_base + orig);
-							// end this row
-							cur_rows[s] = rows[--num_active_rows];
-						}
-						else if(cur_rows[s].sorted >= next_col_len) {
-							// end this row
-							cur_rows[s] = rows[--num_active_rows];
-						}
-					}
-				}
-#endif
-				for( ; i >= 0; --i) {
-					SortIdx row = rows[i].sorted;
-					TwodVertex src = col_edge_array[row];
-					if(shared_visited_[src / NBPE] & (BitmapType(1) << (src % NBPE))) {
-						// add to next queue
-						int orig = rows[i].orig;
-						blk_bitmap[orig / NBPE] |= (BitmapType(1) << (orig % NBPE));
-						if(buf->full()) {
-							nq_.push(buf); buf = nq_empty_buffer_.get();
-						}
-						buf->append_nocheck(src, blk_vertex_base + orig);
-						// end this row
-						rows[i] = rows[--num_active_rows];
-					}
-					else if(row >= next_col_len) {
-						// end this row
-						rows[i] = rows[--num_active_rows];
-					}
-				}
-				col_edge_array += col_len[c];
-			}
+			} // #pragma omp for
+
+			tlb->cur_buffer = buf;
+			visited_count += buf->length;
 		}
-
-		tlb->cur_buffer = buf;
+		int num_bufs_nq_after = nq_.stack_.size();
+		for(int i = num_bufs_nq_before; i < num_bufs_nq_after; ++i) {
+			visited_count += nq_.stack_[i]->length;
+		}
+		return visited_count;
 	}
 
-	void bottom_up_search_list_process_step()
+	TwodVertex bottom_up_search_list_process_step(
+#if VERVOSE_MODE
+			int64_t num_vertexes,
+			int64_t num_blocks,
+#endif
+			TwodVertex* phase_list,
+			TwodVertex phase_size,
+			int8_t* vertex_enabled,
+			TwodVertex* write_list,
+			TwodVertex phase_bmp_off,
+			TwodVertex half_bitmap_width)
 	{
-		TwodVertex* phase_list = list_buffer[phase % NBUF];
-		TwodVertex* write_list = list_buffer[write_phase % NBUF];
-		int phase_size = list_size[phase % NBUF];
-		TwodVertex phase_bmp_off = ((mpi.rank_2dc * 2 + phase) & size_cmask) * half_bitmap_width;
 		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
 		QueuedVertexes* buf = tlb->cur_buffer;
 		if(buf == NULL) buf = nq_empty_buffer_.get();
@@ -2599,6 +2400,10 @@ public:
 #if VERVOSE_MODE
 		num_vertexes += phase_size;
 #endif
+
+		struct BottomUpRow {
+			SortIdx orig, sorted, orig_i;
+		};
 
 		for(int i = 0; i < phase_size; ) {
 			int blk_i_start = i;
@@ -2674,13 +2479,63 @@ public:
 		}
 
 		tlb->cur_buffer = buf;
+		return num_enabled;
+	}
+
+	void bottom_up_gather_nq_size(int* visited_count) {
+#if PROFILING_MODE
+		profiling::TimeKeeper tk_all;
+		MPI_Barrier(mpi.comm_2d);
+		fold_competion_wait_ += tk_all;
+#endif
+#if 1 // which one is faster ?
+		int recv_count[mpi.size_2dc]; for(int i = 0; i < mpi.size_2dc; ++i) recv_count[i] = 1;
+		MPI_Reduce_scatter(visited_count, &nq_size_, recv_count, MPI_INT, MPI_SUM, mpi.comm_2dr);
+		MPI_Allreduce(&nq_size_, &max_nq_size_, 1, MPI_INT, MPI_MAX, mpi.comm_2d);
+		int64_t nq_size = nq_size_;
+		MPI_Allreduce(&nq_size, &global_nq_size_, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
+#else
+		int red_nq_size[mpi.size_2dc];
+		struct {
+			int nq_size;
+			int max_nq_size;
+			int64_t global_nq_size;
+		} scatter_buffer[mpi.size_2dc], recv_nq_size;
+		// gather information within the processor row
+		MPI_Reduce(visited_count, red_nq_size, mpi.size_2dc, MPI_INT, MPI_SUM, 0, mpi.comm_2dr);
+		if(mpi.rank_2dr == 0) {
+			int max_nq_size = 0, sum_nq_size = 0;
+			int64_t global_nq_size;
+			for(int i = 0; i < mpi.size_2dc; ++i) {
+				sum_nq_size += red_nq_size[i];
+				if(max_nq_size < red_nq_size[i]) max_nq_size = red_nq_size[i];
+			}
+			// compute global_nq_size by allreduce within the processor column
+			MPI_Allreduce(&sum_nq_size, &global_nq_size, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2dc);
+			for(int i = 0; i < mpi.size_2dc; ++i) {
+				scatter_buffer[i].nq_size = red_nq_size[i];
+				scatter_buffer[i].max_nq_size = max_nq_size;
+				scatter_buffer[i].global_nq_size = global_nq_size;
+			}
+		}
+		// scatter information within the processor row
+		MPI_Scatter(scatter_buffer, sizeof(recv_nq_size), MPI_BYTE,
+				&recv_nq_size, sizeof(recv_nq_size), MPI_BYTE, 0, mpi.comm_2dr);
+		nq_size_ = recv_nq_size.nq_size;
+		max_nq_size_ = recv_nq_size.max_nq_size;
+		global_nq_size_ = recv_nq_size.global_nq_size;
+#endif
+#if PROFILING_MODE
+		gather_nq_time_ += tk_all;
+#endif
 	}
 
 #if BF_DEEPER_ASYNC
 	class BottomUpComm :  public bfs_detail::BfsAsyncCommumicator::Communicatable {
 	public:
-		BottomUpComm(ThisType* this__) {
+		BottomUpComm(ThisType* this__, MPI_Comm mpi_comm__) {
 			this_ = this__;
+			mpi_comm = mpi_comm__;
 			int size_cmask = mpi.size_2dc - 1;
 			send_to = (mpi.rank_2dc - 1) & size_cmask;
 			recv_from = (mpi.rank_2dc + 1) & size_cmask;
@@ -2751,6 +2606,7 @@ public:
 	protected:
 		enum { NBUF = BFS_PARAMS::BOTTOM_UP_BUFFER, DNBUF = NBUF*2 };
 		ThisType* this_;
+		MPI_Comm mpi_comm;
 		int send_to, recv_from;
 		int total_phase;
 		MPI_Request req[DNBUF];
@@ -2764,8 +2620,8 @@ public:
 
 	class BottomUpBitmapComm :  public BottomUpComm {
 	public:
-		BottomUpBitmapComm(ThisType* this__, BitmapType** bitmap_buffer__)
-			: BottomUpComm(this__)
+		BottomUpBitmapComm(ThisType* this__, MPI_Comm mpi_comm__, BitmapType** bitmap_buffer__)
+			: BottomUpComm(this__, mpi_comm__)
 		{
 			bitmap_buffer = bitmap_buffer__;
 			half_bitmap_width = this_->get_bitmap_size_local() / 2;
@@ -2783,29 +2639,20 @@ public:
 			if(send_phase >= 0) {
 				BitmapType* send = bitmap_buffer[send_phase % NBUF];
 				MPI_Request* req_ptr = req + (phase % NBUF) * 2;
-				MPI_Isend(send, half_bitmap_width, MpiTypeOf<BitmapType>::type, send_to, 0, mpi.comm_2dr, req_ptr);
+				MPI_Isend(send, half_bitmap_width, MpiTypeOf<BitmapType>::type, send_to, 0, mpi_comm, req_ptr);
 			}
 			if(recv_phase <= total_phase + 1) {
-				BitmapType* recv;
-				if(recv_phase >= total_phase) {
-					// recv visited
-					int part_idx = recv_phase - total_phase;
-					recv = this_->local_visited_ + half_bitmap_width*part_idx;
-				}
-				else {
-					// recv normal
-					recv = bitmap_buffer[recv_phase % NBUF];
-				}
+				BitmapType* recv = bitmap_buffer[recv_phase % NBUF];
 				MPI_Request* req_ptr = req + ((phase + 1) % NBUF) * 2 + 1;
-				MPI_Irecv(recv, half_bitmap_width, MpiTypeOf<BitmapType>::type, recv_from, 0, mpi.comm_2dr, req_ptr);
+				MPI_Irecv(recv, half_bitmap_width, MpiTypeOf<BitmapType>::type, recv_from, 0, mpi_comm, req_ptr);
 			}
 		}
 	};
 
 	class BottomUpListComm :  public BottomUpComm {
 	public:
-		BottomUpListComm(ThisType* this__, TwodVertex** list_buffer__, TwodVertex* list_size__)
-			: BottomUpComm(this__)
+		BottomUpListComm(ThisType* this__, MPI_Comm mpi_comm__, TwodVertex** list_buffer__, int* list_size__)
+			: BottomUpComm(this__, mpi_comm__)
 		{
 			list_buffer = list_buffer__;
 			list_size = list_size__;
@@ -2815,7 +2662,7 @@ public:
 
 	protected:
 		TwodVertex** list_buffer;
-		TwodVertex* list_size;
+		int* list_size;
 		int buffer_size;
 
 		virtual void recv_complete(int phase, MPI_Status* status) {
@@ -2830,12 +2677,12 @@ public:
 				TwodVertex* send = list_buffer[send_phase % NBUF];
 				TwodVertex send_size = list_size[send_phase % NBUF];
 				MPI_Request* req_ptr = req + (phase % NBUF) * 2;
-				MPI_Isend(send, send_size, MpiTypeOf<BitmapType>::type, send_to, 0, mpi.comm_2dr, req_ptr);
+				MPI_Isend(send, send_size, MpiTypeOf<BitmapType>::type, send_to, 0, mpi_comm, req_ptr);
 			}
 			if(recv_phase <= total_phase + 1) {
 				TwodVertex* recv = list_buffer[recv_phase % NBUF];
 				MPI_Request* req_ptr = req + ((phase + 1) % NBUF) * 2 + 1;
-				MPI_Irecv(recv, buffer_size, MpiTypeOf<BitmapType>::type, recv_from, 0, mpi.comm_2dr, req_ptr);
+				MPI_Irecv(recv, buffer_size, MpiTypeOf<BitmapType>::type, recv_from, 0, mpi_comm, req_ptr);
 			}
 		}
 	};
@@ -2850,29 +2697,97 @@ public:
 
 		enum { NBUF = BOTTOM_UP_BUFFER };
 		int half_bitmap_width = get_bitmap_size_local() / 2;
+		assert (cq_buf_size_ >= half_bitmap_width * NBUF);
 		BitmapType* bitmap_buffer[NBUF];
 		for(int i = 0; i < NBUF; ++i) {
-			bitmap_buffer[i] = cq_bitmap_ + half_bitmap_width*i;
+			bitmap_buffer[i] = (BitmapType*)cq_buf_ + half_bitmap_width*i;
 		}
 		memcpy(bitmap_buffer[0], local_visited_, half_bitmap_width*2*sizeof(BitmapType));
+		MPI_Comm mpi_comm = mpi.comm_2dr;
+		int comm_size = mpi.size_2dc;
+		int comm_rank = mpi.rank_2dc;
+
 		int phase = 0;
-		int total_phase = mpi.size_2dc*2;
-		int size_cmask = mpi.size_2dc - 1;
-		BottomUpBitmapComm comm(this, bitmap_buffer);
+		int total_phase = comm_size*2;
+		int comm_size_mask = comm_size - 1;
+		BottomUpBitmapComm comm(this, mpi_comm, bitmap_buffer);
+		int visited_count[comm_size] = {0};
 
 		for(int phase = 0; phase < total_phase; ++phase) {
 			BitmapType* phase_bitmap = bitmap_buffer[phase % NBUF];
-			TwodVertex phase_bmp_off = ((mpi.rank_2dc * 2 + phase) & size_cmask) * half_bitmap_width;
-			bottom_up_search_bitmap_process_step(phase_bitmap, phase_bmp_off, half_bitmap_width);
+			TwodVertex phase_bmp_off = ((mpi.rank_2dc * 2 + phase) & comm_size_mask) * half_bitmap_width;
+			visited_count[(phase/2 + comm_rank) & comm_size_mask] +=
+					bottom_up_search_bitmap_process_step(phase_bitmap, phase_bmp_off, half_bitmap_width);
 			comm.advance();
 		}
 		// wait for local_visited is received.
 		comm.advance();
 		comm.finish();
 
+		bottom_up_gather_nq_size(visited_count);
 #if VERVOSE_MODE
-		botto_up_print_stt(0, 0);
+		botto_up_print_stt(0, 0, visited_count);
 #endif
+	}
+	int bottom_up_search_list(TwodVertex* list_buffer, int* list_size) {
+		//
+		using namespace BFS_PARAMS;
+#if PROFILING_MODE
+		profiling::TimeKeeper tk_all;
+		profiling::TimeKeeper tk_commit;
+		profiling::TimeSpan ts_commit;
+#endif
+
+		enum { NBUF = BOTTOM_UP_BUFFER };
+		int half_bitmap_width = get_bitmap_size_local() / 2;
+		int buffer_size = half_bitmap_width * sizeof(BitmapType) / sizeof(TwodVertex);
+	/*	TwodVertex* list_buffer[NBUF];
+		for(int i = 0; i < NBUF; ++i) {
+			list_buffer[i] = (TwodVertex*)(cq_bitmap_ + half_bitmap_width*i);
+		}*/
+		int8_t* vertex_enabled = (int8_t*)malloc(buffer_size*sizeof(int8_t));
+		MPI_Comm mpi_comm = mpi.comm_2dr;
+		int comm_size = mpi.size_2dc;
+		int comm_rank = mpi.rank_2dc;
+
+		int phase = 0;
+		int total_phase = comm_size*2;
+		int comm_size_mask = comm_size - 1;
+		BottomUpListComm comm(this, mpi_comm, list_buffer, list_size);
+		int visited_count[comm_size] = {0};
+#if VERVOSE_MODE
+		int64_t num_blocks = 0;
+		int64_t num_vertexes = 0;
+#endif
+
+		for(int phase = 0; phase - 1 < total_phase; ++phase) {
+			int write_phase = phase - 1;
+
+			TwodVertex* phase_list = list_buffer[phase % NBUF];
+			TwodVertex* write_list = list_buffer[write_phase % NBUF];
+			int phase_size = list_size[phase % NBUF];
+			TwodVertex phase_bmp_off = ((mpi.rank_2dc * 2 + phase) & comm_size_mask) * half_bitmap_width;
+			int write_size = bottom_up_search_list_process_step(
+#if VERVOSE_MODE
+					num_vertexes, num_blocks,
+#endif
+					phase_list, phase_size, vertex_enabled, write_list, phase_bmp_off, half_bitmap_width);
+
+			list_size[write_phase % NBUF] = write_size;
+			visited_count[(phase/2 + comm_rank) & comm_size_mask] += write_size;
+			comm.advance();
+		}
+		// wait for local_visited is received.
+		comm.advance();
+		comm.finish();
+
+		bottom_up_gather_nq_size(visited_count);
+#if VERVOSE_MODE
+		botto_up_print_stt(num_blocks, num_vertexes, visited_count);
+#endif
+
+		free(vertex_enabled); vertex_enabled = NULL;
+		return total_phase;
 	}
 #else // #if BF_DEEPER_ASYNC
 	struct BottomUpBitmapComm :  public bfs_detail::BfsAsyncCommumicator::Communicatable {
@@ -2902,7 +2817,7 @@ public:
 		int half_bitmap_width = get_bitmap_size_local() / 2;
 		BitmapType* bitmap_buffer[NBUF];
 		for(int i = 0; i < NBUF; ++i) {
-			bitmap_buffer[i] = cq_bitmap_ + half_bitmap_width*i;
+			bitmap_buffer[i] = (BitmapType*)cq_buf_ + half_bitmap_width*i;
 		}
 		memcpy(bitmap_buffer[0], local_visited_, half_bitmap_width*2*sizeof(BitmapType));
 		int phase = 0;
@@ -2945,7 +2860,6 @@ public:
 		botto_up_print_stt(0, 0);
 #endif
 	}
-#endif // #if BF_DEEPER_ASYNC
 	struct BottomUpListComm :  public bfs_detail::BfsAsyncCommumicator::Communicatable {
 		virtual void comm() {
 			MPI_Request req[2];
@@ -2991,10 +2905,6 @@ public:
 		int64_t num_vertexes = 0;
 #endif
 
-		struct BottomUpRow {
-			SortIdx orig, sorted, orig_i;
-		};
-
 		for(int phase = 0; phase - 1 < total_phase; ++phase) {
 			int send_phase = phase - 2;
 			int write_phase = phase - 1;
@@ -3008,6 +2918,15 @@ public:
 				comm_.input_command(&comm);
 			}
 			if(phase < total_phase) {
+				TwodVertex* phase_list = list_buffer[phase % NBUF];
+				TwodVertex* write_list = list_buffer[write_phase % NBUF];
+				int phase_size = list_size[phase % NBUF];
+				TwodVertex phase_bmp_off = ((mpi.rank_2dc * 2 + phase) & size_cmask) * half_bitmap_width;
+				bottom_up_search_list_process_step(
+#if VERVOSE_MODE
+						num_vertexes, num_blocks,
+#endif
+						phase_list, phase_size, vertex_enabled, write_list, phase_bmp_off, half_bitmap_width);
 			}
 			if(send_phase >= 0) {
 				while(!comm.complete) sched_yield();
@@ -3020,140 +2939,7 @@ public:
 		free(vertex_enabled); vertex_enabled = NULL;
 		return total_phase;
 	}
-
-	struct ReceiverProcessing : public Runnable {
-		ReceiverProcessing(ThisType* this__, bfs_detail::FoldCommBuffer* data__)
-			: this_(this__), data_(data__) 	{ }
-		virtual void run() {
-#if PROFILING_MODE
-			profiling::TimeKeeper tk_all;
-			profiling::TimeKeeper tk_commit;
-#endif
-			using namespace BFS_PARAMS;
-#if VLQ_COMPRESSION
-			int64_t* decode_buffer = tlb->decode_buffer;
-			const uint8_t* v0_stream = data_->v0_stream->d.stream;
-			const bfs_detail::PacketIndex* packet_index =
-					&data_->v0_stream->d.index[data_->v0_stream->packet_index_start];
-#endif
-			BitmapType* restrict const visited = this_->visited_;
-			BitmapType* restrict const nq_bitmap = this_->nq_bitmap_;
-#if VERTEX_SORTING
-			BitmapType* restrict const nq_sorted_bitmap = this_->nq_sorted_bitmap_;
-#endif
-			int64_t* restrict const pred = this_->pred_;
-			const int cur_level = this_->current_level_;
-#if VLQ_COMPRESSION
-			int v0_offset = 0, v1_offset = 0;
-#endif
-			int64_t num_nq_vertices = 0;
-
-			const int log_local_verts = this_->graph_.log_local_verts();
-			const int log_size = get_msb_index(mpi.size_2d);
-			const int64_t local_verts_mask = this_->get_number_of_local_vertices() - 1;
-#if LOW_LEVEL_FUNCTION
-			num_nq_vertices = bfs_receiver_processing(
-					data_->edges,
-					data_->num_edges,
-					visited,
-					nq_bitmap,
-					pred,
-					cur_level,
-					log_local_verts,
-					log_size,
-					local_verts_mask);
-#else // #if LOW_LEVEL_FUNCTION
-#define UNSWIZZLE_VERTEX(c) (((c) >> log_local_verts) | (((c) & local_verts_mask) << log_size))
-#if VLQ_COMPRESSION
-			for(int i = 0; i < data_->num_packets; ++i) {
-				int stream_length = packet_index[i].length;
-				int num_edges = packet_index[i].num_int;
-#ifndef NDEBUG
-				int decoded_elements =
-#endif
-				varint_decode_stream_signed(&v0_stream[v0_offset],
-						stream_length, (uint64_t*)decode_buffer);
-#if 0
-				if(decoded_elements != num_edges) {
-					printf("Error: Decode: decoded_elements = %d, num_edges = %d\n", decoded_elements, num_edges);
-				}
-#endif
-				assert (decoded_elements == num_edges);
-				const uint32_t* const v1_list = &data_->v1_list[v1_offset];
-				int64_t v0_swizzled = 0;
-
-				for(int c = 0; c < num_edges; ++c) {
-					v0_swizzled += decode_buffer[c];
-#else
-			const int64_t* const v0_list = data_->v0_list;
-			const uint32_t* const v1_list = data_->v1_list;
-			for(int c = 0; c < data_->num_edges; ++c) {
-					int64_t v0_swizzled = v0_list[c];
-#endif
-					const TwodVertex v1_local = v1_list[c];
-					const TwodVertex word_idx = v1_local / NUMBER_PACKING_EDGE_LISTS;
-					const int bit_idx = v1_local % NUMBER_PACKING_EDGE_LISTS;
-					const BitmapType mask = BitmapType(1) << bit_idx;
-
-					if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
-						if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
-							const int64_t v0 = UNSWIZZLE_VERTEX(v0_swizzled);
-		//					const int64_t pred_v = (v0 & int64_t(0xFFFFFFFFFFFF)) | ((int64_t)cur_level << 48);
-							const int64_t pred_v = v0 | ((int64_t)cur_level << 48);
-#if VERTEX_SORTING
-#if 0
-#pragma omp atomic
-							nq_sorted_bitmap[word_idx] |= mask;
-#else
-							__sync_fetch_and_or(&nq_sorted_bitmap[word_idx], mask);
-#endif
-							const TwodVertex orig_v1_local = this_->graph_.invert_vertex_mapping_[v1_local];
-							const TwodVertex orig_word_idx = orig_v1_local / NUMBER_PACKING_EDGE_LISTS;
-							const int orig_bit_idx = orig_v1_local % NUMBER_PACKING_EDGE_LISTS;
-							const BitmapType orig_mask = BitmapType(1) << orig_bit_idx;
-							assert (pred[orig_v1_local] == -1);
-#if 0
-#pragma omp atomic
-							nq_bitmap[orig_word_idx] |= orig_mask;
-#else
-							__sync_fetch_and_or(&nq_bitmap[orig_word_idx], orig_mask);
-#endif
-							pred[orig_v1_local] = pred_v;
-#else
-							assert (pred[v1_local] == -1);
-#if 0
-#pragma omp atomic
-							nq_bitmap[word_idx] |= mask;
-#else
-							__sync_fetch_and_or(&nq_bitmap[word_idx], mask);
-#endif
-							pred[v1_local] = pred_v;
-#endif
-							++num_nq_vertices;
-						}
-					}
-#if VLQ_COMPRESSION
-				}
-				v0_offset += stream_length;
-				v1_offset += num_edges;
-#endif
-			}
-#undef UNSWIZZLE_VERTEX
-#endif // #if LOW_LEVEL_FUNCTION
-			this_->comm_.relase_fold_buffer(data_);
-			__sync_fetch_and_add(&this_->d_->num_vertices_in_nq_, num_nq_vertices);
-#if PROFILING_MODE
-			this_->recv_proc_time_ += tk_all;
-#endif
-#if 0
-			this_->recv_task_.push(this);
-#else
-			delete this;
-#endif
-		}
-		ThisType* const this_;
-		bfs_detail::FoldCommBuffer* data_;
-	};
+#endif // #if BF_DEEPER_ASYNC
 
 #if BFS_BACKWARD && VERTEX_SORTING
 	struct BackwardReceiverProcessing : public Runnable {
@@ -3257,62 +3043,6 @@ public:
 	};
 #endif // #if BFS_BACKWARD && VERTEX_SORTING
 
-	struct ExtractEnd : public Runnable {
-		virtual void run() {
-			// flush buffer
-#if PROFILING_MODE
-			profiling::TimeKeeper tk_all;
-			profiling::TimeKeeper tk_commit;
-			profiling::TimeSpan ts_commit;
-#endif
-			for(int i = 0; i < omp_get_num_threads(); ++i) {
-				FoldPacket* packet_array =
-						this_->thread_local_buffer_[i]->fold_packet;
-				if(packet_array[target_].num_edges > 0) {
-#if PROFILING_MODE
-					tk_commit.getSpanAndReset();
-#endif
-					this_->fold_send_packet(&packet_array[target_], target_);
-#if PROFILING_MODE
-					ts_commit += tk_commit;
-#endif
-					packet_array[target_].num_edges = 0;
-				}
-			}
-#if PROFILING_MODE
-			tk_commit.getSpanAndReset();
-#endif
-			this_->comm_.fold_send_end(target_);
-#if PROFILING_MODE
-			ts_commit += tk_commit;
-			profiling::TimeSpan ts_all;
-			ts_all += tk_all;
-			ts_all -= ts_commit;
-			this_->extract_edge_time_ += ts_all;
-			this_->commit_time_ += ts_commit;
-#endif
-		}
-		ThisType* this_;
-		int target_;
-	};
-
-	virtual void fold_received(bfs_detail::FoldCommBuffer* data)
-	{
-#if BFS_BACKWARD && VERTEX_SORTING
-		if(!forward_or_backward_) {
-			fiber_man_.submit(new BackwardReceiverProcessing(this, data), 1);
-		} else
-#endif // #if BFS_BACKWARD && VERTEX_SORTING
-		{
-			fiber_man_.submit(new ReceiverProcessing(this, data), 1);
-		}
-	}
-
-	virtual void fold_finish()
-	{
-		fiber_man_.end_processing();
-	}
-
 	void printInformation()
 	{
 		if(mpi.isMaster() == false) return ;
@@ -3362,7 +3092,16 @@ public:
 	memory::ConcurrentPool<QueuedVertexes> nq_empty_buffer_;
 	memory::ConcurrentStack<QueuedVertexes*> nq_;
 
-	BitmapType* cq_bitmap_;
+	TwodVertex* cq_list_;
+	TwodVertex cq_size_;
+	int nq_size_, max_nq_size_;
+	int64_t global_nq_size_;
+
+	void* cq_buf_;
+	void* cq_extra_buf_; // TODO: free extra buffer
+	int64_t cq_buf_size_;
+	int64_t cq_extra_buf_size_;
+
 	BitmapType* shared_visited_; // shared memory
 	BitmapType* local_visited_; // shared memory
 	uint32_t* nq_recv_buf_; // shared memory
@@ -3395,11 +3134,9 @@ public:
 	ExpandCommCommand visited_comm_;
 
 	struct {
-		ExtractEdge* long_job;
-		ExtractEdge* short_job;
-		BackwardExtractEdge* back_long_job;
-		BackwardExtractEdge* back_short_job;
-		ExtractEnd* fold_end_job;
+		TopDownSender* long_job;
+		TopDownSender* short_job;
+		TopDownSendEnd* fold_end_job;
 		int long_job_length;
 		int short_job_length;
 	} sched_;
@@ -3416,6 +3153,8 @@ public:
 	profiling::TimeSpan core_proc_time_;
 	profiling::TimeSpan commit_time_;
 	profiling::TimeSpan recv_proc_time_;
+	profiling::TimeSpan fold_competion_wait_;
+	profiling::TimeSpan gather_nq_time_;
 #endif
 #if BIT_SCAN_TABLE
 	uint8_t bit_scan_table_[BFS_PARAMS::BIT_SCAN_TABLE_SIZE];

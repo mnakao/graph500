@@ -91,6 +91,45 @@ public:
 		return ((v & local_verts_mask) << get_msb_index(mpi.size_2d)) |
 				(v >> log_local_verts());
 	}
+
+	// vertex id converter
+	int64_t VtoD(int64_t id) {
+		int lgl = lgl_;
+		int lgsize = lgr_ + lgc_;
+		int64_t rmask = (int64_t(1) << lgr_) - 1;
+		return ((id & rmask) << lgl) | (id >> lgsize);
+	}
+	int64_t VtoS(int64_t id) {
+		int lgr = lgr_;
+		int lgl = lgl_;
+		int lgsize = lgr + lgc_;
+		int64_t cmask = ((int64_t(1) << lgsize) - 1) - ((int64_t(1) << lgr) - 1);
+		return (((id & cmask) >> lgr) << lgl) | (id >> lgsize);
+	}
+	int64_t DtoV(int64_t id, int c) {
+		int lgl = lgl_;
+		int64_t cshifted = int64_t(c) << lgr_;
+		int lgsize = lgr_ + lgc_;
+		int64_t lmask = ((int64_t(1) << lgl) - 1L);
+		return ((id & lmask) << lgsize) | cshifted | (id >> lgl);
+	}
+	int64_t StoV(int64_t id, int r) {
+		int lgr = lgr_;
+		int lgl = lgl_;
+		int lgsize = lgr + lgc_;
+		int64_t lmask = ((int64_t(1) << lgl) - 1);
+		return ((id & lmask) << lgsize) | ((id >> lgl) << lgr) | int64_t(r);
+	}
+	int64_t StoD(int64_t id, int r) {
+		int64_t rshifted = int64_t(r) << lgl_;
+		int64_t lmask = ((1L << lgl_) - 1L);
+		return (id & lmask) | rshifted;
+	}
+	int64_t DtoS(int64_t id, int c) {
+		int64_t cshiftedto = int64_t(c) << lgl_;
+		int64_t lmask = ((int64_t(1) << lgl_) - 1);
+		return (id & lmask) | cshiftedto;
+	}
 /*
 	TwodVertex get_edge_list_index(int64_t v0)
 	{
@@ -176,6 +215,11 @@ public:
 
 	int max_weight_;
 	int64_t num_global_edges_;
+
+	// for id converter
+	int lgr_;
+	int lgc_;
+	int lgl_;
 };
 
 namespace detail {
