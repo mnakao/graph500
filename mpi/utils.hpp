@@ -46,8 +46,8 @@ struct MPI_GLOBALS {
 	int rank_y;
 	int rank_z;
 	int size_2d;
-	int size_2dr;
 	int size_2dc;
+	int size_2dr;
 	int size_y;
 	int size_z;
 	MPI_Comm comm_2d;
@@ -56,10 +56,12 @@ struct MPI_GLOBALS {
 	MPI_Comm comm_y;
 	MPI_Comm comm_z;
 	bool isPadding2D;
+	bool isRowMajor;
 
 	// utility method
 	bool isMaster() const { return rank == 0; }
 	bool isRmaster() const { return rank == size_-1; }
+	bool isYdimAvailable() const { return comm_y != comm_2dc; }
 };
 
 MPI_GLOBALS mpi;
@@ -280,7 +282,7 @@ void setAffinity()
 	mpi.comm_z = MPI_COMM_SELF;
 	mpi.size_y = mpi.size_2dr;
 	mpi.size_z = 1;
-	mpi.rank_y = mpi.rank_2dc;
+	mpi.rank_y = mpi.rank_2dr;
 	mpi.rank_z = 0;
 
 	const char* num_node_str = getenv("MPI_NUM_NODE");
@@ -370,7 +372,9 @@ void setAffinity()
 			return ;
 		}
 		int NUM_SOCKET = numa_max_node() + 1;
-		mpi.size_z = mpi.size_2d / num_node;
+
+		// create comm_z
+		mpi.size_z = mpi.size_ / num_node;
 		if(dist_round_robin) {
 			mpi.rank_z = mpi.rank / num_node;
 			MPI_Comm_split(mpi.comm_2d, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
@@ -384,6 +388,13 @@ void setAffinity()
 
 		// test shared memory
 		testSharedMemory();
+
+		// create comm_y
+		if(dist_round_robin == false && mpi.isRowMajor == false) {
+			mpi.rank_y = mpi.rank_2dc / mpi.size_z;
+			mpi.size_y = mpi.size_2dr / mpi.size_z;
+			MPI_Comm_split(mpi.comm_2dc, mpi.rank_z, mpi.rank_2dc / mpi.size_z, &mpi.comm_y);
+		}
 
 		if(mpi.rank == mpi.size_-1) { /* print from max rank node for easy debugging */
 		  fprintf(IMD_OUT, "NUMA node affinity is enabled.\n");
@@ -401,6 +412,9 @@ void setAffinity()
 			CPU_SET(i, &set);
 		}
 		sched_setaffinity(0, sizeof(set), &set);
+	}
+	if(mpi.isMaster()) {
+		  fprintf(IMD_OUT, "Y dimension is %s\n", mpi.isYdimAvailable() ? "Enabled" : "Disabled");
 	}
 }
 #endif
@@ -446,6 +460,7 @@ static void setup_2dcomm(bool row_major)
 	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
+	mpi.isRowMajor = row_major;
 }
 
 // assume rank = XYZ
@@ -524,7 +539,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		setup_2dcomm_on_3d();
 	}
 	else {
-		setup_2dcomm(true);
+		setup_2dcomm(false);
 	}
 
 	// enables nested
@@ -762,6 +777,7 @@ public:
 
 	int get_send_count() { return send_offsets_[comm_size_]; }
 	int get_recv_count() { return recv_offsets_[comm_size_]; }
+	int* get_recv_offsets() { return recv_offsets_; }
 
 	template <typename T>
 	T* scatter(T* send_data) {
@@ -830,7 +846,20 @@ private:
 // MPI helper
 //-------------------------------------------------------------//
 
-namespace MpiCollective {
+namespace MpiCol {
+
+template <typename T>
+int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
+	int recv_off[comm_size+1], recv_cnt[comm_size];
+	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
+	recv_off[0] = 0;
+	for(int i = 0; i < comm_size; ++i) {
+		recv_off[i+1] += recv_off[i] + recv_cnt[i];
+	}
+	MPI_Allgatherv(sendbuf, sendcount, MpiTypeOf<T>::type,
+			recvbuf, recv_cnt, recv_off, MpiTypeOf<T>::type, comm);
+	return recv_off[comm_size];
+}
 
 template <typename Mapping>
 void scatter(const Mapping mapping, int data_count, MPI_Comm comm)
@@ -1013,10 +1042,32 @@ inline size_t get_blocks(size_t size, size_t width)
 }
 
 template <typename T>
-void get_partition(T size, int num_part, int part_idx, T& start, T& end) {
+void get_partition(T size, int num_part, int part_idx, T& begin, T& end) {
 	T part_size = (size + num_part - 1) / num_part;
-	start = std::min(part_size * part_idx, size);
-	end = std::min(start + part_size, size);
+	begin = std::min(part_size * part_idx, size);
+	end = std::min(begin + part_size, size);
+}
+
+// # of partition = num_blks * parts_factor
+template <typename T>
+void get_partition(T* blk_offset, int num_blks, int parts_per_blk, int part_idx, T& begin, T& end) {
+	int blk_idx = part_idx / parts_per_blk;
+	T blk_begin = blk_offset[blk_idx];
+	T blk_size = blk_offset[blk_idx+1] - blk_begin;
+	get_partition(blk_size, parts_per_blk, part_idx - blk_idx * parts_per_blk, begin, end);
+	begin += blk_begin;
+	end += blk_begin;
+}
+
+template <typename T>
+void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value,
+		int64_t min_blk_size, int num_part, int part_idx, T*& begin, T*& end)
+{
+	T blk_size = std::max(min_blk_size, (max_value - min_value + num_part - 1) / num_part);
+	int64_t begin_value = min_value + blk_size * part_idx;
+	int64_t end_value = begin_value + blk_size;
+	begin = std::lower_bound(sorted, sorted + size, begin_value);
+	end = std::lower_bound(sorted, sorted + size, end_value);
 }
 
 //-------------------------------------------------------------//
@@ -1892,6 +1943,17 @@ struct SpinBarrier {
 		while(step == cur_step) ;
 	}
 };
+
+void copy_mt(void* dst, void* src, size_t size) {
+#pragma omp parallel
+	{
+		int num_threads = omp_get_num_threads();
+		int tid = omp_get_thread_num();
+		int64_t i_start, i_end;
+		get_partition<int64_t>(size, num_threads, tid, i_start, i_end);
+		memcpy((int8_t*)dst + i_start, (int8_t*)src + i_start, i_end - i_start);
+	}
+}
 
 } // namespace memory
 

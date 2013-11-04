@@ -14,8 +14,9 @@
 #define DETAILED_PROF_MODE 0
 
 #define BFELL 1
-#define LAZY_UPDATE 0
+#define STREAM_UPDATE 0
 #define BF_DEEPER_ASYNC 1
+#define SHARED_MEM_VISITED 1
 
 typedef uint8_t SortIdx;
 #define BFELL_SORT 256
