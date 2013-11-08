@@ -55,7 +55,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
 #if EDGES_IN_RAIL
-	BfsOnCPU<Rail48bit, int64_t>* benchmark = new BfsOnCPU<Rail48bit, int64_t>();
+	BfsOnCPU<int64_t>* benchmark = new BfsOnCPU<int64_t>();
 #else
 	BfsOnCPU<Pack48bit, int64_t>* benchmark = new BfsOnCPU<Pack48bit, int64_t>();
 //	BfsOnCPU<Pack48bit, int64_t>* benchmark = new BfsOnCPU<Pack48bit, int64_t>();

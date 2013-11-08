@@ -18,13 +18,13 @@ struct BfsOnCPU_Params {
 	};
 };
 
-template <typename IndexArray, typename LocalVertsIndex>
+template <typename TwodVertex>
 class BfsOnCPU
-	: public BfsBase<IndexArray, LocalVertsIndex, BfsOnCPU_Params>
+	: public BfsBase<TwodVertex, BfsOnCPU_Params>
 {
 public:
 	BfsOnCPU()
-	: BfsBase<IndexArray, LocalVertsIndex, BfsOnCPU_Params>(false)
+	: BfsBase<TwodVertex, BfsOnCPU_Params>(false)
 	  { }
 };
 

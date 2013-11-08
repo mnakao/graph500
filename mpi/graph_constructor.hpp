@@ -215,6 +215,7 @@ public:
 
 	int max_weight_;
 	int64_t num_global_edges_;
+	int64_t num_global_verts_;
 
 	// for id converter
 	int lgr_;
@@ -265,6 +266,8 @@ public:
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Wide CSR creation complete.\n");
 
 		constructFromWideCSR(g);
+
+		computeNumVertices(g);
 
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Graph construction complete.\n");
 	}
@@ -1181,6 +1184,32 @@ private:
 			assert(row_starts_sup_[i] == wide_row_starts_[i]);
 		}
 #endif
+	}
+
+	void computeNumVertices(GraphType& g) {
+
+		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
+		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
+		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length / NBPE);
+
+		BitmapType* recv_bitmap = (BitmapType*)cache_aligned_xmalloc(row_bitmap_length*sizeof(BitmapType));
+		int64_t num_vertices = 0;
+		MPI_Reduce(g.row_bitmap_, recv_bitmap, row_bitmap_length, MpiTypeOf<BitmapType>::type, MPI_BOR, 0, mpi.comm_2dr);
+		if(mpi.rank_2dc == 0) {
+#pragma omp parallel for reduction(+:num_vertices)
+			for(TwodVertex i = 0; i < row_bitmap_length; ++i) {
+				num_vertices += __builtin_popcount(recv_bitmap[i]);
+			}
+			MPI_Reduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2dc);
+		}
+		MPI_Bcast(&num_vertices, 1, MpiTypeOf<int64_t>::type, 0, mpi.comm_2d);
+		free(recv_bitmap); recv_bitmap = NULL;
+#if VERVOSE_MODE
+		int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_;
+		if(mpi.isMaster()) fprintf(IMD_OUT, "# of actual vertices %f G %f %%\n", to_giga(num_vertices),
+				(double)num_vertices / (double)num_virtual_vertices * 100.0);
+#endif
+		g.num_global_verts_ = num_vertices;
 	}
 
 	const int log_size_;
