@@ -256,7 +256,7 @@ const int cpu_to_proc_map[] = { 0,0,0,0, 0,2,0,2, 0,2,0,2, 2,1,2,1, 2,1,2,1, 1,1
 #endif
 
 void testSharedMemory() {
-	int* mem = shared_malloc(mpi.comm_z, sizeof(int));
+	int* mem = (int*)shared_malloc(mpi.comm_z, sizeof(int));
 	int ref_val = 0;
 	if(mpi.rank_z == 0) {
 		*mem = ref_val = mpi.rank;
@@ -982,13 +982,17 @@ double diff_percent(int64_t v, int64_t sum, int demon) {
 	double avg = sum / (double)demon;
 	return (v - avg) / avg * 100.0;
 }
+double diff_percent(double v, double sum, int demon) {
+	double avg = sum / (double)demon;
+	return (v - avg) / avg * 100.0;
+}
 const char* minimum_type(int64_t max_value) {
-	if(     max_value < (int64_t(1) <<  7)) return "int8_t";
-	else if(max_value < (int64_t(1) <<  8)) return "uint8_t";
-	else if(max_value < (int64_t(1) << 15)) return "int16_t";
-	else if(max_value < (int64_t(1) << 16)) return "uint16_t";
-	else if(max_value < (int64_t(1) << 31)) return "int32_t";
-	else if(max_value < (int64_t(1) << 32)) return "uint32_t";
+	if(     max_value <= (int64_t(1) <<  7)) return "int8_t";
+	else if(max_value <= (int64_t(1) <<  8)) return "uint8_t";
+	else if(max_value <= (int64_t(1) << 15)) return "int16_t";
+	else if(max_value <= (int64_t(1) << 16)) return "uint16_t";
+	else if(max_value <= (int64_t(1) << 31)) return "int32_t";
+	else if(max_value <= (int64_t(1) << 32)) return "uint32_t";
 	else return "int64_t";
 }
 
@@ -1060,6 +1064,25 @@ void get_partition(T* blk_offset, int num_blks, int parts_per_blk, int part_idx,
 }
 
 template <typename T>
+void get_partition(int64_t size, T* sorted, int log_blk,
+		int num_part, int part_idx, int64_t& begin, int64_t& end)
+{
+	if(size == 0) {
+		begin = end = 0;
+		return ;
+	}
+	get_partition(size, num_part, part_idx, begin, end);
+	if(begin != 0) {
+		T piv = sorted[begin] >> log_blk;
+		while(begin < size && (sorted[begin] >> log_blk) == piv) ++begin;
+	}
+	if(end != 0) {
+		T piv = sorted[end] >> log_blk;
+		while(end < size && (sorted[end] >> log_blk) == piv) ++end;
+	}
+}
+/*
+template <typename T>
 void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value,
 		int64_t min_blk_size, int num_part, int part_idx, T*& begin, T*& end)
 {
@@ -1069,7 +1092,7 @@ void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value
 	begin = std::lower_bound(sorted, sorted + size, begin_value);
 	end = std::lower_bound(sorted, sorted + size, end_value);
 }
-
+*/
 //-------------------------------------------------------------//
 // VarInt Encoding
 //-------------------------------------------------------------//
@@ -1526,7 +1549,7 @@ public:
 
 		int64_t min_data_bytes = num_bits / 8 - max_packet_size * omp_get_max_threads();
 		double overhead_factor = 1 + (double)packet_overhead / (double)packet_min_bytes;
-		return (min_data_bytes / overhead_factor) - (num_bits / 128);
+		return int64_t(min_data_bytes / overhead_factor) - (num_bits / 128);
 	}
 
 	/**
@@ -1535,20 +1558,20 @@ public:
 	 * BitmapF::BitsPerWord
 	 * BitmapF::BitmapType
 	 */
-	template <typename BitmapF, bool b64 = false>
+	template <typename BitmapF, bool b64>
 	bool bitmap_to_stream(
 			const BitmapF& bitmap, int64_t bitmap_size,
 			void* output, int64_t* data_size,
 			int64_t max_size)
 	{
-		typedef BitmapF::BitmapType BitmapType;
+		typedef typename BitmapF::BitmapType BitmapType;
 
 		out_len = max_size;
 		head = sizeof(uint32_t);
 		tail = max_size - sizeof(PacketIndex);
 		outbuf = output;
 
-		assert ((data_size % sizeof(uint32_t)) == 0);
+		assert ((max_size % sizeof(uint32_t)) == 0);
 		const int max_threads = omp_get_max_threads();
 		const int max_packet_size = calc_max_packet_size(max_size);
 		const int64_t threshold = max_size;
@@ -1624,7 +1647,7 @@ private:
 			next_head = head = head + req_size;
 			next_tail = tail = tail - sizeof(PacketIndex);
 		}
-		*pk_idx = outbuf + next_tail;
+		*pk_idx = (PacketIndex*)&outbuf[next_tail];
 		(*pk_idx)->offset = head / sizeof(uint32_t);
 		(*pk_idx)->length = 0;
 		(*pk_idx)->num_int = 0;
@@ -1668,7 +1691,7 @@ private:
 
 }; // class BitmapEncoder
 
-template <typename Callback, bool b64 = false>
+template <typename Callback, bool b64>
 void decode_stream(void* stream, int64_t data_size, Callback cb) {
 	assert (data_size >= 4);
 	uint8_t* srcbuf = (uint8_t*)stream;
@@ -2067,7 +2090,7 @@ private:
 
 		if(mpi.isMaster()) {
 			for(int i = 0; i < num_times; ++i) {
-				int64_t sum = sum_times[i], avg = sum_times[i] / mpi.size, maximum = max_times[i];
+				int64_t sum = sum_times[i], avg = sum_times[i] / mpi.size_2d, maximum = max_times[i];
 				fprintf(stderr, "%s, %d, Sum, %ld, Avg, %ld, Max, %ld\n", counters_[i].content,
 						counters_[i].number, sum, avg, maximum);
 			}
@@ -2103,6 +2126,7 @@ private:
 };
 
 class TimeSpan {
+	TimeSpan(int64_t init) : span_(init) { }
 public:
 	TimeSpan() : span_(0) { }
 	TimeSpan(TimeKeeper& keeper) : span_(keeper.getSpanAndReset()) { }
@@ -2116,11 +2140,11 @@ public:
 		__sync_fetch_and_add(&span_, - keeper.getSpanAndReset());
 		return *this;
 	}
-	TimeSpan& operator += (TimeSpan& span) {
+	TimeSpan& operator += (TimeSpan span) {
 		__sync_fetch_and_add(&span_, span.span_);
 		return *this;
 	}
-	TimeSpan& operator -= (TimeSpan& span) {
+	TimeSpan& operator -= (TimeSpan span) {
 		__sync_fetch_and_add(&span_, - span.span_);
 		return *this;
 	}
@@ -2132,6 +2156,14 @@ public:
 		__sync_fetch_and_add(&span_, - span);
 		return *this;
 	}
+
+	TimeSpan operator + (TimeSpan span) {
+		return TimeSpan(span_ + span.span_);
+	}
+	TimeSpan operator - (TimeSpan span) {
+		return TimeSpan(span_ - span.span_);
+	}
+
 	void submit(const char* content, int number) {
 		g_pis.submit(span_, content, number);
 		span_ = 0;

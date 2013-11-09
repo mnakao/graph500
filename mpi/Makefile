@@ -20,8 +20,8 @@ NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LDFLAGS = -fopenmp -g # -g -pg
 endif
 ifeq ($(SW), GNU0)
-CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
-#CFLAGS = -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
+#CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
+CFLAGS = -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
 #NVCCFLAGS = $(NVFLAG_BASE) -g -G -O0
 NVCCFLAGS = $(NVFLAG_BASE) -g -O0
 LDFLAGS = -fopenmp -g # -g -pg

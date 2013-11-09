@@ -212,7 +212,7 @@ template <typename EdgeList>
 void generate_graph_spec2010(EdgeList* edge_list, int scale, int edge_factor, int max_weight = 0)
 {
 	RmatGraphGenerator<typename EdgeList::edge_type, 5700, 1900> generator(scale, edge_factor, 255,
-			BFS_PARAMS::USERSEED1, BFS_PARAMS::USERSEED2, InitialEdgeType::NONE);
+			PRM::USERSEED1, PRM::USERSEED2, InitialEdgeType::NONE);
 	generate_graph(edge_list, &generator);
 }
 
@@ -220,7 +220,7 @@ template <typename EdgeList>
 void generate_graph_spec2012(EdgeList* edge_list, int scale, int edge_factor, int max_weight)
 {
 	RmatGraphGenerator<typename EdgeList::edge_type, 5500, 100> generator(scale, edge_factor, max_weight,
-			BFS_PARAMS::USERSEED1, BFS_PARAMS::USERSEED2, InitialEdgeType::BINARY_TREE);
+			PRM::USERSEED1, PRM::USERSEED2, InitialEdgeType::BINARY_TREE);
 	generate_graph(edge_list, &generator);
 }
 
@@ -390,7 +390,7 @@ void decode_edge(GraphType& g, int64_t e0, int64_t e1, int64_t& v0, int64_t& v1,
 template <typename GraphType>
 void find_roots(GraphType& g, int64_t* bfs_roots, int& num_bfs_roots)
 {
-	using namespace BFS_PARAMS;
+	using namespace PRM;
 	/* Find roots and max used vertex */
 	int64_t counter = 0;
 	const int64_t nglobalverts = int64_t(1) << g.log_actual_global_verts();

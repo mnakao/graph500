@@ -11,20 +11,18 @@
 #include "bfs.hpp"
 
 struct BfsOnCPU_Params {
-	typedef uint64_t BitmapType;
 	enum {
 		LOG_PACKING_EDGE_LISTS = 6, // 2^6 = 64
 		LOG_CQ_SUMMARIZING = 4, // 2^4 = 16 -> sizeof(int64_t)*32 = 128bytes
 	};
 };
 
-template <typename TwodVertex>
 class BfsOnCPU
-	: public BfsBase<TwodVertex, BfsOnCPU_Params>
+	: public BfsBase<BfsOnCPU_Params>
 {
 public:
-	BfsOnCPU()
-	: BfsBase<TwodVertex, BfsOnCPU_Params>(false)
+	BfsOnCPU(double demon_to_bottom_up__, double demon_to_top_down__)
+	: BfsBase<BfsOnCPU_Params>(demon_to_bottom_up__, demon_to_top_down__, false)
 	  { }
 };
 

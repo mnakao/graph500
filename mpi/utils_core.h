@@ -86,6 +86,10 @@ uint64_t atomicOr_(volatile uint64_t* ptr, uint64_t n);
 
 #endif
 
+#define __builtin_popcount32bit __builtin_popcount
+#define __builtin_popcount64bit __builtin_popcountl
+#define __builtin_popcount THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
+
 //-------------------------------------------------------------//
 // Memory Allocation
 //-------------------------------------------------------------//

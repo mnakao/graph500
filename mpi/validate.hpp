@@ -618,7 +618,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 #define VERTEX_OWNER_C(v) (((v) & cmask) >> log_size_r)
 
 	typedef typename EdgeList::edge_type EdgeType;
-	int num_loops = edge_list->beginRead();
+	int num_loops = edge_list->beginRead(false);
 
 	for(int loop_count = 0; loop_count < num_loops && error_counts == 0; ++loop_count) {
 		EdgeType* edge_data;

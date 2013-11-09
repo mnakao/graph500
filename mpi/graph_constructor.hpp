@@ -14,19 +14,20 @@
 // 2D partitioning
 //-------------------------------------------------------------//
 
-template <typename TwodVertex>
 class Graph2DCSR
 {
-	typedef uint64_t BitmapType;
-	enum { NBPE = sizeof(BitmapType)*8 };
+	enum {
+		LOG_NBPE = PRM::LOG_NBPE,
+		NBPE_MASK = PRM::NBPE_MASK
+	};
 public:
 	Graph2DCSR()
 	: row_bitmap_(NULL)
 	, row_sums_(NULL)
 #if BFELL
+	, blk_off(NULL)
 	, sorted_idx_(NULL)
 	, col_len_(NULL)
-	, blk_off(NULL)
 #else
 	, row_starts_(NULL)
 #endif
@@ -35,6 +36,7 @@ public:
 	, log_max_weight_(0)
 	, max_weight_(0)
 	, num_global_edges_(0)
+	, num_global_verts_(0)
 	{ }
 	~Graph2DCSR()
 	{
@@ -44,7 +46,7 @@ public:
 	void clean()
 	{
 		free(row_bitmap_); row_bitmap_ = NULL;
-		free(row_sums_); row_sums_ = NULL;NULL;
+		free(row_sums_); row_sums_ = NULL;
 		free(edge_array_); edge_array_ = NULL;
 #if BFELL
 		free(sorted_idx_); sorted_idx_ = NULL;
@@ -188,8 +190,8 @@ public:
 		const int64_t cmask = mpi.size_2dc - 1;
 		const int log_size_r = get_msb_index(mpi.size_2dr);
 		const int64_t v_src = (((v >> log_size_r) & cmask) << log_local_verts()) | (v >> get_msb_index(mpi.size_2d));
-		const int64_t word_idx = v_src / NBPE;
-		const int bit_idx = v_src % NBPE;
+		const int64_t word_idx = v_src >> LOG_NBPE;
+		const int bit_idx = v_src & NBPE_MASK;
 		return row_bitmap_[word_idx] & (BitmapType(1) << bit_idx);
 	}
 //private:
@@ -225,16 +227,25 @@ public:
 
 namespace detail {
 
-template <typename TwodVertex, typename EdgeList>
+template <typename EdgeList>
 class GraphConstructor2DCSR
 {
-	typedef uint64_t BitmapType;
 	enum {
-		EDGE_PART_SIZE = 1 << 16, // == UINT64_MAX + 1
-		NBPE = sizeof(BitmapType)*8,
+		LOG_EDGE_PART_SIZE = 16,
+		EDGE_PART_SIZE = 1 << LOG_EDGE_PART_SIZE, // == UINT64_MAX + 1
+		EDGE_PART_SIZE_MASK = EDGE_PART_SIZE - 1,
+
+		NBPE = PRM::NBPE,
+		LOG_NBPE = PRM::LOG_NBPE,
+		NBPE_MASK = PRM::NBPE_MASK,
+
+		BFELL_SORT = PRM::BFELL_SORT,
+		LOG_BFELL_SORT = PRM::LOG_BFELL_SORT,
+
+		BFELL_SORT_IN_BMP = PRM::BFELL_SORT / NBPE,
 	};
 public:
-	typedef Graph2DCSR<TwodVertex> GraphType;
+	typedef Graph2DCSR GraphType;
 	typedef typename EdgeList::edge_type EdgeType;
 
 	GraphConstructor2DCSR()
@@ -331,7 +342,7 @@ private:
 
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length / EDGE_PART_SIZE);
+		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
 
 		wide_row_starts_ = static_cast<int64_t*>
 			(cache_aligned_xmalloc((num_wide_rows+1)*sizeof(wide_row_starts_[0])));
@@ -341,28 +352,28 @@ private:
 	}
 
 	void scanEdges(TwodVertex* edges, int64_t num_edges, GraphType& g) {
-#define EDGE_PART_IDX(v) (v / EDGE_PART_SIZE + 1)
+#define EDGE_PART_IDX(v) (((v) >> LOG_EDGE_PART_SIZE) + 1)
 		int64_t i;
 #pragma omp parallel for schedule(static)
 		for(i = 0; i < (num_edges&(~3)); i += 4) {
 #if 1
-			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+0].v0())], 1);
-			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+1].v0())], 1);
-			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+2].v0())], 1);
-			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+3].v0())], 1);
+			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+0])], 1);
+			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+1])], 1);
+			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+2])], 1);
+			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+3])], 1);
 #else
 #pragma omp atomic
-			wide_row_starts_[EDGE_PART_IDX(edges[i+0].v0())] += 1;
+			wide_row_starts_[EDGE_PART_IDX(edges[i+0])] += 1;
 #pragma omp atomic
-			wide_row_starts_[EDGE_PART_IDX(edges[i+1].v0())] += 1;
+			wide_[EDGE_PART_IDX(edges[i+1])] += 1;
 #pragma omp atomic
-			wide_row_starts_[EDGE_PART_IDX(edges[i+2].v0())] += 1;
+			wide_row_starts_[EDGE_PART_IDX(edges[i+2])] += 1;
 #pragma omp atomic
-			wide_row_starts_[EDGE_PART_IDX(edges[i+3].v0())] += 1;
+			wide_row_starts_[EDGE_PART_IDX(edges[i+3])] += 1;
 #endif
 		}
 		for(i = (num_edges&(~3)); i < num_edges; ++i) {
-			wide_row_starts_[EDGE_PART_IDX(edges[i].v0())]++;
+			wide_row_starts_[EDGE_PART_IDX(edges[i])]++;
 		}
 #undef EDGE_PART_IDX
 	}
@@ -506,7 +517,7 @@ private:
 				break;
 			}
 
-			const int log_local_verts = log_local_verts_;
+		//	const int log_local_verts = log_local_verts_;
 			const int log_r = get_msb_index(mpi.size_2dr);
 			const int log_size = get_msb_index(mpi.size_2d);
 			const int64_t cmask = cmask_;
@@ -557,7 +568,7 @@ private:
 			if(mpi.isMaster()) fprintf(IMD_OUT, "Computing edge offset.\n");
 			const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 			const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-			const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length / EDGE_PART_SIZE);
+			const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
 			for(int64_t i = 1; i < num_wide_rows; ++i) {
 				wide_row_starts_[i+1] += wide_row_starts_[i];
 			}
@@ -573,9 +584,9 @@ private:
 	void constructFromWideCSR(GraphType& g) {
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length / EDGE_PART_SIZE);
-		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length / NBPE);
-		const int64_t num_edge_blocks = std::max<int64_t>(1, src_region_length / BFELL_SORT);
+		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
+		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length >> LOG_NBPE);
+		const int64_t num_edge_blocks = std::max<int64_t>(1, src_region_length >> LOG_BFELL_SORT);
 		const int64_t num_local_edges = wide_row_starts_[num_wide_rows];
 
 #if VERVOSE_MODE
@@ -595,8 +606,8 @@ private:
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Making row bitmap.\n");
 #pragma omp parallel for
 		for(int64_t i = 0; i < num_local_edges; ++i) {
-			int64_t word_idx = src_vertexes_[i] / NBPE;
-			int bit_idx = src_vertexes_[i] % NBPE;
+			int64_t word_idx = src_vertexes_[i] >> LOG_NBPE;
+			int bit_idx = src_vertexes_[i] & NBPE_MASK;
 			__sync_fetch_and_or(&g.row_bitmap_[word_idx], int64_t(1) << bit_idx);
 		}
 
@@ -624,20 +635,20 @@ private:
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Computing row_starts.\n");
 #pragma omp parallel for
 		for(int64_t part_base = 0; part_base < src_region_length; part_base += EDGE_PART_SIZE) {
-			int64_t part_idx = part_base / EDGE_PART_SIZE;
+			int64_t part_idx = part_base >> LOG_EDGE_PART_SIZE;
 			int64_t row_length[EDGE_PART_SIZE] = {0};
 			int64_t edge_offset = wide_row_starts_[part_idx];
-			for(int64_t i = wide_row_starts_[part_idx]; i < wide_row_starts_[part_idx+i]; ++i) {
-				++(row_length[src_vertexes_[i] % EDGE_PART_SIZE]);
+			for(int64_t i = wide_row_starts_[part_idx]; i < wide_row_starts_[part_idx+1]; ++i) {
+				++(row_length[src_vertexes_[i] & EDGE_PART_SIZE_MASK]);
 			}
 			int part_end = (int)std::min<int64_t>(EDGE_PART_SIZE, src_region_length - part_base);
 			for(int64_t i = 0; i < part_end; ++i) {
-				int64_t word_idx = (part_base + i) / NBPE;
-				int bit_idx = i % NBPE;
+				int64_t word_idx = (part_base + i) >> LOG_NBPE;
+				int bit_idx = i & NBPE_MASK;
 				if(g.row_bitmap_[word_idx] & (BitmapType(1) << bit_idx)) {
 					assert (row_length[i] > 0);
 					BitmapType word = g.row_bitmap_[word_idx] & ((BitmapType(1) << bit_idx) - 1);
-					TwodVertex row_offset = __builtin_popcount(word) + g.row_sums_[word_idx];
+					TwodVertex row_offset = __builtin_popcountl(word) + g.row_sums_[word_idx];
 					row_starts[row_offset] = edge_offset;
 					edge_offset += row_length[i];
 				}
@@ -653,21 +664,19 @@ private:
 		// check row_starts
 #pragma omp parallel for
 		for(int64_t part_base = 0; part_base < src_region_length; part_base += EDGE_PART_SIZE) {
-			int64_t part_idx = part_base / EDGE_PART_SIZE;
-			int64_t word_idx = part_base / NBPE;
-			const int64_t bv_offset_start = g.row_sums_[word_idx];
-			const int64_t bv_offset_end = g.row_sums_[word_idx + EDGE_PART_SIZE / NBPE];
+			int64_t part_idx = part_base >> LOG_EDGE_PART_SIZE;
+			int64_t word_idx = part_base >> LOG_NBPE;
+			int64_t nz_idx = g.row_sums_[word_idx];
+			int num_rows = g.row_sums_[word_idx + EDGE_PART_SIZE / NBPE] - nz_idx;
 
 			for(int i = 0; i < EDGE_PART_SIZE / NBPE; ++i) {
 				int64_t diff = g.row_sums_[word_idx + i + 1] - g.row_sums_[word_idx + i];
 				assert (diff == __builtin_popcountl(g.row_bitmap_[word_idx + i]));
 			}
 
-			assert (wide_row_starts_[part_idx] == g.row_starts_[word_idx]);
-
-			for(int64_t ii = bv_offset_start + 1; ii < bv_offset_end; ++ii) {
-				const int64_t off = g.row_starts_[ii];
-				assert (src_vertexes_[off] != src_vertexes_[off - 1]);
+			assert (row_starts[nz_idx] == wide_row_starts_[part_idx]);
+			for(int i = 0; i < num_rows; ++i) {
+				assert (row_starts[nz_idx + i + 1] > row_starts[nz_idx + i]);
 			}
 		}
 #endif // #ifndef NDEBUG
@@ -693,12 +702,11 @@ private:
 
 #pragma omp for reduction(+:col_len_naive,col_len_opt)
 			for(int64_t blk_base = 0; blk_base < src_region_length; blk_base += BFELL_SORT) {
-				int64_t word_idx = blk_base / NBPE;
+				int64_t word_idx = blk_base >> LOG_NBPE;
 				int64_t row_length[BFELL_SORT] = {0};
 				SortIdx row_map[BFELL_SORT];
 				int64_t non_zero_offset = g.row_sums_[word_idx];
-				int64_t blk_off = row_starts[non_zero_offset];
-				int num_rows = g.row_sums_[word_idx + BFELL_SORT / NBPE] - non_zero_offset;
+				int num_rows = g.row_sums_[word_idx + BFELL_SORT_IN_BMP] - non_zero_offset;
 				assert (num_rows < BFELL_SORT);
 
 				for(int i = 0; i < num_rows; ++i) {
@@ -712,16 +720,17 @@ private:
 				SortIdx* sorted_idx_ptr = g.sorted_idx_ + non_zero_offset;
 				for(int i = 0; i < num_rows; ++i) {
 #ifndef NDEBUG
-					assert (row_map[i] < BFELL_SORT);
+				//	assert (row_map[i] < BFELL_SORT);
 					int64_t row_idx = non_zero_offset + row_map[i];
 					assert (row_length[i] == row_starts[row_idx + 1] - row_starts[row_idx]);
 #endif
 					sorted_idx_ptr[row_map[i]] = i;
 				}
 
+				int64_t blk_off = row_starts[non_zero_offset];
 				int64_t block_length = row_starts[non_zero_offset + num_rows] - blk_off;
 				if(block_length > tmp_buffer_length) {
-					free(sort_buffer);
+					free(tmp_buffer);
 					while(block_length > tmp_buffer_length) tmp_buffer_length *= 2;
 					tmp_buffer = (TwodVertex*)cache_aligned_xmalloc(sizeof(TwodVertex)*tmp_buffer_length);
 				}
@@ -731,17 +740,18 @@ private:
 				int64_t column_idx = 0;
 				int64_t edge_offset = 0;
 				for( ; cur_num_rows > 0; --cur_num_rows) {
-					if(row_length[cur_num_rows-1] <= column_idx) continue;
-					for(int i = 0; i < cur_num_rows; ++i) {
-						g.edge_array_[blk_off + edge_offset + i] =
-								tmp_buffer[row_starts[non_zero_offset + row_map[i]] - blk_off + column_idx];
+					while(row_length[cur_num_rows-1] > column_idx) {
+						for(int i = 0; i < cur_num_rows; ++i) {
+							g.edge_array_[blk_off + edge_offset + i] =
+									tmp_buffer[row_starts[non_zero_offset + row_map[i]] - blk_off + column_idx];
+						}
+						edge_offset += cur_num_rows;
+						++column_idx;
 					}
-					edge_offset += cur_num_rows;
-					++column_idx;
 				}
 				assert (edge_offset == block_length);
 
-				int64_t blk_idx = blk_base / BFELL_SORT;
+				int64_t blk_idx = blk_base >> LOG_BFELL_SORT;
 				col_len_naive += row_length[0] + 1;
 				col_len_opt += row_length[1] + 1;
 				g.blk_off[blk_idx+1].length_start = row_length[0] + 1;
@@ -755,33 +765,35 @@ private:
 			(cache_aligned_xmalloc(col_len_naive*sizeof(SortIdx)));
 
 		g.blk_off[0].length_start = 0;
-		g.blk_off[num_edge_blocks].edge_start = wide_row_starts_[num_wide_rows];
+		g.blk_off[num_edge_blocks].edge_start = row_starts[non_zero_rows];
 		for(int64_t i = 1; i < num_edge_blocks; ++i) {
 			g.blk_off[i+1].length_start += g.blk_off[i].length_start;
+			assert (g.blk_off[i+1].edge_start >= g.blk_off[i].edge_start);
 		}
 
 #pragma omp parallel for
 		for(int64_t blk_base = 0; blk_base < src_region_length; blk_base += BFELL_SORT) {
-			int64_t word_idx = blk_base / NBPE;
+			int64_t word_idx = blk_base >> LOG_NBPE;
 			int64_t row_length[BFELL_SORT];
 			int64_t non_zero_offset = g.row_sums_[word_idx];
-			int num_rows = g.row_sums_[word_idx + BFELL_SORT / NBPE] - non_zero_offset;
+			int num_rows = g.row_sums_[word_idx + BFELL_SORT_IN_BMP] - non_zero_offset;
 
 			for(int i = 0; i < num_rows; ++i) {
 				row_length[g.sorted_idx_[non_zero_offset+i]] =
 						row_starts[non_zero_offset+i+1] - row_starts[non_zero_offset+i];
 			}
 
-			int64_t blk_idx = blk_base / BFELL_SORT;
+			int64_t blk_idx = blk_base >> LOG_BFELL_SORT;
 			int64_t col_len_off = g.blk_off[blk_idx].length_start;
 			int cur_num_rows = num_rows;
 			int64_t column_idx = 0;
 			int64_t edge_offset = 0;
 			for( ; cur_num_rows > 0; --cur_num_rows) {
-				if(row_length[cur_num_rows-1] <= column_idx) continue;
-				g.col_len_[col_len_off + column_idx] = cur_num_rows;
-				edge_offset += cur_num_rows;
-				++column_idx;
+				while(row_length[cur_num_rows-1] > column_idx) {
+					g.col_len_[col_len_off + column_idx] = cur_num_rows;
+					edge_offset += cur_num_rows;
+					++column_idx;
+				}
 			}
 			g.col_len_[col_len_off + column_idx] = 0;
 			assert (col_len_off + column_idx + 1 == g.blk_off[blk_idx + 1].length_start);
@@ -798,7 +810,6 @@ private:
 #endif // #if BFELL
 
 #if VERVOSE_MODE
-		const int64_t num_local_edges = wide_row_starts_[num_wide_rows];
 		int64_t send_rowbmp[5] = { non_zero_rows, row_bitmap_length*NBPE, num_local_edges, col_len_opt, col_len_naive };
 		int64_t max_rowbmp[5];
 		int64_t sum_rowbmp[5];
@@ -911,8 +922,8 @@ private:
 			const int64_t v1 = edges[i].v1();
 			const int weight = edges[i].weight_;
 
-			const int src_high = v0 / EDGE_PART_SIZE;
-			const uint16_t src_low = v0 % EDGE_PART_SIZE;
+			const int src_high = v0 >> LOG_EDGE_PART_SIZE;
+			const uint16_t src_low = v0 & EDGE_PART_SIZE_MASK;
 			const int64_t pos = __sync_fetch_and_add(&wide_row_starts_[src_high], 1);
 
 			// random access (write)
@@ -933,8 +944,8 @@ private:
 			const int64_t v0 = edges[i].v0();
 			const int64_t v1 = edges[i].v1();
 
-			const int src_high = v0 / EDGE_PART_SIZE;
-			const uint16_t src_low = v0 % EDGE_PART_SIZE;
+			const int src_high = v0 >> LOG_EDGE_PART_SIZE;
+			const uint16_t src_low = v0 & EDGE_PART_SIZE_MASK;
 			const int64_t pos = __sync_fetch_and_add(&wide_row_starts_[src_high], 1);
 
 			// random access (write)
@@ -953,7 +964,7 @@ private:
 
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length / EDGE_PART_SIZE);
+		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
 		g.edge_array_ = (TwodVertex*)malloc(wide_row_starts_[num_wide_rows]*sizeof(TwodVertex));
 		src_vertexes_ = (uint16_t*)malloc(wide_row_starts_[num_wide_rows]*sizeof(uint16_t));
 
@@ -1029,7 +1040,7 @@ private:
 		int64_t* restrict sort_buffer = (int64_t*)cache_aligned_xmalloc(sizeof(int64_t)*sort_buffer_length);
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length / EDGE_PART_SIZE);
+		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
 
 		const int64_t num_edge_lists = (int64_t(1) << g.log_edge_lists());
 		const int log_weight_bits = g.log_packing_edge_lists_;
@@ -1100,22 +1111,23 @@ private:
 */
 	}
 
+	struct SortEdgeCompair {
+		typedef pointer_pair_value<uint16_t, TwodVertex> Val;
+		bool operator ()(Val r1, Val r2) const {
+			uint64_t r1_v = (uint64_t(r1.v1) << 48) | r1.v2;
+			uint64_t r2_v = (uint64_t(r2.v1) << 48) | r2.v2;
+			return r1_v < r2_v;
+		}
+	};
+
 	// function #2
 	template<typename EdgeType>
 	void sortEdgesInner(GraphType& g, typename EdgeType::no_weight dummy = 0)
 	{
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length / EDGE_PART_SIZE);
+		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
 
-		struct SortCompair {
-			typedef pointer_pair_reference<uint16_t, TwodVertex> Ref;
-			bool operator ()(Ref r1, Ref r2) {
-				uint64_t r1_v = (uint64_t(r1.v1) << 48) | r1.v2;
-				uint64_t r2_v = (uint64_t(r2.v1) << 48) | r2.v2;
-				return r1_v < r2_v;
-			}
-		};
 
 #pragma omp for
 		for(int64_t i = 0; i < num_wide_rows; ++i) {
@@ -1123,18 +1135,18 @@ private:
 			const int64_t edge_count = wide_row_starts_[i+1] - edge_offset;
 
 			// sort
-			sort2(src_vertexes_ + edge_offset, g.edge_array_ + edge_offset, edge_count, SortCompair());
+			sort2(src_vertexes_ + edge_offset, g.edge_array_ + edge_offset, edge_count, SortEdgeCompair());
 
 			int64_t idx = edge_offset;
-			int64_t prev_v = -1;
-			for(int64_t c = edge_offset; c < edge_offset + edge_count; ++c) {
-				const int64_t sort_v = g.edge_array_[c];
+			uint64_t prev_v = (uint64_t(src_vertexes_[idx]) << 48) | g.edge_array_[idx]; ++idx;
+			for(int64_t c = edge_offset+1; c < edge_offset + edge_count; ++c) {
+				const uint64_t sort_v = (uint64_t(src_vertexes_[c]) << 48) | g.edge_array_[c];
 				if(prev_v != sort_v) {
 					assert (prev_v < sort_v);
-					g.edge_array_[idx] = sort_v;
+					g.edge_array_[idx] = g.edge_array_[c];
 					src_vertexes_[idx] = src_vertexes_[c];
 					prev_v = sort_v;
-					idx++;
+					++idx;
 				}
 			}
 			row_starts_sup_[i] = idx - edge_offset;
@@ -1153,7 +1165,7 @@ private:
 
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length / EDGE_PART_SIZE);
+		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
 		// this loop can't be parallel
 		int64_t rowstart_new = 0;
 		for(int64_t i = 0; i < num_wide_rows; ++i) {
@@ -1166,39 +1178,30 @@ private:
 			}
 			rowstart_new += edge_count_new;
 		}
-		const int64_t old_num_edges = g.wide_row_starts_[num_wide_rows];
-		g.wide_row_starts_[num_wide_rows] = rowstart_new;
+		const int64_t old_num_edges = wide_row_starts_[num_wide_rows];
+		wide_row_starts_[num_wide_rows] = rowstart_new;
 
 		 int64_t num_edge_sum[2] = {0};
 		 int64_t num_edge[2] = {old_num_edges, rowstart_new};
 		MPI_Reduce(num_edge, num_edge_sum, 2, MPI_INT64_T, MPI_SUM, 0, mpi.comm_2d);
-		if(mpi.isMaster()) fprintf(IMD_OUT, "# of edges is reduced. Total %zd GB -> %zd GB Diff %f %%\n",
+		if(mpi.isMaster()) fprintf(IMD_OUT, "# of edges is reduced. Total %zd -> %zd Diff %f %%\n",
 				num_edge_sum[0], num_edge_sum[1], (double)(num_edge_sum[0] - num_edge_sum[1])/(double)num_edge_sum[0]*100.0);
 		g.num_global_edges_ = num_edge_sum[1];
-
-#ifndef NDEBUG
-		for(int64_t i = 0; i <= num_wide_rows; ++i) {
-			if(row_starts_sup_[i] != wide_row_starts_[i]) {
-				fprintf(IMD_OUT, "Error: Edge Counts: i=%"PRId64",1st=%"PRId64",2nd=%"PRId64"\n", i, row_starts_sup_[i], wide_row_starts_[i]);
-			}
-			assert(row_starts_sup_[i] == wide_row_starts_[i]);
-		}
-#endif
 	}
 
 	void computeNumVertices(GraphType& g) {
 
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length / NBPE);
+		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length >> LOG_NBPE);
 
 		BitmapType* recv_bitmap = (BitmapType*)cache_aligned_xmalloc(row_bitmap_length*sizeof(BitmapType));
 		int64_t num_vertices = 0;
 		MPI_Reduce(g.row_bitmap_, recv_bitmap, row_bitmap_length, MpiTypeOf<BitmapType>::type, MPI_BOR, 0, mpi.comm_2dr);
 		if(mpi.rank_2dc == 0) {
 #pragma omp parallel for reduction(+:num_vertices)
-			for(TwodVertex i = 0; i < row_bitmap_length; ++i) {
-				num_vertices += __builtin_popcount(recv_bitmap[i]);
+			for(int64_t i = 0; i < int64_t(row_bitmap_length); ++i) {
+				num_vertices += __builtin_popcountl(recv_bitmap[i]);
 			}
 			MPI_Reduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2dc);
 		}
@@ -1225,11 +1228,11 @@ private:
 
 } // namespace detail {
 
-template <typename IndexArray, typename TwodVertex, typename EdgeList>
+template <typename EdgeList>
 void construct_graph(EdgeList* edge_list, bool sort_by_degree, bool enable_folding,
-		Graph2DCSR<IndexArray, TwodVertex>& g)
+		Graph2DCSR& g)
 {
-	detail::GraphConstructor2DCSR<IndexArray, TwodVertex, EdgeList> constructor;
+	detail::GraphConstructor2DCSR<EdgeList> constructor;
 	constructor.construct(edge_list, sort_by_degree, enable_folding, g);
 }
 

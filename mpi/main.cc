@@ -42,7 +42,7 @@
 
 void graph500_bfs(int SCALE, int edgefactor)
 {
-	using namespace BFS_PARAMS;
+	using namespace PRM;
 
 	double bfs_times[64], validate_times[64], edge_counts[64];
 	LogFileFormat log = {0};
@@ -54,13 +54,8 @@ void graph500_bfs(int SCALE, int edgefactor)
 //	EdgeListStorage<UnweightedPackedEdge, 512*1024> edge_list(
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
-#if EDGES_IN_RAIL
-	BfsOnCPU<int64_t>* benchmark = new BfsOnCPU<int64_t>();
-#else
-	BfsOnCPU<Pack48bit, int64_t>* benchmark = new BfsOnCPU<Pack48bit, int64_t>();
-//	BfsOnCPU<Pack48bit, int64_t>* benchmark = new BfsOnCPU<Pack48bit, int64_t>();
-#endif
-//	BfsOnGPU<uint32_t, false>* benchmark = new BfsOnGPU<uint32_t, false>();
+	BfsOnCPU::printInformation();
+	BfsOnCPU* benchmark = new BfsOnCPU(DEMON_TOPDOWN_TO_BOTTOMUP, DEMON_BOTTOMUP_TO_TOPDOWN);
 
 	if(mpi.isMaster()) fprintf(IMD_OUT, "Graph generation\n");
 	double generation_time = MPI_Wtime();
@@ -212,15 +207,9 @@ void test02(int SCALE, int edgefactor)
 	}
 }
 #endif
-void check_compile_time_parameters() {
-	assert(offsetof(bfs_detail::CompressedStream, d) == 4);
-}
 
 int main(int argc, char** argv)
 {
-	// check compile time parameters
-	check_compile_time_parameters();
-
 	// Parse arguments.
 	int SCALE = 16;
 	int edgefactor = 16; // nedges / nvertices, i.e., 2*avg. degree
