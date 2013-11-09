@@ -2105,6 +2105,8 @@ private:
 class TimeSpan {
 public:
 	TimeSpan() : span_(0) { }
+	TimeSpan(TimeKeeper& keeper) : span_(keeper.getSpanAndReset()) { }
+
 	void reset() { span_ = 0; }
 	TimeSpan& operator += (TimeKeeper& keeper) {
 		__sync_fetch_and_add(&span_, keeper.getSpanAndReset());
@@ -2144,12 +2146,12 @@ private:
 } // namespace profiling
 
 #if VERVOSE_MODE
-volatile int64_t g_fold_send;
-volatile int64_t g_fold_recv;
-volatile int64_t g_bitmap_send;
-volatile int64_t g_bitmap_recv;
-volatile int64_t g_exs_send;
-volatile int64_t g_exs_recv;
+volatile int64_t g_tp_comm;
+volatile int64_t g_bu_pred_comm;
+volatile int64_t g_bu_bitmap_comm;
+volatile int64_t g_bu_list_comm;
+volatile int64_t g_expand_bitmap_comm;
+volatile int64_t g_expand_list_comm;
 volatile double g_gpu_busy_time;
 #endif
 

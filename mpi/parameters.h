@@ -9,7 +9,7 @@
 #define PARAMETERS_H_
 
 // Project includes
-#define VERVOSE_MODE 1
+#define VERVOSE_MODE 0
 #define PROFILING_MODE 0
 #define DETAILED_PROF_MODE 0
 
