@@ -1704,7 +1704,7 @@ public:
 		}
 		int count_length = mpi.size_2dc;
 		int start_proc = mpi.rank_2dc;
-		int size_mask = mpi.size_2d - 1;
+		int size_mask = count_length - 1;
 		int64_t phase_count[count_length];
 		int64_t phase_recv[count_length];
 		for(int i = 0; i < count_length; ++i) {
@@ -2085,13 +2085,19 @@ public:
 					TwodVertex tgt = phase_list[i];
 					TwodVertex word_idx = tgt >> LOG_NBPE;
 					int bit_idx = tgt & NBPE_MASK;
-					BitmapType mask = (BitmapType(1) << bit_idx) - 1;
-					TwodVertex non_zero_idx = phase_row_sums[word_idx] +
-							__builtin_popcountl(phase_row_bitmap[word_idx] & mask);
-					rows[num_active_rows].orig = tgt & BFELL_SORT_MASK;
-					rows[num_active_rows].orig_i = i - blk_i_start;
-					rows[num_active_rows].sorted = sorted_idx[non_zero_idx];
-					++num_active_rows;
+					BitmapType mask = (BitmapType(1) << bit_idx);
+					BitmapType row_bitmap_i = phase_row_bitmap[word_idx];
+					if(row_bitmap_i & mask) { // I have edges for this vertex ?
+						TwodVertex non_zero_idx = phase_row_sums[word_idx] +
+								__builtin_popcountl(row_bitmap_i & (mask-1));
+						rows[num_active_rows].orig = tgt & BFELL_SORT_MASK;
+						rows[num_active_rows].orig_i = i - blk_i_start;
+						rows[num_active_rows].sorted = sorted_idx[non_zero_idx];
+						++num_active_rows;
+					}
+					else { // No, I do not have. -> pass through
+						++num_enabled;
+					}
 					vertex_enabled[i] = 1;
 				} while((phase_list[++i] >> LOG_BFELL_SORT) == blk_idx);
 				assert(i <= end);
@@ -2999,6 +3005,10 @@ void BfsBase<PARAMS>::
 		tmp = MPI_Wtime();
 		double cur_fold_time = tmp - prev_time;
 		fold_time += cur_fold_time; prev_time = tmp;
+		int64_t red_num_edges[] = { num_edge_top_down_, num_edge_bottom_up_ };
+		MPI_Reduce(mpi.rank_2d == 0 ? MPI_IN_PLACE : red_num_edges, red_num_edges, 2,
+				MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
+		num_edge_top_down_ = red_num_edges[0]; num_edge_bottom_up_ = red_num_edges[1];
 		total_edge_top_down += num_edge_top_down_;
 		total_edge_bottom_up += num_edge_bottom_up_;
 #if PROFILING_MODE
