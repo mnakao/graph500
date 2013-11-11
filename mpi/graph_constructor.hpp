@@ -60,9 +60,10 @@ public:
 	int log_actual_global_verts() const { return log_actual_global_verts_; }
 	int log_actual_local_verts() const { return log_actual_global_verts_ - get_msb_index(mpi.size_2d); }
 	int log_global_verts() const { return log_global_verts_; }
-	int log_local_verts() const { return log_global_verts_ - get_msb_index(mpi.size_2d); }
-	int log_local_src() const { return log_global_verts_ - get_msb_index(mpi.size_2dr); }
-	int log_local_tgt() const { return log_global_verts_ - get_msb_index(mpi.size_2dc); }
+	int log_local_bitmap() const { return lgl_ - LOG_NBPE; }
+	int log_local_verts() const { return lgl_; }
+	int log_local_src() const { return lgl_ + lgc_; }
+	int log_local_tgt() const { return lgl_ + lgr_; }
 
 	// Reference Functions
 	int get_vertex_rank(int64_t v)
@@ -187,16 +188,18 @@ public:
 
 	bool has_edge(int64_t v, bool has_weight = false)
 	{
-		const int64_t cmask = mpi.size_2dc - 1;
-		const int log_size_r = get_msb_index(mpi.size_2dr);
-		const int64_t v_src = (((v >> log_size_r) & cmask) << log_local_verts()) | (v >> get_msb_index(mpi.size_2d));
-		const int64_t word_idx = v_src >> LOG_NBPE;
-		const int bit_idx = v_src & NBPE_MASK;
-		return row_bitmap_[word_idx] & (BitmapType(1) << bit_idx);
+		if(get_vertex_rank(v) == mpi.rank_2d) {
+			int64_t v_local = v / mpi.size_2d;
+			int64_t word_idx = v_local >> LOG_NBPE;
+			int bit_idx = v_local & NBPE_MASK;
+			return has_edge_bitmap_[word_idx] & (BitmapType(1) << bit_idx);
+		}
+		return false;
 	}
 //private:
 	BitmapType* row_bitmap_;
 	TwodVertex* row_sums_;
+	BitmapType* has_edge_bitmap_; // for every local vertices
 
 	TwodVertex* edge_array_;
 #if BFELL
@@ -231,7 +234,8 @@ template <typename EdgeList>
 class GraphConstructor2DCSR
 {
 	enum {
-		LOG_EDGE_PART_SIZE = 16,
+	//	LOG_EDGE_PART_SIZE = 16,
+		LOG_EDGE_PART_SIZE = 14,
 		EDGE_PART_SIZE = 1 << LOG_EDGE_PART_SIZE, // == UINT64_MAX + 1
 		EDGE_PART_SIZE_MASK = EDGE_PART_SIZE - 1,
 
@@ -337,6 +341,10 @@ private:
 	{
 		g.log_actual_global_verts_ = log_max_vertex;
 		g.log_global_verts_ = std::max(log_minimum_global_verts_, log_max_vertex);
+
+		g.lgl_ = g.log_global_verts_ - get_msb_index(mpi.size_2d);
+		g.lgr_ = get_msb_index(mpi.size_2dr);
+		g.lgc_ = get_msb_index(mpi.size_2dc);
 
 		log_local_verts_ = g.log_local_verts();
 
@@ -517,11 +525,11 @@ private:
 				break;
 			}
 
-		//	const int log_local_verts = log_local_verts_;
+			const int log_local_verts = log_local_verts_;
 			const int log_r = get_msb_index(mpi.size_2dr);
 			const int log_size = get_msb_index(mpi.size_2d);
 			const int64_t cmask = cmask_;
-#define SWIZZLE_VERTEX_SRC(c) (((c) >> log_size) | ((((c) & cmask) >> log_r) << log_size))
+#define SWIZZLE_VERTEX_SRC(c) (((c) >> log_size) | ((((c) & cmask) >> log_r) << log_local_verts))
 
 #pragma omp parallel
 			{
@@ -605,10 +613,14 @@ private:
 
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Making row bitmap.\n");
 #pragma omp parallel for
-		for(int64_t i = 0; i < num_local_edges; ++i) {
-			int64_t word_idx = src_vertexes_[i] >> LOG_NBPE;
-			int bit_idx = src_vertexes_[i] & NBPE_MASK;
-			__sync_fetch_and_or(&g.row_bitmap_[word_idx], int64_t(1) << bit_idx);
+		for(int64_t part_base = 0; part_base < src_region_length; part_base += EDGE_PART_SIZE) {
+			int64_t part_idx = part_base >> LOG_EDGE_PART_SIZE;
+			int64_t bmp_off = part_base >> LOG_NBPE;
+			for(int64_t i = wide_row_starts_[part_idx]; i < wide_row_starts_[part_idx+1]; ++i) {
+				int64_t word_idx = (src_vertexes_[i] >> LOG_NBPE) + bmp_off;
+				int bit_idx = src_vertexes_[i] & NBPE_MASK;
+				g.row_bitmap_[word_idx] |= (BitmapType(1) << bit_idx);
+			}
 		}
 
 		// make row sums
@@ -865,7 +877,7 @@ private:
 		const int log_r = get_msb_index(mpi.size_2dr);
 		const int64_t rmask = rmask_;
 		const int64_t cmask = cmask_;
-#define SWIZZLE_VERTEX_SRC(c) (((c) >> log_size) | ((((c) & cmask) >> log_r) << log_size))
+#define SWIZZLE_VERTEX_SRC(c) (((c) >> log_size) | ((((c) & cmask) >> log_r) << log_local_verts))
 #define SWIZZLE_VERTEX_DST(c) (((c) >> log_size) | (((c) & rmask) << log_local_verts))
 #pragma omp for schedule(static)
 		for(int i = 0; i < edge_data_length; ++i) {
@@ -894,7 +906,7 @@ private:
 		const int64_t rmask = rmask_;
 		const int64_t cmask = cmask_;
 
-#define SWIZZLE_VERTEX_SRC(c) (((c) >> log_size) | ((((c) & cmask) >> log_r) << log_size))
+#define SWIZZLE_VERTEX_SRC(c) (((c) >> log_size) | ((((c) & cmask) >> log_r) << log_local_verts))
 #define SWIZZLE_VERTEX_DST(c) (((c) >> log_size) | (((c) & rmask) << log_local_verts))
 #pragma omp for schedule(static)
 		for(int i = 0; i < edge_data_length; ++i) {
@@ -1191,22 +1203,18 @@ private:
 
 	void computeNumVertices(GraphType& g) {
 
-		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
-		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length >> LOG_NBPE);
+		const int local_bitmap_width = (int64_t(1) << g.log_local_bitmap());
+		int recvcounts[mpi.size_2dc];
+		for(int i = 0; i < mpi.size_2dc; ++i) recvcounts[i] = local_bitmap_width;
 
-		BitmapType* recv_bitmap = (BitmapType*)cache_aligned_xmalloc(row_bitmap_length*sizeof(BitmapType));
+		g.has_edge_bitmap_ = (BitmapType*)cache_aligned_xmalloc(local_bitmap_width*sizeof(BitmapType));
+		MPI_Reduce_scatter(g.row_bitmap_, g.has_edge_bitmap_, recvcounts, MpiTypeOf<BitmapType>::type, MPI_BOR, mpi.comm_2dr);
 		int64_t num_vertices = 0;
-		MPI_Reduce(g.row_bitmap_, recv_bitmap, row_bitmap_length, MpiTypeOf<BitmapType>::type, MPI_BOR, 0, mpi.comm_2dr);
-		if(mpi.rank_2dc == 0) {
 #pragma omp parallel for reduction(+:num_vertices)
-			for(int64_t i = 0; i < int64_t(row_bitmap_length); ++i) {
-				num_vertices += __builtin_popcountl(recv_bitmap[i]);
-			}
-			MPI_Reduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2dc);
+		for(int i = 0; i < local_bitmap_width; ++i) {
+			num_vertices += __builtin_popcountl(g.has_edge_bitmap_[i]);
 		}
-		MPI_Bcast(&num_vertices, 1, MpiTypeOf<int64_t>::type, 0, mpi.comm_2d);
-		free(recv_bitmap); recv_bitmap = NULL;
+		MPI_Allreduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
 #if VERVOSE_MODE
 		int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_;
 		if(mpi.isMaster()) fprintf(IMD_OUT, "# of actual vertices %f G %f %%\n", to_giga(num_vertices),

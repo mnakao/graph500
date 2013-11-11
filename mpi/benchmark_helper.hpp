@@ -412,10 +412,7 @@ void find_roots(GraphType& g, int64_t* bfs_roots, int& num_bfs_roots)
 				}
 			}
 			if (is_duplicate) continue; /* Everyone takes the same path here */
-			int root_ok = 0;
-			if (g.get_vertex_rank_c(root) == mpi.rank_2dc) {
-				root_ok = (int)g.has_edge(root);
-			}
+			int root_ok = (int)g.has_edge(root);
 			MPI_Allreduce(MPI_IN_PLACE, &root_ok, 1, MPI_INT, MPI_LOR, mpi.comm_2d);
 			if (root_ok) break;
 		}

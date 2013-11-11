@@ -428,7 +428,7 @@ static void setup_2dcomm(bool row_major)
 	const int log_size = get_msb_index(mpi.size_);
 
 	const char* twod_r_str = getenv("TWOD_R");
-	int log_size_r = log_size / 2;
+	int log_size_r = log_size - log_size / 2;
 	if(twod_r_str){
 		int twod_r = atoi((char*)twod_r_str);
 		if(twod_r == 0 || /* Check for power of 2 */ (twod_r & (twod_r - 1)) != 0) {
@@ -451,8 +451,8 @@ static void setup_2dcomm(bool row_major)
 	}
 	else {
 		// column major
-		mpi.rank_2dr = mpi.rank / mpi.size_2dr;
-		mpi.rank_2dc = mpi.rank % mpi.size_2dr;
+		mpi.rank_2dc = mpi.rank / mpi.size_2dr;
+		mpi.rank_2dr = mpi.rank % mpi.size_2dr;
 	}
 
 	mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
@@ -854,7 +854,7 @@ int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_si
 	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
 	recv_off[0] = 0;
 	for(int i = 0; i < comm_size; ++i) {
-		recv_off[i+1] += recv_off[i] + recv_cnt[i];
+		recv_off[i+1] = recv_off[i] + recv_cnt[i];
 	}
 	MPI_Allgatherv(sendbuf, sendcount, MpiTypeOf<T>::type,
 			recvbuf, recv_cnt, recv_off, MpiTypeOf<T>::type, comm);
@@ -1597,7 +1597,7 @@ public:
 			for(int64_t i = i_start; i < i_end; ++i) {
 				BitmapType bmp_val = bitmap(i);
 				while(bmp_val != BitmapType(0)) {
-					uint32_t bit_idx = __builtin_ctz(bmp_val);
+					uint32_t bit_idx = __builtin_ctzl(bmp_val);
 					int64_t new_val = BitmapF::BitsPerWord * i + bit_idx;
 					int64_t diff = new_val - prev_val;
 

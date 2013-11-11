@@ -102,8 +102,8 @@ void graph500_bfs(int SCALE, int edgefactor)
                MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
         }
 /////////////////////
-	for(int i = root_start; i < num_bfs_roots; ++i) {
-//	for(int i = 4; i < num_bfs_roots; ++i) {
+//	for(int i = root_start; i < num_bfs_roots; ++i) {
+	for(int i = 0; i < num_bfs_roots; ++i) {
 
 		if(mpi.isMaster())  fprintf(IMD_OUT, "========== Running BFS %d ==========\n", i);
 #if SWITCH_FUJI_PROF
