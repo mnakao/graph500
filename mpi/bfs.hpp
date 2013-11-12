@@ -305,7 +305,7 @@ private:
 		std::deque<InternalCommand> command_queue_;
 
 		// accessed by comm thread only
-		int total_send_queue_;
+		volatile int total_send_queue_;
 	} *d_;
 
 	enum MPI_REQ_INDEX {
@@ -1103,7 +1103,7 @@ public:
 		} // implicit barrier
 		if(with_z) s_.sync->barrier();
 
-		return th_offset[max_threads];
+		return result_size;
 	}
 
 	void top_down_expand_nq_list(TwodVertex* nq, int nq_size, MPI_Comm comm, int comm_size) {
@@ -1112,7 +1112,7 @@ public:
 		MPI_Allgather(&nq_size, 1, MPI_INT, recv_size, 1, MPI_INT, comm);
 		recv_off[0] = 0;
 		for(int i = 0; i < comm_size; ++i) {
-			recv_off[i+1] = recv_off[i] + recv_size[0];
+			recv_off[i+1] = recv_off[i] + recv_size[i];
 		}
 		cq_size_ = recv_off[comm_size];
 		TwodVertex* recv_buf = (TwodVertex*)((int64_t(cq_size_)*int64_t(sizeof(TwodVertex)) > work_buf_size_) ?
@@ -1281,7 +1281,6 @@ public:
 //			} // implicit barrier
 		}
 		else {
-			const int max_threads = omp_get_max_threads();
 			int size_z = with_z ? mpi.size_z : 1;
 			int rank_z = with_z ? mpi.rank_z : 0;
 			TwodVertex* new_vis_p[2]; get_visited_pointers(new_vis_p, 2, new_visited_);
@@ -1300,9 +1299,9 @@ public:
 					part_offset[i+1] += part_offset[i];
 				}
 				assert (part_offset[num_parts] <= int(bitmap_width*sizeof(BitmapType)/sizeof(TwodVertex)*2));
-				node_nq_size = part_offset[num_parts];
 			}
 			if(with_z) s_.sync->barrier();
+			node_nq_size = part_offset[num_parts];
 
 			bool mt = int(node_nq_size*sizeof(TwodVertex)) > 16*1024*mpi.size_z;
 #ifndef NDEBUG
@@ -1312,6 +1311,7 @@ public:
 #pragma omp parallel if(mt)
 #endif
 			for(int i = 0; i < 2; ++i) {
+				int max_threads = omp_get_num_threads(); // Place here because this region may be executed seuqntial.
 				int tid = omp_get_thread_num();
 				TwodVertex shifted_rc_plus = shifted_rc | (TwodVertex(i) << (graph_.lgl_ - 1));
 				TwodVertex* dst = outbuf + part_offset[rank_z*2+i];
@@ -1364,7 +1364,7 @@ public:
 
 #pragma omp parallel if(recv_nq_size > 1024*16)
 		{
-			const int max_threads = omp_get_num_threads();
+			const int max_threads = omp_get_num_threads(); // Place here because this region may be executed sequential.
 			const int node_threads = max_threads * mpi.size_z;
 			int tid = omp_get_thread_num() + max_threads * mpi.rank_z;
 			int64_t begin, end;
@@ -1514,7 +1514,8 @@ public:
 				BitmapType row_bitmap_i = graph_.row_bitmap_[word_idx];
 				BitmapType mask = BitmapType(1) << bit_idx;
 				if(row_bitmap_i & mask) {
-					uint32_t pred[2] = { (-(int64_t)src) >> 32, uint32_t(-(int64_t)src) };
+					int64_t src_enc = -((int64_t)src + 1);
+					uint32_t pred[2] = { src_enc >> 32, uint32_t(src_enc) };
 					BitmapType low_mask = (BitmapType(1) << bit_idx) - 1;
 					TwodVertex blk_idx = src >> LOG_BFELL_SORT;
 					TwodVertex non_zero_off = graph_.row_sums_[word_idx] +
@@ -1600,7 +1601,7 @@ public:
 		int max_threads = omp_get_max_threads();
 		nq_size_ = nq_.stack_.size() * QueuedVertexes::SIZE;
 		for(int tid = 0; tid < max_threads; ++tid) {
-			ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
+			ThreadLocalBuffer* tlb = thread_local_buffer_[tid];
 			QueuedVertexes* buf = tlb->cur_buffer;
 			if(buf != NULL) {
 				nq_size_ += buf->length;
@@ -1650,7 +1651,7 @@ public:
 			for(int i = 0; i < length; ) {
 				uint32_t v = stream[i];
 				if(int32_t(v) < 0) {
-					int64_t src = -((int64_t(v) << 32) | stream[i+1]);
+					int64_t src = -((int64_t(v) << 32) | stream[i+1]) - 1;
 					pred_v = ((src & lmask) << lgsize) | ((src >> lgl) << lgr) | int64_t(r) |
 							(int64_t(cur_level) << 48);
 					i += 2;
@@ -2316,7 +2317,6 @@ public:
 			send_count = 0;
 			recv_count = 0;
 #endif
-			this_->comm_.register_handler(this);
 		}
 #ifndef NDEBUG
 		~BottomUpComm() {
@@ -2363,7 +2363,7 @@ public:
 						finished = true;
 						this_->comm_.remove_handler(this);
 #if VERVOSE_MODE
-						fprintf(IMD_OUT, "bottom-up communication thread finished.\n");
+						fprintf(IMD_OUT, "[rank:%d] bottom-up communication thread finished.\n", mpi.rank_2d);
 #endif
 					}
 				}
@@ -2507,7 +2507,7 @@ public:
 		int comm_size = mpi.size_2dc;
 
 		int total_phase = comm_size*2;
-		BottomUpBitmapComm comm(this, mpi_comm, bitmap_buffer);
+		BottomUpBitmapComm comm(this, mpi_comm, bitmap_buffer); comm_.register_handler(&comm);
 		int visited_count[comm_size];
 		for(int i = 0; i < comm_size; ++i) visited_count[i] = 0;
 
@@ -2547,14 +2547,16 @@ public:
 		TwodVertex* list_buffer[NBUF]; get_visited_pointers(list_buffer, NBUF, work_buf_);
 		int list_size[NBUF] = {0};
 		TwodVertex* old_vis[2]; get_visited_pointers(old_vis, 2, old_visited_);
+		// TODO: reduce memory allocation
 		int8_t* vertex_enabled = (int8_t*)cache_aligned_xcalloc(buffer_size*sizeof(int8_t));
 		MPI_Comm mpi_comm = mpi.comm_2dr;
 		int comm_size = mpi.size_2dc;
 
 		int total_phase = comm_size*2;
-		BottomUpListComm comm(this, mpi_comm, list_buffer, list_size);
+		BottomUpListComm comm(this, mpi_comm, list_buffer, list_size); comm_.register_handler(&comm);
 		int visited_count[comm_size];
 		for(int i = 0; i < comm_size; ++i) visited_count[i] = 0;
+		TwodVertex sentinel_value = half_bitmap_width * NBPE;
 #if VERVOSE_MODE
 		int64_t num_blocks = 0;
 		int64_t num_vertexes = 0;
@@ -2568,6 +2570,9 @@ public:
 			int phase_size = (phase < 2) ? old_visited_list_size_[phase] : list_size[read_buf_idx & BUFMASK];
 			TwodVertex* write_list = list_buffer[write_buf_idx & BUFMASK];
 			TwodVertex phase_bmp_off = bmp_blk_idx * half_bitmap_width;
+			// write sentinel value to the last
+			assert (phase_size < buffer_size - 1);
+			phase_list[phase_size] = sentinel_value;
 			int new_visited_cnt = bottom_up_search_list_process_step(
 #if VERVOSE_MODE
 					num_blocks,

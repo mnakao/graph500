@@ -23,7 +23,7 @@
 #define FAKE_VERTEX_SORTING 0 // benchmark: 0
 #define FAKE_VISITED_SHARING 0 // benchmark: 0
 
-#define PRE_EXEC_TIME 0 // 300 seconds
+#define PRE_EXEC_TIME 120 // 300 seconds
 
 #define BFS_BACKWARD 1
 #define VLQ_COMPRESSION 0

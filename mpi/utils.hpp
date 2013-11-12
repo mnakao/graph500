@@ -159,7 +159,7 @@ void* page_aligned_xmalloc(const size_t size)
 void* shared_malloc(MPI_Comm comm, size_t nbytes) {
 	int rank; MPI_Comm_rank(comm, &rank);
 	key_t shm_key;
-	int shmid;
+	int shmid = -1;
 	void* addr = NULL;
 
 	if(rank == 0) {

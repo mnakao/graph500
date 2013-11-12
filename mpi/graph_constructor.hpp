@@ -234,8 +234,8 @@ template <typename EdgeList>
 class GraphConstructor2DCSR
 {
 	enum {
-	//	LOG_EDGE_PART_SIZE = 16,
-		LOG_EDGE_PART_SIZE = 14,
+		LOG_EDGE_PART_SIZE = 16,
+	//	LOG_EDGE_PART_SIZE = 14,
 		EDGE_PART_SIZE = 1 << LOG_EDGE_PART_SIZE, // == UINT64_MAX + 1
 		EDGE_PART_SIZE_MASK = EDGE_PART_SIZE - 1,
 
