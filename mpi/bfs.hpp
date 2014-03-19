@@ -656,7 +656,7 @@ public:
 		int length;
 		int64_t src;
 		union {
-			uint32_t t[TOP_DOWN_LENGTH];
+			uint32_t* t[TOP_DOWN_LENGTH];
 			TwodVertex b[BOTTOM_UP_LENGTH];
 		} data;
 	};
@@ -1030,6 +1030,7 @@ public:
 		if(mpi.rank_z == 0) {
 			BitmapType* const bitmap = (BitmapType*)new_visited_;
 			BitmapType* recv_buffer = shared_visited_;
+			// TODO: asymmetric size for z. (MPI_Allgather -> MPI_Allgatherv or MpiCol::allgatherv ?)
 			int shared_bitmap_width = bitmap_width * mpi.size_z;
 			MPI_Allgather(bitmap, shared_bitmap_width, get_mpi_type(bitmap[0]),
 					recv_buffer, shared_bitmap_width, get_mpi_type(bitmap[0]), mpi.comm_y);
@@ -2363,7 +2364,7 @@ public:
 						finished = true;
 						this_->comm_.remove_handler(this);
 #if VERVOSE_MODE
-						fprintf(IMD_OUT, "[rank:%d] bottom-up communication thread finished.\n", mpi.rank_2d);
+				//		fprintf(IMD_OUT, "[rank:%d] bottom-up communication thread finished.\n", mpi.rank_2d);
 #endif
 					}
 				}
@@ -2784,7 +2785,7 @@ public:
 			delete this;
 		}
 		ThisType* const this_;
-		BFSCommBufferImpl<uint32_t>* data_;
+		BFSCommBufferImpl<TwodVertex>* data_;
 	};
 
 	static void printInformation()

@@ -373,27 +373,35 @@ void setAffinity()
 		}
 		int NUM_SOCKET = numa_max_node() + 1;
 
+		// Affinity
+		int numa_node_size = mpi.size_ / num_node;
+		int numa_node_rank = dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node);
+		numa_run_on_node(numa_node_rank % NUM_SOCKET);
+		numa_set_preferred(numa_node_rank % NUM_SOCKET);
+
+#if SHARED_MEM_VISITED
+		mpi.size_z = numa_node_size;
+		mpi.rank_z = numa_node_rank;
+#endif
+
 		// create comm_z
-		mpi.size_z = mpi.size_ / num_node;
-		if(dist_round_robin) {
-			mpi.rank_z = mpi.rank / num_node;
-			MPI_Comm_split(mpi.comm_2d, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
-		}
-		else {
-			mpi.rank_z = mpi.rank % max_procs_per_node;
-			MPI_Comm_split(mpi.comm_2d, mpi.rank / max_procs_per_node, mpi.rank_z, &mpi.comm_z);
-		}
-		numa_run_on_node(mpi.rank_z % NUM_SOCKET);
-		numa_set_preferred(mpi.rank_z % NUM_SOCKET);
+		if(mpi.size_z > 1) {
+			if(dist_round_robin) {
+				MPI_Comm_split(mpi.comm_2d, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
+			}
+			else {
+				MPI_Comm_split(mpi.comm_2d, mpi.rank / max_procs_per_node, mpi.rank_z, &mpi.comm_z);
+			}
 
-		// test shared memory
-		testSharedMemory();
+			// test shared memory
+			testSharedMemory();
 
-		// create comm_y
-		if(dist_round_robin == false && mpi.isRowMajor == false) {
-			mpi.rank_y = mpi.rank_2dc / mpi.size_z;
-			mpi.size_y = mpi.size_2dr / mpi.size_z;
-			MPI_Comm_split(mpi.comm_2dc, mpi.rank_z, mpi.rank_2dc / mpi.size_z, &mpi.comm_y);
+			// create comm_y
+			if(dist_round_robin == false && mpi.isRowMajor == false) {
+				mpi.rank_y = mpi.rank_2dc / mpi.size_z;
+				mpi.size_y = mpi.size_2dr / mpi.size_z;
+				MPI_Comm_split(mpi.comm_2dc, mpi.rank_z, mpi.rank_2dc / mpi.size_z, &mpi.comm_y);
+			}
 		}
 
 		if(mpi.rank == mpi.size_-1) { /* print from max rank node for easy debugging */

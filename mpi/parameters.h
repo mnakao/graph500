@@ -20,10 +20,7 @@
 
 #define SHARED_VISITED_OPT 1
 
-#define FAKE_VERTEX_SORTING 0 // benchmark: 0
-#define FAKE_VISITED_SHARING 0 // benchmark: 0
-
-#define PRE_EXEC_TIME 120 // 300 seconds
+#define PRE_EXEC_TIME 1 // 300 seconds
 
 #define BFS_BACKWARD 1
 #define VLQ_COMPRESSION 0
@@ -45,7 +42,7 @@
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 2
+#define VALIDATION_LEVEL 1
 
 #define CUDA_ENABLED 0
 #define CUDA_COMPUTE_EXCLUSIVE_THREAD_MODE 1
@@ -100,7 +97,7 @@ namespace PRM { //
 enum {
 	USERSEED1 = 2,
 	USERSEED2 = 3,
-	NUM_BFS_ROOTS = 64, // spec: 64
+	NUM_BFS_ROOTS = 16, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,
