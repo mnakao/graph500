@@ -267,6 +267,9 @@ public:
 
 	void construct(EdgeList* edge_list, int log_minimum_global_verts, bool sort_by_degree, GraphType& g)
 	{
+#if VTRACE
+		VT_TRACER("construction");
+#endif
 		log_minimum_global_verts_ = log_minimum_global_verts;
 		g.log_actual_global_verts_ = 0;
 
@@ -476,6 +479,9 @@ private:
 	}
 
 	void scatterAndScanEdges(EdgeList* edge_list, bool sort_by_degree, GraphType& g) {
+#if VTRACE
+		VT_TRACER("scan_edge");
+#endif
 		ScatterContext scatter(mpi.comm_2d);
 		TwodVertex* edges_to_send = static_cast<TwodVertex*>(
 				xMPI_Alloc_mem(2 * EdgeList::CHUNK_SIZE * sizeof(TwodVertex)));
@@ -590,6 +596,9 @@ private:
 	}
 
 	void constructFromWideCSR(GraphType& g) {
+#if VTRACE
+		VT_TRACER("form_csr");
+#endif
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
 		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
@@ -970,6 +979,9 @@ private:
 	}
 
 	void scatterAndStore(EdgeList* edge_list, bool sort_by_degree, GraphType& g) {
+#if VTRACE
+		VT_TRACER("store_edge");
+#endif
 		ScatterContext scatter(mpi.comm_2d);
 		EdgeType* edges_to_send = static_cast<EdgeType*>(
 				xMPI_Alloc_mem(2 * EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
@@ -1169,7 +1181,9 @@ private:
 	}
 
 	void sortEdges(GraphType& g) {
-
+#if VTRACE
+		VT_TRACER("sort_edge");
+#endif
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Sorting edges.\n");
 
 #pragma omp parallel
@@ -1202,7 +1216,9 @@ private:
 	}
 
 	void computeNumVertices(GraphType& g) {
-
+#if VTRACE
+		VT_TRACER("num_verts");
+#endif
 		const int local_bitmap_width = (int64_t(1) << g.log_local_bitmap());
 		int recvcounts[mpi.size_2dc];
 		for(int i = 0; i < mpi.size_2dc; ++i) recvcounts[i] = local_bitmap_width;

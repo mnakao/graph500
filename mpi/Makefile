@@ -1,4 +1,5 @@
 SW = GNU3
+VAMP = true
 
 # default values
 MPICC = mpicc
@@ -37,26 +38,6 @@ CFLAGS = -ipo -no-prec-div -openmp -g3 -Drestrict=__restrict__ -O0
 NVCCFLAGS = $(NVFLAG_BASE) -g -G -O0
 LDFLAGS = -openmp -g 
 endif
-ifeq ($(SW), FXGNU3)
-MPICC = gcc
-MPICPP = g++
-CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -DNNUMA -ffast-math # -g -pg
-NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
-LDFLAGS = -fopenmp -g # -g -pg
-INC := $(INC) -I/opt/FJSVfxlang/GM-1.2.0-02/include/mpi/fujitsu
-LIBS = -L/opt/FJSVfxlang/GM-1.2.0-02/lib64 -lm -lmpi -lmpi_cxx #-ltrt -ltrtmetcpp -ltrtmet_c
-endif
-ifeq ($(SW), FXGNU0)
-MPICC = gcc
-MPICPP = g++
-CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -DNNUMA -ffast-math
-#CFLAGS = -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
-#NVCCFLAGS = $(NVFLAG_BASE) -g -G -O0
-NVCCFLAGS = $(NVFLAG_BASE) -g -O0
-LDFLAGS = -fopenmp -g # -g -pg
-INC := $(INC) -I/opt/FJSVfxlang/GM-1.2.0-02/include/mpi/fujitsu
-LIBS = -L/opt/FJSVfxlang/GM-1.2.0-02/lib64 -lm -lmpi -lmpi_cxx #-ltrt -ltrtmetcpp -ltrtmet_c
-endif
 ifeq ($(SW), FUJI3)
 ifeq ($(PJM_JOBNAME), STDIN)
 MPICC = mpifcc
@@ -85,15 +66,23 @@ OBJS := $(OBJS) gnu_func.o
 LIBS = -lm
 endif
 
+ifeq ($(VAMP), true)
+CC = vtcc -vt:cc $(MPICC) -vt:inst manual -vt:hyb -DVTRACE
+CPP = vtcc -vt:cc $(MPICPP) -vt:inst manual -vt:hyb -DVTRACE
+else
+CC = $(MPICC)
+CPP = $(MPICPP)
+endif
+
 CPPFLAGS = $(CFLAGS)
 
 all: cpu
 
 cpu: $(OBJS)
-	$(MPICPP) $(LDFLAGS) -o runnable $(OBJS) $(LIBS)
+	$(CPP) $(LDFLAGS) -o runnable $(OBJS) $(LIBS)
 	
 gpu: $(OBJS) $(CUOBJ)
-	$(MPICPP) $(LDFLAGS) -o runnable $(OBJS) $(CUOBJ) $(LIBS) $(CUDALIB)
+	$(CPP) $(LDFLAGS) -o runnable $(OBJS) $(CUOBJ) $(LIBS) $(CUDALIB)
 	
 gnu_func.o: gnu_func.cc
 	cp ../../$*.o_ $*.o
@@ -102,13 +91,13 @@ gnu_func.o: gnu_func.cc
 .SUFFIXES: .o .c .cpp .cc .cu
 
 .c.o:
-	$(MPICC) $(INC) -c $(CFLAGS) $< -o $*.o
+	$(CC) $(INC) -c $(CFLAGS) $< -o $*.o
 	
 .cpp.o:
-	$(MPICPP) $(INC) -c $(CPPFLAGS) $< -o $*.o
+	$(CPP) $(INC) -c $(CPPFLAGS) $< -o $*.o
 	
 .cc.o:
-	$(MPICPP) $(INC) -c $(CPPFLAGS) $< -o $*.o
+	$(CPP) $(INC) -c $(CPPFLAGS) $< -o $*.o
 	
 .cu.o:
 	$(NVCC) -c $(NVCCFLAGS) $< -o $*.o

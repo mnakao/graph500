@@ -34,6 +34,9 @@
 #if CUDA_ENABLED
 #include "gpu_host.hpp"
 #endif
+#if VTRACE
+#include "vt_user.h"
+#endif
 
 struct MPI_GLOBALS {
 	int rank;
@@ -452,6 +455,8 @@ static void setup_2dcomm(bool row_major)
 	mpi.size_2dr = (1 << log_size_r);
 	mpi.size_2dc = (1 << log_size_c);
 
+	if(mpi.isMaster()) fprintf(IMD_OUT, "Dimension: (%dx%d)\n", mpi.size_2dr, mpi.size_2dc);
+
 	if(row_major) {
 		// row major
 		mpi.rank_2dr = mpi.rank / mpi.size_2dc;
@@ -524,11 +529,25 @@ void cleanup_2dcomm()
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 {
-	{
-		int prov;
-		MPI_Init_thread(&argc, &argv, MPI_THREAD_SERIALIZED, &prov);
-		MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
-		MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
+	int prov;
+	MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &prov);
+	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
+
+	const char* prov_str = "unknown";
+	switch(prov) {
+	case MPI_THREAD_SINGLE:
+		prov_str = "MPI_THREAD_SINGLE";
+		break;
+	case MPI_THREAD_FUNNELED:
+		prov_str = "MPI_THREAD_FUNNELED";
+		break;
+	case MPI_THREAD_SERIALIZED:
+		prov_str = "MPI_THREAD_SERIALIZED";
+		break;
+	case MPI_THREAD_MULTIPLE:
+		prov_str = "MPI_THREAD_MULTIPLE";
+		break;
 	}
 
 	if(mpi.isMaster()) {
@@ -540,6 +559,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 #endif
 		);
 		fprintf(IMD_OUT, "Running Binary: %s\n", argv[0]);
+		fprintf(IMD_OUT, "Provided MPI thread mode: %s (Requested level: MPI_THREAD_FUNNELED)\n", prov_str);
 		fprintf(IMD_OUT, "Pre running time will be %d seconds\n", PRE_EXEC_TIME);
 	}
 
@@ -858,6 +878,9 @@ namespace MpiCol {
 
 template <typename T>
 int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
+#if VTRACE
+	VT_TRACER("MpiCol::allgatherv");
+#endif
 	int recv_off[comm_size+1], recv_cnt[comm_size];
 	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
 	recv_off[0] = 0;

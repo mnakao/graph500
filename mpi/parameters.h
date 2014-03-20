@@ -12,6 +12,7 @@
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define DETAILED_PROF_MODE 0
+#define REPORT_GEN_RPGRESS 1
 
 #define BFELL 1
 #define STREAM_UPDATE 1
@@ -79,6 +80,13 @@
 
 #endif // #ifdef __FUJITSU
 
+#if VTRACE
+
+#undef REPORT_GEN_RPGRESS
+#define REPORT_GEN_RPGRESS 0
+
+#endif // #if VTRACE
+
 #define CACHE_LINE 128
 #define PAGE_SIZE 4096
 
@@ -97,7 +105,7 @@ namespace PRM { //
 enum {
 	USERSEED1 = 2,
 	USERSEED2 = 3,
-	NUM_BFS_ROOTS = 16, // spec: 64
+	NUM_BFS_ROOTS = 32, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,

@@ -149,6 +149,9 @@ private:
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
 {
+#if VTRACE
+	VT_TRACER("generation");
+#endif
 	typedef typename EdgeList::edge_type EdgeType;
 	EdgeType* edge_buffer = static_cast<EdgeType*>
 						(cache_aligned_xmalloc(EdgeList::CHUNK_SIZE*sizeof(EdgeType)));
@@ -157,7 +160,9 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 	const int64_t num_global_chunks = (num_global_edges + EdgeList::CHUNK_SIZE - 1) / EdgeList::CHUNK_SIZE;
 	const int64_t num_iterations = (num_global_chunks + mpi.size_2d - 1) / mpi.size_2d;
 	double logging_time = MPI_Wtime();
-//	ProgressReport* report = new ProgressReport(num_iterations);
+#if REPORT_GEN_RPGRESS
+	ProgressReport* report = new ProgressReport(num_iterations);
+#endif
 	if(mpi.isMaster()) {
 		double global_data_size = (double)num_global_edges * 16.0 / 1000000000.0;
 		double local_data_size = global_data_size / mpi.size_2d;
@@ -169,7 +174,9 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 		fprintf(IMD_OUT, "Communication chunk size: %d\n", EdgeList::CHUNK_SIZE);
 		fprintf(IMD_OUT, "Generating graph: Total number of iterations: %"PRId64"\n", num_iterations);
 	}
-//	report->begin_progress();
+#if REPORT_GEN_RPGRESS
+	report->begin_progress();
+#endif
 #pragma omp parallel
 	for(int64_t i = 0; i < num_iterations; ++i) {
 		const int64_t start_edge = std::min((mpi.size_2d*i + mpi.rank) * EdgeList::CHUNK_SIZE, num_global_edges);
@@ -195,15 +202,18 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 				fprintf(IMD_OUT, "Time for iteration %"PRId64" is %f \n", i, MPI_Wtime() - logging_time);
 				logging_time = MPI_Wtime();
 			}
-
-//			report->advace();
+#if REPORT_GEN_RPGRESS
+			report->advace();
+#endif
 		}
 #pragma omp barrier
 
 	}
-//	report->end_progress();
 	edge_list->endWrite();
-//	delete report; report = NULL;
+#if REPORT_GEN_RPGRESS
+	report->end_progress();
+	delete report; report = NULL;
+#endif
 	free(edge_buffer);
 	if(mpi.isMaster()) fprintf(IMD_OUT, "Finished generating.\n");
 }
@@ -230,6 +240,9 @@ void generate_graph_spec2012(EdgeList* edge_list, int scale, int edge_factor, in
 template <typename EdgeList>
 void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has_weight dummy = 0)
 {
+#if VTRACE
+	VT_TRACER("redistribution");
+#endif
 	typedef typename EdgeList::edge_type EdgeType;
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(

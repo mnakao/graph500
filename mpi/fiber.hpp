@@ -58,6 +58,9 @@ public:
 				Runnable* cmd;
 				while(pop_command(&cmd, 0)) {
 					pthread_mutex_unlock(&thread_sync_);
+#if VTRACE
+					VT_TRACER("fib_run");
+#endif
 					cmd->run();
 					pthread_mutex_lock(&thread_sync_);
 				}
@@ -68,6 +71,9 @@ public:
 				if(command_active_ == false) {
 					if( terminated_ ) { pthread_mutex_unlock(&thread_sync_); break; }
 					++suspended_;
+#if VTRACE
+					VT_TRACER("fib_wait");
+#endif
 #if PROFILING_MODE
 					profiling::TimeKeeper wait_;
 #endif
@@ -88,6 +94,9 @@ public:
 			Runnable* cmd;
 			if(pop_command(&cmd, priority_lower_bound)) {
 				pthread_mutex_unlock(&thread_sync_);
+#if VTRACE
+				VT_TRACER("fib_run");
+#endif
 				cmd->run();
 				return true;
 			}
