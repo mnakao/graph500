@@ -36,7 +36,11 @@
 #endif
 #if VTRACE
 #include "vt_user.h"
-#endif
+#else // #if VTRACE
+#define VT_USER_START(s) ;
+#define VT_USER_END(s) ;
+#define VT_TRACER(s) ;
+#endif // #if VTRACE
 
 struct MPI_GLOBALS {
 	int rank;
@@ -227,38 +231,26 @@ void shared_free(void* shm) {
 int g_GpuIndex = -1;
 
 #ifndef NNUMA
+namespace numa {
+
 typedef struct cpuid_register_t {
-    unsigned long eax;
-    unsigned long ebx;
-    unsigned long ecx;
-    unsigned long edx;
+	unsigned long eax;
+	unsigned long ebx;
+	unsigned long ecx;
+	unsigned long edx;
 } cpuid_register_t;
 
-void cpuid(unsigned int eax, cpuid_register_t *r)
+void cpuid(unsigned long eax, unsigned long ecx, cpuid_register_t *r)
 {
     __asm__ volatile (
         "cpuid"
         :"=a"(r->eax), "=b"(r->ebx), "=c"(r->ecx), "=d"(r->edx)
-        :"a"(eax)
+        :"a"(eax), "c"(ecx)
     );
     return;
 }
 
-#define CPU_TO_PROC_MAP 2
-
-const int cpu_to_proc_map2[] = { 0,0,0,0, 0,0,0,0, 0,0,0,0, 1,1,1,1, 1,1,1,1, 1,1,1,1 };
-
-#if CPU_TO_PROC_MAP == 1
-const int cpu_to_proc_map[] = { 9,9,9,9, 9,9,9,9, 9,9,9,9, 9,9,9,9, 9,9,9,9, 9,9,9,9 };
-#elif CPU_TO_PROC_MAP == 2
-const int * const cpu_to_proc_map = cpu_to_proc_map2;
-#elif CPU_TO_PROC_MAP == 3
-const int cpu_to_proc_map[] = { 0,0,0,0, 0,0,0,0, 2,2,2,2, 2,2,2,2, 1,1,1,1, 1,1,1,1 };
-#elif CPU_TO_PROC_MAP == 4
-const int cpu_to_proc_map[] = { 0,0,0,0, 0,2,0,2, 0,2,0,2, 2,1,2,1, 2,1,2,1, 1,1,1,1 };
-#endif
-
-void testSharedMemory() {
+void test_shared_memory() {
 	int* mem = (int*)shared_malloc(mpi.comm_z, sizeof(int));
 	int ref_val = 0;
 	if(mpi.rank_z == 0) {
@@ -274,12 +266,233 @@ void testSharedMemory() {
 	}
 }
 
-void setAffinity()
-{
-	int NUM_PROCS = sysconf(_SC_NPROCESSORS_CONF);
-	cpu_set_t set;
-	int i;
+class CpuTopology {
+public:
+	CpuTopology() {
+		apicid_to_cpu = NULL;
+		disable_affinity = false;
+	}
 
+	~CpuTopology() {
+		if(apicid_to_cpu) { delete [] apicid_to_cpu; apicid_to_cpu = NULL; }
+	}
+
+	bool load(int numa_node_size, int numa_node_rank) {
+		bool ex_apic_supported = false;
+		char vendor_sign[13];
+		cpuid_register_t reg;
+
+		logical_CPU_bits = 0;
+		core_bits = 0;
+
+		// get vendor signature
+		cpuid(0, 0, &reg);
+		int max_basic_id = reg.eax;
+		*(uint32_t*)&vendor_sign[0] = reg.ebx;
+		*(uint32_t*)&vendor_sign[4] = reg.edx;
+		*(uint32_t*)&vendor_sign[8] = reg.ecx;
+		vendor_sign[12] = 0;
+
+		cpuid(1, 0, &reg);
+		int count_bits = num_bits((reg.ebx >> 16) & 0xFF);
+
+		if(memcmp(vendor_sign, "GenuineIntel", 12) == 0) {
+			// Intel
+			if(max_basic_id >= 0xB) {
+				cpuid(0xB, 0, &reg);
+				ex_apic_supported = (reg.ebx != 0);
+				logical_CPU_bits = reg.eax & 0x1F;
+			}
+			if(ex_apic_supported) {
+				cpuid(0xB, 1, &reg);
+				core_bits = (reg.eax & 0x1F) - logical_CPU_bits;
+			}
+			else if(max_basic_id >= 4) {
+				logical_CPU_bits = count_bits;
+				cpuid(4, 0, &reg);
+				core_bits = (reg.eax >> 26) - count_bits;
+			}
+			else {
+				logical_CPU_bits = count_bits;
+			}
+		}
+		else if(memcmp(vendor_sign, "AuthenticAMD", 12) == 0) {
+			// AMD
+			cpuid(0x80000000u, 0, &reg);
+			if(reg.eax >= 0x80000008u) {
+				cpuid(0x80000008u, 0, &reg);
+				int tmp_bits = (reg.eax >> 12) & 0xF;
+				if(tmp_bits > 0) {
+					core_bits = tmp_bits;
+				}
+				else {
+					core_bits = num_bits(reg.eax & 0xFF);
+				}
+				logical_CPU_bits = count_bits - core_bits;
+			}
+			else {
+				logical_CPU_bits = count_bits;
+			}
+		}
+		else {
+			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: Unknown CPU: %s", vendor_sign);
+			return false;
+		}
+
+		num_procs = sysconf(_SC_NPROCESSORS_CONF);
+		cpu_set_t set;
+		int32_t core_list[num_procs];
+		int max_apic_id = 0;
+		for(int i = 0; i < num_procs; i++) {
+			CPU_ZERO(&set);
+			CPU_SET(i, &set);
+			sched_setaffinity(0, sizeof(set), &set);
+			sleep(0);
+			cpuid_register_t reg;
+			int apicid;
+			if(ex_apic_supported) {
+				cpuid(0xB, 0, &reg);
+				apicid = reg.edx;
+			}
+			else {
+				cpuid(1, 0, &reg);
+				apicid = (reg.ebx >> 24) & 0xFF;
+			}
+			if(max_apic_id < apicid) max_apic_id = apicid;
+		//	fprintf(IMD_OUT, "%d-th -> apicid=%d\n", i, apicid);
+			core_list[i] = (apicid << 16) | i;
+		}
+
+		std::sort(core_list, core_list + num_procs);
+		num_logical_CPUs_within_core = std::lower_bound(core_list, core_list + num_procs, 1 << (logical_CPU_bits + 16)) - core_list;
+		int logical_CPUs_within_numa = std::lower_bound(core_list, core_list + num_procs, 1 << (core_bits + logical_CPU_bits + 16)) - core_list;
+		num_cores_within_numa = logical_CPUs_within_numa / num_logical_CPUs_within_core;
+		num_numa_nodes = num_procs / logical_CPUs_within_numa;
+
+		if(num_procs != (num_logical_CPUs_within_core * num_cores_within_numa * num_numa_nodes)) {
+			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: Affinity feature does not support heterogeneous systems.\n"
+					"(num_procs=%d, SMT=%d, Cores=%d, NUMA Nodes=%d)\n",
+					num_procs, num_logical_CPUs_within_core, num_cores_within_numa, num_numa_nodes);
+			return false;
+		}
+
+		apicid_to_cpu = new int[max_apic_id + 1]();
+
+		for(int numa = 0; numa < num_numa_nodes; ++numa) {
+			for(int core = 0; core < num_cores_within_numa; ++core) {
+				for(int smt = 0; smt < num_logical_CPUs_within_core; ++smt) {
+					int cpu_idx = ((numa * num_cores_within_numa) + core) * num_logical_CPUs_within_core + smt;
+					apicid_to_cpu[my_cpu_id(numa, core, smt)] = (core_list[cpu_idx] & 0xFFFF);
+				}
+			}
+		}
+
+		this->numa_node_rank = numa_node_rank;
+		procs_per_numa_node = (numa_node_size + num_numa_nodes - 1) / num_numa_nodes;
+		idx_within_numa_node = numa_node_rank / num_numa_nodes;
+		num_cores_assgined = num_cores_within_numa / procs_per_numa_node;
+
+		if(num_cores_within_numa != procs_per_numa_node * num_cores_assgined) {
+			if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: Core affinity is disabled because we cannot determine the # of cores to assign.\n");
+			disable_affinity = true;
+		}
+
+		if(mpi.isMaster()) fprintf(IMD_OUT, "CPU Topology: # of socket: %d, # of cores: %d, # of SMT: %d\n",
+				num_numa_nodes, num_cores_within_numa, num_logical_CPUs_within_core);
+		return true;
+	}
+
+	int cpu(int tid) {
+		int numa = numa_node_rank % num_numa_nodes;
+		int core = (num_cores_assgined * idx_within_numa_node) + (tid % num_cores_assgined);
+		int smt = (tid / num_cores_assgined) % num_logical_CPUs_within_core;
+
+		return apicid_to_cpu[my_cpu_id(numa, core, smt)];
+	}
+
+	int cpu(int numa_rank, int core_rank, int smt_rank) {
+		if(apicid_to_cpu == NULL || numa_rank >= num_numa_nodes || core_rank >= num_cores_within_numa || smt_rank >= num_logical_CPUs_within_core)
+			throw "Invalid rank";
+
+		return apicid_to_cpu[my_cpu_id(numa_rank, core_rank, smt_rank)];
+	}
+
+	bool disable_affinity;
+	int num_procs;
+	int num_logical_CPUs_within_core;
+	int num_cores_within_numa;
+	int num_numa_nodes;
+private:
+	int logical_CPU_bits;
+	int core_bits;
+	int *apicid_to_cpu;
+
+	int numa_node_rank;
+	int procs_per_numa_node;
+	int idx_within_numa_node;
+	int num_cores_assgined;
+
+	int num_bits(uint32_t count) {
+		if(count <= 1) return 0;
+		return get_msb_index(count - 1) + 1;
+	}
+
+	int my_cpu_id(int numa_rank, int core_rank, int smt_rank) {
+		return (((numa_rank << core_bits) | core_rank) << logical_CPU_bits) | smt_rank;
+	}
+};
+
+CpuTopology cpu_topology;
+bool core_affinity_enabled = false;
+int next_thread_id = 0;
+
+__thread int thread_id = -1;
+__thread cpu_set_t initial_affinity;
+
+void cpu_set_to_string(cpu_set_t *set, char* str) {
+	int num_procs = cpu_topology.num_procs;
+	for(int i = 0; i < num_procs; ++i) {
+		if(CPU_ISSET(i, set)) str[i] = 'x';
+		else str[i] = '-';
+	}
+	str[num_procs] = 0;
+}
+
+void set_core_affinity() {
+	if(thread_id == -1) {
+		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
+		if(core_affinity_enabled) {
+			int cpu = cpu_topology.cpu(thread_id);
+			CPU_ZERO(&initial_affinity);
+			CPU_SET(cpu, &initial_affinity);
+			sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
+			char str_affinity[cpu_topology.num_procs+1];
+			cpu_set_to_string(&initial_affinity, str_affinity);
+			fprintf(IMD_OUT, "[rank:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity, cpu);
+		}
+	}
+}
+
+void check_affinity_setting() {
+	if(core_affinity_enabled == false) return ;
+	if(thread_id == -1) {
+		fprintf(IMD_OUT, "[rank:%d,th:%d] affinity is not set\n", mpi.rank, thread_id);
+		return ;
+	}
+	cpu_set_t set;
+	sched_getaffinity(0, sizeof(set), &set);
+	if(memcmp(&set, &initial_affinity, sizeof(set))) {
+		char init_str[cpu_topology.num_procs+1];
+		char now_str[cpu_topology.num_procs+1];
+		cpu_set_to_string(&initial_affinity, init_str);
+		cpu_set_to_string(&set, now_str);
+		fprintf(IMD_OUT, "[rank:%d,th:%d] affinity is changed [%s] -> [%s]\n",
+				mpi.rank, thread_id, init_str, now_str);
+	}
+}
+
+void set_affinity()
+{
 	// Initialize comm_[yz]
 	mpi.comm_y = mpi.comm_2dc;
 	mpi.comm_z = MPI_COMM_SELF;
@@ -298,70 +511,39 @@ void setAffinity()
 	const char* dist_round_robin = getenv("MPI_ROUND_ROBIN");
 	int num_node = atoi(num_node_str);
 
-	int32_t core_list[NUM_PROCS];
-	for(i = 0; i < NUM_PROCS; i++) {
-		CPU_ZERO(&set);
-		CPU_SET(i, &set);
-		sched_setaffinity(0, sizeof(set), &set);
-		sleep(0);
-		cpuid_register_t reg;
-		cpuid(1, &reg);
-		int apicid = (reg.ebx >> 24) & 0xFF;
-	//	fprintf(IMD_OUT, "%d-th -> apicid=%d\n", i, apicid);
-		core_list[i] = (apicid << 16) | i;
-	}
-
-	std::sort(core_list ,core_list + NUM_PROCS);
-#if 0
-	fprintf(IMD_OUT, "sort\n");
-	for(int i = 0; i < NUM_PROCS; i++) {
-		int core_id = core_list[i] & 0xFFFF;
-		int apicid = core_list[i] >> 16;
-		fprintf(IMD_OUT, "%d-th -> apicid=%d\n", core_id, apicid);
-	}
-#endif
 	int max_procs_per_node = (mpi.size_ + num_node - 1) / num_node;
-	int proc_num = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
-	g_GpuIndex = proc_num;
-#if CPU_TO_PROC_MAP != 2
-	int node_num = mpi.rank % num_node;
-	int split = ((mpi.size_ - 1) % num_node) + 1;
-#endif
+	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
+	g_GpuIndex = proc_rank;
 
+	if(cpu_topology.load(max_procs_per_node, proc_rank) == false) {
+		max_procs_per_node = 1;
+	}
 	if(mpi.isRmaster()) {
 		fprintf(IMD_OUT, "process distribution : %s\n", dist_round_robin ? "round robin" : "partition");
 	}
-//#if SET_AFFINITY
 	if(max_procs_per_node == 3) {
 		if(numa_available() < 0) {
 			fprintf(IMD_OUT, "No NUMA support available on this system.\n");
 		}
 		else {
 			int NUM_SOCKET = numa_max_node() + 1;
-			if(proc_num < NUM_SOCKET) {
-				//numa_run_on_node(proc_num);
-				numa_set_preferred(proc_num);
+			if(proc_rank < NUM_SOCKET) {
+				numa_set_preferred(proc_rank);
+			}
+			if(NUM_SOCKET != cpu_topology.num_numa_nodes) {
+				if(mpi.isMaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
+						NUM_SOCKET, cpu_topology.num_numa_nodes);
 			}
 		}
-
-		CPU_ZERO(&set);
-		int enabled = 0;
-#if CPU_TO_PROC_MAP != 2
-		const int *cpu_map = (dist_round_robin && node_num >= split) ? cpu_to_proc_map2 : cpu_to_proc_map;
-#else
-		const int *cpu_map = cpu_to_proc_map;
-#endif
-		for(i = 0; i < NUM_PROCS; i++) {
-			if(cpu_map[i] == proc_num) {
-				int core_id = core_list[i] & 0xFFFF;
-				CPU_SET(core_id, &set);
-				enabled = 1;
-			}
+		cpu_set_t set; CPU_ZERO(&set);
+		if(proc_rank < cpu_topology.num_numa_nodes) {
+			for(int core = 0; core < cpu_topology.num_cores_within_numa; core++)
+				for(int smt = 0; smt < cpu_topology.num_cores_within_numa; smt++)
+					CPU_SET(cpu_topology.cpu(proc_rank, core, smt), &set);
 		}
-		if(enabled == 0) {
-			for(i = 0; i < NUM_PROCS; i++) {
+		else {
+			for(int i = 0; i < cpu_topology.num_procs; i++)
 				CPU_SET(i, &set);
-			}
 		}
 		sched_setaffinity(0, sizeof(set), &set);
 
@@ -375,16 +557,23 @@ void setAffinity()
 			return ;
 		}
 		int NUM_SOCKET = numa_max_node() + 1;
+		if(NUM_SOCKET != cpu_topology.num_numa_nodes) {
+			if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
+					NUM_SOCKET, cpu_topology.num_numa_nodes);
+		}
 
-		// Affinity
-		int numa_node_size = mpi.size_ / num_node;
-		int numa_node_rank = dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node);
-		numa_run_on_node(numa_node_rank % NUM_SOCKET);
-		numa_set_preferred(numa_node_rank % NUM_SOCKET);
+		// set default affinity to numa node
+		numa_run_on_node(proc_rank % NUM_SOCKET);
+
+		// memory affinity
+		numa_set_preferred(proc_rank % NUM_SOCKET);
+
+		core_affinity_enabled = true;
+		if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity is enabled\n");
 
 #if SHARED_MEM_VISITED
-		mpi.size_z = numa_node_size;
-		mpi.rank_z = numa_node_rank;
+		mpi.size_z = max_procs_per_node;
+		mpi.rank_z = proc_rank;
 #endif
 
 		// create comm_z
@@ -397,7 +586,7 @@ void setAffinity()
 			}
 
 			// test shared memory
-			testSharedMemory();
+			test_shared_memory();
 
 			// create comm_y
 			if(dist_round_robin == false && mpi.isRowMajor == false) {
@@ -411,15 +600,12 @@ void setAffinity()
 		  fprintf(IMD_OUT, "NUMA node affinity is enabled.\n");
 		}
 	}
-	else
-//#endif
-	{
-		//
+	else {
 		if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
 		  fprintf(IMD_OUT, "affinity is disabled.\n");
 		}
-		CPU_ZERO(&set);
-		for(i = 0; i < NUM_PROCS; i++) {
+		cpu_set_t set; CPU_ZERO(&set);
+		for(int i = 0; i < cpu_topology.num_procs; i++) {
 			CPU_SET(i, &set);
 		}
 		sched_setaffinity(0, sizeof(set), &set);
@@ -428,6 +614,11 @@ void setAffinity()
 		  fprintf(IMD_OUT, "Y dimension is %s\n", mpi.isYdimAvailable() ? "Enabled" : "Disabled");
 	}
 }
+
+} // namespace affinity
+#define SET_AFFINITY numa::set_core_affinity()
+#else
+#define SET_AFFINITY
 #endif
 
 //-------------------------------------------------------------//
@@ -619,7 +810,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 #ifndef NNUMA
 	// set affinity
 	if(getenv("NO_AFFINITY") == NULL) {
-		setAffinity();
+		numa::set_affinity();
 	}
 #endif
 
@@ -640,6 +831,11 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 
 void cleanup_globals()
 {
+#ifndef NNUMA
+#pragma omp parallel
+	numa::check_affinity_setting();
+#endif
+
 	cleanup_2dcomm();
 
 	UnweightedEdge::uninitialize();
@@ -878,9 +1074,7 @@ namespace MpiCol {
 
 template <typename T>
 int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
-#if VTRACE
 	VT_TRACER("MpiCol::allgatherv");
-#endif
 	int recv_off[comm_size+1], recv_cnt[comm_size];
 	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
 	recv_off[0] = 0;

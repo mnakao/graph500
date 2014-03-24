@@ -35,7 +35,7 @@ public:
 		cleanup_ = false;
 	}
 
-	~FiberManager()
+	virtual ~FiberManager()
 	{
 		if(!cleanup_) {
 			cleanup_ = true;
@@ -58,9 +58,7 @@ public:
 				Runnable* cmd;
 				while(pop_command(&cmd, 0)) {
 					pthread_mutex_unlock(&thread_sync_);
-#if VTRACE
 					VT_TRACER("fib_run");
-#endif
 					cmd->run();
 					pthread_mutex_lock(&thread_sync_);
 				}
@@ -71,9 +69,7 @@ public:
 				if(command_active_ == false) {
 					if( terminated_ ) { pthread_mutex_unlock(&thread_sync_); break; }
 					++suspended_;
-#if VTRACE
 					VT_TRACER("fib_wait");
-#endif
 #if PROFILING_MODE
 					profiling::TimeKeeper wait_;
 #endif
@@ -94,9 +90,7 @@ public:
 			Runnable* cmd;
 			if(pop_command(&cmd, priority_lower_bound)) {
 				pthread_mutex_unlock(&thread_sync_);
-#if VTRACE
 				VT_TRACER("fib_run");
-#endif
 				cmd->run();
 				return true;
 			}
@@ -196,6 +190,29 @@ private:
 		max_priority_ = 0;
 		command_active_ = false;
 		return false;
+	}
+};
+
+class BackgroundThread : public FiberManager {
+public:
+	BackgroundThread() {
+		cleanup_ = false;
+		pthread_create(&thread_, NULL, thread_routine, this);
+	}
+	virtual ~BackgroundThread() {
+		if(!cleanup_) {
+			cleanup_ = true;
+			end_processing();
+			pthread_join(thread_, NULL);
+		}
+	}
+private:
+	bool cleanup_;
+	pthread_t thread_;
+
+	static void* thread_routine(void* this__) {
+		((BackgroundThread*)this__)->enter_processing();
+		return NULL;
 	}
 };
 

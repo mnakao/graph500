@@ -149,9 +149,7 @@ private:
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
 {
-#if VTRACE
 	VT_TRACER("generation");
-#endif
 	typedef typename EdgeList::edge_type EdgeType;
 	EdgeType* edge_buffer = static_cast<EdgeType*>
 						(cache_aligned_xmalloc(EdgeList::CHUNK_SIZE*sizeof(EdgeType)));
@@ -179,6 +177,7 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 #endif
 #pragma omp parallel
 	for(int64_t i = 0; i < num_iterations; ++i) {
+		SET_AFFINITY;
 		const int64_t start_edge = std::min((mpi.size_2d*i + mpi.rank) * EdgeList::CHUNK_SIZE, num_global_edges);
 		const int64_t end_edge = std::min(start_edge + EdgeList::CHUNK_SIZE, num_global_edges);
 		generator->generateRange(edge_buffer, start_edge, end_edge);
@@ -240,9 +239,7 @@ void generate_graph_spec2012(EdgeList* edge_list, int scale, int edge_factor, in
 template <typename EdgeList>
 void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has_weight dummy = 0)
 {
-#if VTRACE
 	VT_TRACER("redistribution");
-#endif
 	typedef typename EdgeList::edge_type EdgeType;
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
@@ -262,6 +259,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 
 #pragma omp parallel
 		{
+			SET_AFFINITY;
 			int* restrict counts = scatter.get_counts();
 
 #pragma omp for schedule(static)
