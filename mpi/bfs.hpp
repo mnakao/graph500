@@ -3101,12 +3101,12 @@ void BfsBase<PARAMS>::
 		tmp = MPI_Wtime();
 		double cur_fold_time = tmp - prev_time;
 		fold_time += cur_fold_time; prev_time = tmp;
+		total_edge_top_down += num_edge_top_down_;
+		total_edge_bottom_up += num_edge_bottom_up_;
 		int64_t red_num_edges[] = { num_edge_top_down_, num_edge_bottom_up_ };
 		MPI_Reduce(mpi.rank_2d == 0 ? MPI_IN_PLACE : red_num_edges, red_num_edges, 2,
 				MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
 		num_edge_top_down_ = red_num_edges[0]; num_edge_bottom_up_ = red_num_edges[1];
-		total_edge_top_down += num_edge_top_down_;
-		total_edge_bottom_up += num_edge_bottom_up_;
 #if PROFILING_MODE
 		if(forward_or_backward_)
 			extract_edge_time_.submit("forward edge", current_level_);
