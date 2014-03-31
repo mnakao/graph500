@@ -600,13 +600,11 @@ private:
 		const int64_t num_edge_blocks = std::max<int64_t>(1, src_region_length >> LOG_BFELL_SORT);
 		const int64_t num_local_edges = wide_row_starts_[num_wide_rows];
 
-#if VERVOSE_MODE
-		if(mpi.isMaster()) fprintf(IMD_OUT, "num_local_verts %f M\nsrc_region_length %f M\n"
+		VERVOSE(if(mpi.isMaster()) fprintf(IMD_OUT, "num_local_verts %f M\nsrc_region_length %f M\n"
 				"num_wide_rows %f M\nrow_bitmap_length %f M\n"
 				"num_edge_blocks %f M\n",
 				to_mega(num_local_verts), to_mega(src_region_length),
-				to_mega(num_wide_rows), to_mega(row_bitmap_length), to_mega(num_edge_blocks));
-#endif
+				to_mega(num_wide_rows), to_mega(row_bitmap_length), to_mega(num_edge_blocks)));
 
 		// make row bitmap
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Allocating row bitmap.\n");
@@ -1219,11 +1217,9 @@ private:
 			num_vertices += __builtin_popcountl(g.has_edge_bitmap_[i]);
 		}
 		MPI_Allreduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
-#if VERVOSE_MODE
-		int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_;
-		if(mpi.isMaster()) fprintf(IMD_OUT, "# of actual vertices %f G %f %%\n", to_giga(num_vertices),
-				(double)num_vertices / (double)num_virtual_vertices * 100.0);
-#endif
+		VERVOSE(int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_);
+		VERVOSE(if(mpi.isMaster()) fprintf(IMD_OUT, "# of actual vertices %f G %f %%\n", to_giga(num_vertices),
+				(double)num_vertices / (double)num_virtual_vertices * 100.0));
 		g.num_global_verts_ = num_vertices;
 	}
 

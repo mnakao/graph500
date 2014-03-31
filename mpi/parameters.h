@@ -14,7 +14,7 @@
 #define DETAILED_PROF_MODE 0
 #define REPORT_GEN_RPGRESS 1
 
-#define BFELL 1
+#define BFELL 0
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 #define SHARED_MEM_VISITED 1

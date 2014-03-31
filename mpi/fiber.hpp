@@ -70,13 +70,9 @@ public:
 					if( terminated_ ) { pthread_mutex_unlock(&thread_sync_); break; }
 					++suspended_;
 					VT_TRACER("fib_wait");
-#if PROFILING_MODE
-					profiling::TimeKeeper wait_;
-#endif
+					PROF(profiling::TimeKeeper wait_);
 					pthread_cond_wait(&thread_state_, &thread_sync_);
-#if PROFILING_MODE
-					wait_time_ += wait_;
-#endif
+					PROF(wait_time_ += wait_);
 					--suspended_;
 				}
 				pthread_mutex_unlock(&thread_sync_);
@@ -172,9 +168,7 @@ private:
 	int max_priority_;
 
 	std::deque<Runnable*> command_queue_[MAX_PRIORITY];
-#if PROFILING_MODE
-	profiling::TimeSpan wait_time_;
-#endif
+	PROF(profiling::TimeSpan wait_time_);
 
 	bool pop_command(Runnable** cmd, int priority_lower_bound) {
 		int i = max_priority_ + 1;

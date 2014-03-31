@@ -34,6 +34,7 @@
 #if CUDA_ENABLED
 #include "gpu_host.hpp"
 #endif
+
 #if VTRACE
 #include "vt_user.h"
 #else // #if VTRACE
@@ -41,6 +42,19 @@
 #define VT_USER_END(s) ;
 #define VT_TRACER(s) ;
 #endif // #if VTRACE
+
+#if VERVOSE_MODE
+#define VERVOSE(s) s
+#else
+#define VERVOSE(s)
+#endif
+
+#if PROFILING_MODE
+#define PROF(s) s
+#else
+#define PROF(s)
+#endif
+
 
 struct MPI_GLOBALS {
 	int rank;
@@ -1897,9 +1911,7 @@ private:
 			if(O_TO_S(pk_head[i+1].offset - pk_head[i].offset) - L_TO_S(pk_head[i].length) > 32)
 				break;
 		}
-#if VERVOSE_MODE
-		fprintf(IMD_OUT, "Move %ld length\n", out_len - sizeof(PacketIndex) - O_TO_S(pk_head[i+1].offset));
-#endif
+		VERVOSE(fprintf(IMD_OUT, "Move %ld length\n", out_len - sizeof(PacketIndex) - O_TO_S(pk_head[i+1].offset)));
 		for( ; i < num_packet; ++i) {
 			memmove(outbuf + TO_S(pk_head[i].offset, pk_head[i].length),
 					outbuf + O_TO_S(pk_head[i+1].offset),
