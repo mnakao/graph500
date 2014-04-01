@@ -623,12 +623,12 @@ public:
 		LocalPacket fold_packet[1];
 	};
 
-	BfsBase(double demon_to_bottom_up__, double demon_to_top_down__, bool cuda_enabled)
+	BfsBase(double denom_to_bottom_up__, double denom_bitmap_to_list__, bool cuda_enabled)
 		: comm_(&fiber_man_)
 		, top_down_comm_(this)
 		, bottom_up_comm_(this)
-		, demon_to_bottom_up_(demon_to_bottom_up__)
-		, demon_to_top_down_(demon_to_top_down__)
+		, denom_to_bottom_up_(denom_to_bottom_up__)
+		, denom_bitmap_to_list_(denom_bitmap_to_list__)
 		, thread_sync_(omp_get_max_threads())
 	{ }
 
@@ -1449,7 +1449,7 @@ public:
 
 #pragma omp parallel
 		{
-			SET_AFFINITY;
+			SET_OMP_AFFINITY;
 			PROF(profiling::TimeKeeper tk_all);
 			PROF(profiling::TimeSpan ts_commit);
 			int64_t num_edge_relax = 0;
@@ -2120,9 +2120,6 @@ public:
 			TwodVertex half_bitmap_width)
 	{
 		VT_USER_START("bu_bmp_step");
-		struct BottomUpRow {
-			SortIdx orig, sorted;
-		};
 		int target_rank = phase_bmp_off / half_bitmap_width / 2;
 		int visited_count = 0;
 		VERVOSE(int tmp_edge_relax = 0);
@@ -2138,157 +2135,24 @@ public:
 		visited_count -= buf->length;
 #endif
 
-		TwodVertex num_blks = half_bitmap_width * NBPE / BFELL_SORT;
 #pragma omp for nowait
-		for(int64_t blk_idx = 0; blk_idx < int64_t(num_blks); ++blk_idx) {
-
-			TwodVertex blk_bmp_off = blk_idx * BFELL_SORT_IN_BMP;
-			BitmapType* blk_row_bitmap = graph_.row_bitmap_ + phase_bmp_off + blk_bmp_off;
-			BitmapType* blk_bitmap = phase_bitmap + blk_bmp_off;
-			TwodVertex* blk_row_sums = graph_.row_sums_ + phase_bmp_off + blk_bmp_off;
-			SortIdx* sorted_idx = graph_.sorted_idx_;
-			BottomUpRow rows[BFELL_SORT];
-			int num_active_rows = 0;
-
-			for(int bmp_idx = 0; bmp_idx < BFELL_SORT_IN_BMP; ++bmp_idx) {
-				BitmapType row_bmp_i = blk_row_bitmap[bmp_idx];
-				BitmapType unvis_i = ~(blk_bitmap[bmp_idx]) & row_bmp_i;
-				if(unvis_i == BitmapType(0)) continue;
-				TwodVertex bmp_row_sums = blk_row_sums[bmp_idx];
-				do {
-					uint32_t visb_idx = __builtin_ctzl(unvis_i);
-					BitmapType mask = (BitmapType(1) << visb_idx) - 1;
-					TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
-					rows[num_active_rows].orig = bmp_idx * NBPE + visb_idx;
-					rows[num_active_rows].sorted = sorted_idx[non_zero_idx];
-					++num_active_rows;
-					unvis_i &= unvis_i - 1;
-				} while(unvis_i != BitmapType(0));
-			}
-
-			TwodVertex phase_blk_off = phase_bmp_off * NBPE / BFELL_SORT;
-			int64_t edge_offset = graph_.blk_off[phase_blk_off + blk_idx].edge_start;
-			int64_t length_start = graph_.blk_off[phase_blk_off + blk_idx].length_start;
-			TwodVertex* col_edge_array = graph_.edge_array_ + edge_offset;
-			SortIdx* col_len = graph_.col_len_ + length_start;
-			TwodVertex blk_vertex_base = phase_bmp_off * NBPE + blk_idx * BFELL_SORT;
-
-			int c = 0;
-			for( ; num_active_rows > 0; ++c) {
-				SortIdx next_col_len = col_len[c + 1];
-				int i = num_active_rows - 1;
-#if 0
-				for( ; i >= 7; i -= 8) {
-					BottomUpRow* cur_rows = &rows[i-7];
-					TwodVertex src = {
-							col_edge_array[cur_rows[0].sorted],
-							col_edge_array[cur_rows[1].sorted],
-							col_edge_array[cur_rows[2].sorted],
-							col_edge_array[cur_rows[3].sorted],
-							col_edge_array[cur_rows[4].sorted],
-							col_edge_array[cur_rows[5].sorted],
-							col_edge_array[cur_rows[6].sorted],
-							col_edge_array[cur_rows[7].sorted],
-					};
-					bool connected = {
-							shared_visited_[src[0] >> LOG_NBPE] & (BitmapType(1) << (src[0] & NBPE_MASK)),
-							shared_visited_[src[1] >> LOG_NBPE] & (BitmapType(1) << (src[1] & NBPE_MASK)),
-							shared_visited_[src[2] >> LOG_NBPE] & (BitmapType(1) << (src[2] & NBPE_MASK)),
-							shared_visited_[src[3] >> LOG_NBPE] & (BitmapType(1) << (src[3] & NBPE_MASK)),
-							shared_visited_[src[4] >> LOG_NBPE] & (BitmapType(1) << (src[4] & NBPE_MASK)),
-							shared_visited_[src[5] >> LOG_NBPE] & (BitmapType(1) << (src[5] & NBPE_MASK)),
-							shared_visited_[src[6] >> LOG_NBPE] & (BitmapType(1) << (src[6] & NBPE_MASK)),
-							shared_visited_[src[7] >> LOG_NBPE] & (BitmapType(1) << (src[7] & NBPE_MASK)),
-					};
-					for(int s = 7; s >= 0; --s) {
-						if(connected[s]) {
-							// add to next queue
-							int orig = cur_rows[s].orig;
-							blk_bitmap[orig >> LOG_NBPE] |= (BitmapType(1) << (orig & NBPE_MASK));
-#if STREAM_UPDATE
-							if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
-								visited_count += packet.length;
-								PROF(profiling::TimeKeeper tk_commit);
-								comm_.send<false>(packet.data.b, packet.length, target_rank);
-								PROF(ts_commit += tk_commit);
-								packet.length = 0;
-							}
-							packet.data.b[packet.length+0] = src[s];
-							packet.data.b[packet.length+1] = blk_vertex_base + orig;
-							packet.length += 2;
-#else // #if STREAM_UPDATE
-							if(buf->full()) {
-								nq_.push(buf); buf = nq_empty_buffer_.get();
-							}
-							buf->append_nocheck(src[s], blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-						else if(cur_rows[s].sorted >= next_col_len) {
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-					}
-				}
-#elif 0
-				for( ; i >= 3; i -= 4) {
-					BottomUpRow* cur_rows = &rows[i-3];
-					TwodVertex src[4] = {
-							col_edge_array[cur_rows[0].sorted],
-							col_edge_array[cur_rows[1].sorted],
-							col_edge_array[cur_rows[2].sorted],
-							col_edge_array[cur_rows[3].sorted],
-					};
-					bool connected[4] = {
-							shared_visited_[src[0] >> LOG_NBPE] & (BitmapType(1) << (src[0] & NBPE_MASK)),
-							shared_visited_[src[1] >> LOG_NBPE] & (BitmapType(1) << (src[1] & NBPE_MASK)),
-							shared_visited_[src[2] >> LOG_NBPE] & (BitmapType(1) << (src[2] & NBPE_MASK)),
-							shared_visited_[src[3] >> LOG_NBPE] & (BitmapType(1) << (src[3] & NBPE_MASK)),
-					};
-					for(int s = 0; s < 4; ++s) {
-						if(connected[s]) { // TODO: use conditional branch
-							// add to next queue
-							int orig = cur_rows[s].orig;
-							blk_bitmap[orig >> LOG_NBPE] |= (BitmapType(1) << (orig & NBPE_MASK));
-#if STREAM_UPDATE
-							if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
-								visited_count += packet.length;
-								PROF(profiling::TimeKeeper tk_commit);
-								comm_.send<false>(packet.data.b, packet.length, target_rank);
-								PROF(ts_commit += tk_commit);
-								packet.length = 0;
-							}
-							packet.data.b[packet.length+0] = src[s];
-							packet.data.b[packet.length+1] = blk_vertex_base + orig;
-							packet.length += 2;
-#else // #if STREAM_UPDATE
-							if(buf->full()) { // TODO: remove this branch
-								nq_.push(buf); buf = nq_empty_buffer_.get();
-							}
-							buf->append_nocheck(src[s], blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-						else if(cur_rows[s].sorted >= next_col_len) {
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-					}
-				}
-#endif
-				for( ; i >= 0; --i) {
-					SortIdx row = rows[i].sorted;
-					TwodVertex src = col_edge_array[row];
+		for(int64_t blk_bmp_off = 0; blk_bmp_off < int64_t(half_bitmap_width); ++blk_bmp_off) {
+			BitmapType row_bmp_i = *(graph_.row_bitmap_ + phase_bmp_off + blk_bmp_off);
+			BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
+			BitmapType should_be_inspected = (~visited_i) & row_bmp_i;
+			if(should_be_inspected == BitmapType(0)) continue;
+			TwodVertex bmp_row_sums = *(graph_.row_sums_ + phase_bmp_off + blk_bmp_off);
+			do {
+				uint32_t visb_idx = __builtin_ctzl(should_be_inspected);
+				BitmapType vis_bit = BitmapType(1) << visb_idx;
+				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & (vis_bit - 1));
+				int64_t e_start = graph_.row_starts_[non_zero_idx];
+				int64_t e_end = graph_.row_starts_[non_zero_idx+1];
+				for(int64_t e = e_start; e < e_end; ++e) {
+					TwodVertex src = graph_.edge_array_[e];
 					if(shared_visited_[src >> LOG_NBPE] & (BitmapType(1) << (src & NBPE_MASK))) {
 						// add to next queue
-						int orig = rows[i].orig;
-						blk_bitmap[orig >> LOG_NBPE] |= (BitmapType(1) << (orig & NBPE_MASK));
+						visited_i |= vis_bit;
 #if STREAM_UPDATE
 						if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
 							visited_count += packet.length;
@@ -2298,7 +2162,7 @@ public:
 							packet.length = 0;
 						}
 						packet.data.b[packet.length+0] = src;
-						packet.data.b[packet.length+1] = blk_vertex_base + orig;
+						packet.data.b[packet.length+1] = (phase_bmp_off + blk_bmp_off) * NBPE + visb_idx;
 						packet.length += 2;
 #else
 						if(buf->full()) {
@@ -2307,17 +2171,14 @@ public:
 						buf->append_nocheck(src, blk_vertex_base + orig);
 #endif // #if STREAM_UPDATE
 						// end this row
-						VERVOSE(tmp_edge_relax += c + 1);
-						rows[i] = rows[--num_active_rows];
-					}
-					else if(row >= next_col_len) {
-						// end this row
-						VERVOSE(tmp_edge_relax += c + 1);
-						rows[i] = rows[--num_active_rows];
+						VERVOSE(tmp_edge_relax += e - e_start + 1);
+						break;
 					}
 				}
-				col_edge_array += col_len[c];
-			}
+				should_be_inspected &= should_be_inspected - 1;
+			} while(should_be_inspected != BitmapType(0));
+			// write back
+			*(phase_bitmap + blk_bmp_off) = visited_i;
 		} // #pragma omp for nowait
 
 #if STREAM_UPDATE
@@ -2372,93 +2233,58 @@ public:
 		QueuedVertexes* buf = tlb->cur_buffer;
 		if(buf == NULL) buf = nq_empty_buffer_.get();
 #endif
-		int num_enabled = 0;
-
-		struct BottomUpRow {
-			SortIdx orig, sorted, orig_i;
-		};
 
 		int64_t begin, end;
 		get_partition(phase_size, phase_list, LOG_BFELL_SORT, max_threads, tid, begin, end);
+		int num_enabled = end - begin;
 		VT_USER_START("bu_list_proc");
 		for(int i = begin; i < end; ) {
-			int blk_i_start = i;
 			TwodVertex blk_idx = phase_list[i] >> LOG_BFELL_SORT;
-			int num_active_rows = 0;
-			BottomUpRow rows[BFELL_SORT];
-			SortIdx* sorted_idx = graph_.sorted_idx_;
 			TwodVertex* phase_row_sums = graph_.row_sums_ + phase_bmp_off;
 			BitmapType* phase_row_bitmap = graph_.row_bitmap_ + phase_bmp_off;
 			VERVOSE(tmp_num_blocks++);
 
 			do {
+				vertex_enabled[i] = 1;
 				TwodVertex tgt = phase_list[i];
 				TwodVertex word_idx = tgt >> LOG_NBPE;
 				int bit_idx = tgt & NBPE_MASK;
-				BitmapType mask = (BitmapType(1) << bit_idx);
+				BitmapType vis_bit = (BitmapType(1) << bit_idx);
 				BitmapType row_bitmap_i = phase_row_bitmap[word_idx];
-				if(row_bitmap_i & mask) { // I have edges for this vertex ?
+				if(row_bitmap_i & vis_bit) { // I have edges for this vertex ?
 					TwodVertex non_zero_idx = phase_row_sums[word_idx] +
-							__builtin_popcountl(row_bitmap_i & (mask-1));
-					rows[num_active_rows].orig = tgt & BFELL_SORT_MASK;
-					rows[num_active_rows].orig_i = i - blk_i_start;
-					rows[num_active_rows].sorted = sorted_idx[non_zero_idx];
-					++num_active_rows;
+							__builtin_popcountl(row_bitmap_i & (vis_bit-1));
+					int64_t e_start = graph_.row_starts_[non_zero_idx];
+					int64_t e_end = graph_.row_starts_[non_zero_idx+1];
+					for(int64_t e = e_start; e < e_end; ++e) {
+						TwodVertex src = graph_.edge_array_[e];
+						if(shared_visited_[src >> LOG_NBPE] & (BitmapType(1) << (src & NBPE_MASK))) {
+							// add to next queue
+							vertex_enabled[i] = 0; --num_enabled;
+#if STREAM_UPDATE
+							if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
+								PROF(profiling::TimeKeeper tk_commit);
+								comm_.send<false>(packet.data.b, packet.length, target_rank);
+								PROF(ts_commit += tk_commit);
+								packet.length = 0;
+							}
+							packet.data.b[packet.length+0] = src;
+							packet.data.b[packet.length+1] = phase_bmp_off * NBPE + tgt;
+							packet.length += 2;
+#else
+							if(buf->full()) {
+								nq_.push(buf); buf = nq_empty_buffer_.get();
+							}
+							buf->append_nocheck(src, blk_vertex_base + orig);
+#endif // #if STREAM_UPDATE
+							// end this row
+							VERVOSE(tmp_edge_relax += e - e_start + 1);
+							break;
+						}
+					}
 				}
-				else { // No, I do not have. -> pass through
-					++num_enabled;
-				}
-				vertex_enabled[i] = 1;
 			} while((phase_list[++i] >> LOG_BFELL_SORT) == blk_idx);
 			assert(i <= end);
-
-			TwodVertex phase_blk_off = phase_bmp_off * NBPE / BFELL_SORT;
-			int64_t edge_offset = graph_.blk_off[phase_blk_off + blk_idx].edge_start;
-			int64_t length_start = graph_.blk_off[phase_blk_off + blk_idx].length_start;
-			TwodVertex* col_edge_array = graph_.edge_array_ + edge_offset;
-			SortIdx* col_len = graph_.col_len_ + length_start;
-			TwodVertex blk_vertex_base = phase_bmp_off * NBPE + blk_idx * BFELL_SORT;
-
-			int c = 0;
-			for( ; num_active_rows > 0; ++c) {
-				SortIdx next_col_len = col_len[c + 1];
-				int i = num_active_rows - 1;
-				for( ; i >= 0; --i) {
-					SortIdx row = rows[i].sorted;
-					TwodVertex src = col_edge_array[row];
-					if(shared_visited_[src >> LOG_NBPE] & (BitmapType(1) << (src & NBPE_MASK))) {
-						// add to next queue
-						int orig = rows[i].orig;
-						vertex_enabled[blk_i_start + rows[i].orig_i] = 0;
-#if STREAM_UPDATE
-						if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
-							PROF(profiling::TimeKeeper tk_commit);
-							comm_.send<false>(packet.data.b, packet.length, target_rank);
-							PROF(ts_commit += tk_commit);
-							packet.length = 0;
-						}
-						packet.data.b[packet.length+0] = src;
-						packet.data.b[packet.length+1] = blk_vertex_base + orig;
-						packet.length += 2;
-#else
-						if(buf->full()) {
-							nq_.push(buf); buf = nq_empty_buffer_.get();
-						}
-						buf->append_nocheck(src, blk_vertex_base + orig);
-#endif
-						// end this row
-						VERVOSE(tmp_edge_relax += c + 1);
-						rows[i] = rows[--num_active_rows];
-					}
-					else if(row >= next_col_len) {
-						// end this row
-						VERVOSE(tmp_edge_relax += c + 1);
-						rows[i] = rows[--num_active_rows];
-						++num_enabled;
-					}
-				}
-				col_edge_array += col_len[c];
-			}
 		}
 		th_offset[tid+1] = num_enabled;
 		VT_USER_END("bu_list_proc");
@@ -2791,7 +2617,7 @@ public:
 		//
 #pragma omp parallel
 		{
-			SET_AFFINITY;
+			SET_OMP_AFFINITY;
 			int tid = omp_get_thread_num();
 			for(int phase = 0; phase < total_phase; ++phase) {
 				int bmp_blk_idx = ((mpi.rank_2dc * 2 + phase) & (total_phase - 1));
@@ -2858,7 +2684,9 @@ public:
 	{
 		enum { NBUF = PRM::BOTTOM_UP_BUFFER, BUFMASK = NBUF-1 };
 		int half_bitmap_width = get_bitmap_size_local() / 2;
+#ifndef NDEBUG
 		int buffer_size = half_bitmap_width * sizeof(BitmapType) / sizeof(TwodVertex);
+#endif
 		TwodVertex* list_buffer[NBUF]; get_visited_pointers(list_buffer, NBUF, work_buf_);
 		int list_size[NBUF] = {0};
 		TwodVertex* old_vis[2]; get_visited_pointers(old_vis, 2, old_visited_);
@@ -2873,7 +2701,7 @@ public:
 
 #pragma omp parallel
 		{
-			SET_AFFINITY;
+			SET_OMP_AFFINITY;
 			for(int phase = 0; phase < total_phase; ++phase) {
 				int bmp_blk_idx = ((mpi.rank_2dc * 2 + phase) & (total_phase - 1));
 				int read_buf_idx = phase + 1;
@@ -3145,6 +2973,14 @@ public:
 		fprintf(IMD_OUT, "BOTTOM_UP_BUFFER=%d.\n", BOTTOM_UP_BUFFER);
 		fprintf(IMD_OUT, "NBPE=%d.\n", NBPE);
 		fprintf(IMD_OUT, "BFELL_SORT=%d.\n", BFELL_SORT);
+
+		fprintf(IMD_OUT, "DENOM_TOPDOWN_TO_BOTTOMUP=%d.\n", DENOM_TOPDOWN_TO_BOTTOMUP);
+		fprintf(IMD_OUT, "DENOM_BITMAP_TO_LIST=%f.\n", DENOM_BITMAP_TO_LIST);
+
+		if(NUM_BFS_ROOTS == 64 && VALIDATION_LEVEL == 2)
+			fprintf(IMD_OUT, "===== Benchmark Mode OK ====\n");
+		else
+			fprintf(IMD_OUT, "===== Non Benchmark Mode ====\n");
 	}
 #if VERVOSE_MODE
 	void printTime(const char* fmt, double* sum, double* max, int idx) {
@@ -3175,8 +3011,8 @@ public:
 	memory::ConcurrentStack<QueuedVertexes*> nq_;
 
 	// switch parameters
-	double demon_to_bottom_up_; // alpha
-	double demon_to_top_down_; // beta
+	double denom_to_bottom_up_; // alpha
+	double denom_bitmap_to_list_; // gamma
 
 	// cq_list_ is a pointer to work_buf_ or work_extra_buf_
 	TwodVertex* cq_list_;
@@ -3379,19 +3215,10 @@ void BfsBase<PARAMS>::
 		bool expand_bitmap_or_list = false;
 		if(global_nq_size_ > prev_global_nq_size) { // growing
 			if(forward_or_backward_ // forward ?
-				&& global_nq_size_ > graph_.num_global_verts_ / demon_to_bottom_up_ // NQ is large ?
+				&& global_nq_size_ > graph_.num_global_verts_ / denom_to_bottom_up_ // NQ is large ?
 				) { // switch to backward
 				next_forward_or_backward = false;
 				next_bitmap_or_list = true;
-			}
-		}
-		else { // shrinking
-			if(forward_or_backward_ == false // backward ?
-				&& (double)global_nq_size_ < global_unvisited_vertices / demon_to_top_down_ // NQ is small ?
-				) { // switch to forward
-				// currently, this is not implemented
-			//	next_forward_or_backward = true;
-			//	next_bitmap_or_list = false;
 			}
 		}
 		int bitmap_width = get_bitmap_size_local();
@@ -3399,8 +3226,8 @@ void BfsBase<PARAMS>::
 		//int max_capacity = vlq::BitmapEncoder::calc_capacity_of_values(
 		//		bitmap_width, NBPE, bitmap_width*sizeof(BitmapType));
 		//int threashold = std::min<int>(max_capacity, bitmap_width*sizeof(BitmapType)/2);
-		int threashold = bitmap_width*sizeof(BitmapType)/sizeof(TwodVertex)/2;
-		if(forward_or_backward_ == false && global_unvisited_vertices < threashold) {
+		double threashold = bitmap_width*sizeof(BitmapType)/sizeof(TwodVertex)/denom_bitmap_to_list_;
+		if(forward_or_backward_ == false && global_unvisited_vertices < threashold * mpi.size_2d) {
 			next_bitmap_or_list = false;
 		}
 		if(next_forward_or_backward == false && max_nq_size_ >= threashold) {

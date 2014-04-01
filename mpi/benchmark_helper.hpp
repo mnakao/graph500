@@ -177,7 +177,7 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 #endif
 #pragma omp parallel
 	for(int64_t i = 0; i < num_iterations; ++i) {
-		SET_AFFINITY;
+		SET_OMP_AFFINITY;
 		const int64_t start_edge = std::min((mpi.size_2d*i + mpi.rank) * EdgeList::CHUNK_SIZE, num_global_edges);
 		const int64_t end_edge = std::min(start_edge + EdgeList::CHUNK_SIZE, num_global_edges);
 		generator->generateRange(edge_buffer, start_edge, end_edge);
@@ -259,7 +259,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 
 #pragma omp parallel
 		{
-			SET_AFFINITY;
+			SET_OMP_AFFINITY;
 			int* restrict counts = scatter.get_counts();
 
 #pragma omp for schedule(static)

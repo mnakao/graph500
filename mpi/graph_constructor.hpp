@@ -819,11 +819,17 @@ private:
 		} // #pragma omp parallel for
 		free(row_starts); row_starts = NULL;
 #else // #if BFELL
-		g.row_starts_ = row_starts_;
+		g.row_starts_ = row_starts;
 #endif // #if BFELL
 
 #if VERVOSE_MODE
-		int64_t send_rowbmp[5] = { non_zero_rows, row_bitmap_length*NBPE, num_local_edges, col_len_opt, col_len_naive };
+		int64_t send_rowbmp[5] = { non_zero_rows, row_bitmap_length*NBPE, num_local_edges,
+#if BFELL
+				col_len_opt, col_len_naive
+#else // #if BFELL
+				0, 0
+#endif // #if BFELL
+		};
 		int64_t max_rowbmp[5];
 		int64_t sum_rowbmp[5];
 		MPI_Reduce(send_rowbmp, sum_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);

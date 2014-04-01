@@ -43,6 +43,7 @@
 void graph500_bfs(int SCALE, int edgefactor)
 {
 	using namespace PRM;
+	SET_AFFINITY;
 
 	double bfs_times[64], validate_times[64], edge_counts[64];
 	LogFileFormat log = {0};
@@ -55,7 +56,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
 	BfsOnCPU::printInformation();
-	BfsOnCPU* benchmark = new BfsOnCPU(DEMON_TOPDOWN_TO_BOTTOMUP, DEMON_BOTTOMUP_TO_TOPDOWN);
+	BfsOnCPU* benchmark = new BfsOnCPU(DENOM_TOPDOWN_TO_BOTTOMUP, DENOM_BITMAP_TO_LIST);
 
 	if(mpi.isMaster()) fprintf(IMD_OUT, "Graph generation\n");
 	double generation_time = MPI_Wtime();

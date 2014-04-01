@@ -293,7 +293,10 @@ public:
 
 	bool load(int numa_node_size, int numa_node_rank) {
 		bool ex_apic_supported = false;
-		char vendor_sign[13];
+		union {
+			char ch[13];
+			uint32_t reg[3];
+		} vendor_sign;
 		cpuid_register_t reg;
 
 		logical_CPU_bits = 0;
@@ -302,15 +305,15 @@ public:
 		// get vendor signature
 		cpuid(0, 0, &reg);
 		int max_basic_id = reg.eax;
-		*(uint32_t*)&vendor_sign[0] = reg.ebx;
-		*(uint32_t*)&vendor_sign[4] = reg.edx;
-		*(uint32_t*)&vendor_sign[8] = reg.ecx;
-		vendor_sign[12] = 0;
+		vendor_sign.reg[0] = reg.ebx;
+		vendor_sign.reg[1] = reg.edx;
+		vendor_sign.reg[2] = reg.ecx;
+		vendor_sign.ch[12] = 0;
 
 		cpuid(1, 0, &reg);
 		int count_bits = num_bits((reg.ebx >> 16) & 0xFF);
 
-		if(memcmp(vendor_sign, "GenuineIntel", 12) == 0) {
+		if(memcmp(vendor_sign.ch, "GenuineIntel", 12) == 0) {
 			// Intel
 			if(max_basic_id >= 0xB) {
 				cpuid(0xB, 0, &reg);
@@ -330,7 +333,7 @@ public:
 				logical_CPU_bits = count_bits;
 			}
 		}
-		else if(memcmp(vendor_sign, "AuthenticAMD", 12) == 0) {
+		else if(memcmp(vendor_sign.ch, "AuthenticAMD", 12) == 0) {
 			// AMD
 			cpuid(0x80000000u, 0, &reg);
 			if(reg.eax >= 0x80000008u) {
@@ -349,7 +352,7 @@ public:
 			}
 		}
 		else {
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: Unknown CPU: %s", vendor_sign);
+			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: Unknown CPU: %s", vendor_sign.ch);
 			return false;
 		}
 
@@ -431,6 +434,8 @@ public:
 		return apicid_to_cpu[my_cpu_id(numa_rank, core_rank, smt_rank)];
 	}
 
+	int num_logical_CPUs() { return num_cores_assgined * num_logical_CPUs_within_core; }
+
 	bool disable_affinity;
 	int num_procs;
 	int num_logical_CPUs_within_core;
@@ -458,6 +463,8 @@ private:
 
 CpuTopology cpu_topology;
 bool core_affinity_enabled = false;
+int num_base_threads = 1;
+int next_base_thread_id = 0;
 int next_thread_id = 0;
 
 __thread int thread_id = -1;
@@ -474,7 +481,29 @@ void cpu_set_to_string(cpu_set_t *set, char* str) {
 
 void set_core_affinity() {
 	if(thread_id == -1) {
-		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
+		// This code assumes that there are no nested openmp parallel sections.
+		thread_id = __sync_fetch_and_add(&next_base_thread_id, 1);
+		if(core_affinity_enabled) {
+			if(thread_id >= num_base_threads) {
+				fprintf(IMD_OUT, "[rank:%d,th:%d] WARNING: base_thread_id(%d) >= num_base_threads(%d)\n",
+						mpi.rank, thread_id, thread_id, num_base_threads);
+			}
+			int cpu = cpu_topology.cpu(thread_id);
+			CPU_ZERO(&initial_affinity);
+			CPU_SET(cpu, &initial_affinity);
+			sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
+			char str_affinity[cpu_topology.num_procs+1];
+			cpu_set_to_string(&initial_affinity, str_affinity);
+		//	fprintf(IMD_OUT, "[rank:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity, cpu);
+		}
+	}
+}
+
+void set_omp_core_affinity() {
+	if(thread_id == -1) {
+		// This code assumes that there are no nested openmp parallel sections.
+		do { thread_id = __sync_fetch_and_add(&next_thread_id, 1); }
+		while((thread_id % cpu_topology.num_logical_CPUs()) < num_base_threads);
 		if(core_affinity_enabled) {
 			int cpu = cpu_topology.cpu(thread_id);
 			CPU_ZERO(&initial_affinity);
@@ -482,7 +511,7 @@ void set_core_affinity() {
 			sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
 			char str_affinity[cpu_topology.num_procs+1];
 			cpu_set_to_string(&initial_affinity, str_affinity);
-			fprintf(IMD_OUT, "[rank:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity, cpu);
+		//	fprintf(IMD_OUT, "[rank:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity, cpu);
 		}
 	}
 }
@@ -631,8 +660,10 @@ void set_affinity()
 
 } // namespace affinity
 #define SET_AFFINITY numa::set_core_affinity()
+#define SET_OMP_AFFINITY numa::set_omp_core_affinity()
 #else
 #define SET_AFFINITY
+#define SET_OMP_AFFINITY
 #endif
 
 //-------------------------------------------------------------//
@@ -776,7 +807,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	}
 
 	// enables nested
-	omp_set_nested(1);
+	omp_set_nested(0);
 
 	// change default error handler
 	MPI_File_set_errhandler(MPI_FILE_NULL, MPI_ERRORS_ARE_FATAL);

@@ -21,8 +21,8 @@ class BfsOnCPU
 	: public BfsBase<BfsOnCPU_Params>
 {
 public:
-	BfsOnCPU(double demon_to_bottom_up__, double demon_to_top_down__)
-	: BfsBase<BfsOnCPU_Params>(demon_to_bottom_up__, demon_to_top_down__, false)
+	BfsOnCPU(double demon_to_bottom_up__, double denom_bitmap_to_list__)
+	: BfsBase<BfsOnCPU_Params>(demon_to_bottom_up__, denom_bitmap_to_list__, false)
 	  { }
 };
 

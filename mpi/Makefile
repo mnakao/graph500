@@ -1,5 +1,5 @@
 SW = GNU3
-VAMP = true
+VAMP = false
 
 # default values
 MPICC = mpicc
