@@ -1443,6 +1443,31 @@ public:
 	// top-down search
 	//-------------------------------------------------------------//
 
+	void top_down_send(TwodVertex tgt, int lgl, uint32_t local_mask,
+			LocalPacket* packet_array, TwodVertex src, uint32_t pred[2]
+#if PROFILING_MODE
+			, profiling::TimeSpan& ts_commit
+#endif
+	) {
+		int dest = tgt >> lgl;
+		uint32_t tgt_local = tgt & local_mask;
+		LocalPacket& pk = packet_array[dest];
+		if(pk.length > LocalPacket::TOP_DOWN_LENGTH-3) { // low probability
+			PROF(profiling::TimeKeeper tk_commit);
+			comm_.send<false>(pk.data.t, pk.length, dest);
+			PROF(ts_commit += tk_commit);
+			pk.src = -1;
+			pk.length = 0;
+		}
+		if(pk.src != src) { // TODO: use conditional branch
+			pk.src = src;
+			pk.data.t[pk.length+0] = pred[0];
+			pk.data.t[pk.length+1] = pred[1];
+			pk.length += 2;
+		}
+		pk.data.t[pk.length++] = tgt_local;
+	}
+
 	void top_down_parallel_section() {
 		VT_TRACER("td_par_sec");
 		struct { volatile int count; } fin; fin.count = 0;
@@ -1452,7 +1477,7 @@ public:
 			SET_OMP_AFFINITY;
 			PROF(profiling::TimeKeeper tk_all);
 			PROF(profiling::TimeSpan ts_commit);
-			int64_t num_edge_relax = 0;
+			VERVOSE(int64_t num_edge_relax = 0);
 			int max_threads = omp_get_num_threads();
 			TwodVertex* cq_list = (TwodVertex*)cq_list_;
 			LocalPacket* packet_array =
@@ -1480,36 +1505,34 @@ public:
 					TwodVertex* edge_array = graph_.edge_array_ + blk_off.edge_start;
 
 					TwodVertex c = 0;
-					for( ; e < blk_col_len[c]; edge_array += blk_col_len[c++])
+					for( ; e < blk_col_len[c]; edge_array += blk_col_len[c++]) {
+						TwodVertex tgt = edge_array[e];
+						top_down_send(tgt, lgl, local_mask, packet_array, src, pred
+#if PROFILING_MODE
+						, ts_commit
+#endif
+						);
+					}
+					VERVOSE(num_edge_relax += c);
 #else // #if BFELL
+#if ISOLATE_FIRST_EDGE
+					top_down_send(graph_.isolated_edges_[non_zero_off],
+							lgl, local_mask, packet_array, src, pred
+#if PROFILING_MODE
+					, ts_commit
+#endif
+						);
+#endif // #if ISOLATE_FIRST_EDGE
 					TwodVertex* edge_array = graph_.edge_array_;
 					int64_t e_start = graph_.row_starts_[non_zero_off];
 					int64_t e_end = graph_.row_starts_[non_zero_off+1];
-					for(int64_t e = e_start; e < e_end; ++e)
-#endif // #if BFELL
-					{ // begin for loop
-						TwodVertex tgt = edge_array[e];
-						int dest = tgt >> lgl;
-						uint32_t tgt_local = tgt & local_mask;
-						LocalPacket& pk = packet_array[dest];
-						if(pk.length > LocalPacket::TOP_DOWN_LENGTH-3) { // low probability
-							PROF(profiling::TimeKeeper tk_commit);
-							comm_.send<false>(pk.data.t, pk.length, dest);
-							PROF(ts_commit += tk_commit);
-							pk.src = -1;
-							pk.length = 0;
-						}
-						if(pk.src != src) { // TODO: use conditional branch
-							pk.src = src;
-							pk.data.t[pk.length+0] = pred[0];
-							pk.data.t[pk.length+1] = pred[1];
-							pk.length += 2;
-						}
-						pk.data.t[pk.length++] = tgt_local;
-					} // end for loop
-#if BFELL
-					VERVOSE(num_edge_relax += c);
-#else // #if BFELL
+					for(int64_t e = e_start; e < e_end; ++e) {
+						top_down_send(edge_array[e], lgl, local_mask, packet_array, src, pred
+#if PROFILING_MODE
+						, ts_commit
+#endif
+							);
+					}
 					VERVOSE(num_edge_relax += e_end - e_start);
 #endif // #if BFELL
 				} // if(row_bitmap_i & mask) {
@@ -2139,13 +2162,15 @@ public:
 		for(int64_t blk_bmp_off = 0; blk_bmp_off < int64_t(half_bitmap_width); ++blk_bmp_off) {
 			BitmapType row_bmp_i = *(graph_.row_bitmap_ + phase_bmp_off + blk_bmp_off);
 			BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
-			BitmapType should_be_inspected = (~visited_i) & row_bmp_i;
-			if(should_be_inspected == BitmapType(0)) continue;
 			TwodVertex bmp_row_sums = *(graph_.row_sums_ + phase_bmp_off + blk_bmp_off);
-			do {
-				uint32_t visb_idx = __builtin_ctzl(should_be_inspected);
-				BitmapType vis_bit = BitmapType(1) << visb_idx;
-				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & (vis_bit - 1));
+			BitmapType bit_flags = (~visited_i) & row_bmp_i;
+			while(bit_flags != BitmapType(0)) {
+				BitmapType vis_bit, mask; int idx;
+				NEXT_BIT(bit_flags, vis_bit, mask, idx);
+				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
+
+				graph_.isolated_edges_[non_zero_idx]
+
 				int64_t e_start = graph_.row_starts_[non_zero_idx];
 				int64_t e_end = graph_.row_starts_[non_zero_idx+1];
 				for(int64_t e = e_start; e < e_end; ++e) {
@@ -2162,7 +2187,7 @@ public:
 							packet.length = 0;
 						}
 						packet.data.b[packet.length+0] = src;
-						packet.data.b[packet.length+1] = (phase_bmp_off + blk_bmp_off) * NBPE + visb_idx;
+						packet.data.b[packet.length+1] = (phase_bmp_off + blk_bmp_off) * NBPE + idx;
 						packet.length += 2;
 #else
 						if(buf->full()) {
@@ -2176,7 +2201,7 @@ public:
 					}
 				}
 				should_be_inspected &= should_be_inspected - 1;
-			} while(should_be_inspected != BitmapType(0));
+			}
 			// write back
 			*(phase_bitmap + blk_bmp_off) = visited_i;
 		} // #pragma omp for nowait
@@ -2221,8 +2246,8 @@ public:
 		int max_threads = omp_get_num_threads();
 		int target_rank = phase_bmp_off / half_bitmap_width / 2;
 
-		int tmp_num_blocks = 0;
-		int tmp_edge_relax = 0;
+		VERVOSE(int tmp_num_blocks = 0);
+		VERVOSE(int tmp_edge_relax = 0);
 		PROF(profiling::TimeKeeper tk_all);
 		PROF(profiling::TimeSpan ts_commit);
 		int tid = omp_get_thread_num();
@@ -3067,9 +3092,6 @@ public:
 	PROF(profiling::TimeSpan recv_proc_time_);
 	PROF(profiling::TimeSpan gather_nq_time_);
 	PROF(profiling::TimeSpan seq_proc_time_);
-#if BIT_SCAN_TABLE
-	uint8_t bit_scan_table_[PRM::BIT_SCAN_TABLE_SIZE];
-#endif
 };
 
 

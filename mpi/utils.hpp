@@ -895,6 +895,61 @@ void cleanup_globals()
 }
 
 //-------------------------------------------------------------//
+// MPI helper
+//-------------------------------------------------------------//
+
+namespace MpiCol {
+
+template <typename T>
+int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
+	VT_TRACER("MpiCol::allgatherv");
+	int recv_off[comm_size+1], recv_cnt[comm_size];
+	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
+	recv_off[0] = 0;
+	for(int i = 0; i < comm_size; ++i) {
+		recv_off[i+1] = recv_off[i] + recv_cnt[i];
+	}
+	MPI_Allgatherv(sendbuf, sendcount, MpiTypeOf<T>::type,
+			recvbuf, recv_cnt, recv_off, MpiTypeOf<T>::type, comm);
+	return recv_off[comm_size];
+}
+
+template <typename T>
+void alltoall(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm) {
+	MPI_Alltoall(sendbuf, sendcount, MpiTypeOf<T>::type,
+			recvbuf, sendcount, MpiTypeOf<T>::type, comm);
+}
+
+/**
+ * @param sendbuf [in]
+ * @param sendcount [in]
+ * @param sendoffset [out]
+ * @param recvcount [out]
+ * @param recvoffset [out]
+ */
+template <typename T>
+T* alltoallv(T* sendbuf, int* sendcount,
+		int* sendoffset, int* recvcount, int* recvoffset, MPI_Comm comm, int comm_size)
+{
+	sendoffset[0] = 0;
+	for(int r = 0; r < comm_size; ++r) {
+		sendoffset[r + 1] = sendoffset[r] + sendcount[r];
+	}
+	MPI_Alltoall(sendcount, 1, MPI_INT, recvcount, 1, MPI_INT, comm);
+	// calculate offsets
+	recvoffset[0] = 0;
+	for(int r = 0; r < comm_size; ++r) {
+		recvoffset[r + 1] = recvoffset[r] + recvcount[r];
+	}
+	T* recv_data = static_cast<T*>(xMPI_Alloc_mem(recvoffset[comm_size] * sizeof(T)));
+	MPI_Alltoallv(sendbuf, sendcount, sendoffset, MpiTypeOf<T>::type,
+			recv_data, recvcount, recvoffset, MpiTypeOf<T>::type, comm);
+	return recv_data;
+}
+
+} // namespace MpiCol {
+
+//-------------------------------------------------------------//
 // Multithread Partitioning and Scatter
 //-------------------------------------------------------------//
 
@@ -1060,28 +1115,8 @@ public:
 			}
 		}
 #endif
-#if NETWORK_PROBLEM_AYALISYS
-		if(mpi.isMaster()) fprintf(IMD_OUT, "MPI_Alltoall(MPI_INT, comm_size=%d)...\n", comm_size_);
-#endif
-		MPI_Alltoall(send_counts_, 1, MPI_INT, recv_counts_, 1, MPI_INT, comm_);
-#if NETWORK_PROBLEM_AYALISYS
-		if(mpi.isMaster()) fprintf(IMD_OUT, "OK\n");
-#endif
-		// calculate offsets
-		recv_offsets_[0] = 0;
-		for(int r = 0; r < comm_size_; ++r) {
-			recv_offsets_[r + 1] = recv_offsets_[r] + recv_counts_[r];
-		}
-		T* recv_data = static_cast<T*>(xMPI_Alloc_mem(recv_offsets_[comm_size_] * sizeof(T)));
-#if NETWORK_PROBLEM_AYALISYS
-		if(mpi.isMaster()) fprintf(IMD_OUT, "MPI_Alltoallv(send_offsets_[%d]=%d\n", comm_size_, send_offsets_[comm_size_]);
-#endif
-		MPI_Alltoallv(send_data, send_counts_, send_offsets_, MpiTypeOf<T>::type,
-				recv_data, recv_counts_, recv_offsets_, MpiTypeOf<T>::type, comm_);
-#if NETWORK_PROBLEM_AYALISYS
-		if(mpi.isMaster()) fprintf(IMD_OUT, "OK\n");
-#endif
-		return recv_data;
+		return MpiCol::allgatherv(send_data, send_counts_, send_offsets_,
+				recv_counts_, recv_offsets_, comm_, comm_size_);
 	}
 
 	template <typename T>
@@ -1116,20 +1151,6 @@ private:
 //-------------------------------------------------------------//
 
 namespace MpiCol {
-
-template <typename T>
-int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
-	VT_TRACER("MpiCol::allgatherv");
-	int recv_off[comm_size+1], recv_cnt[comm_size];
-	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
-	recv_off[0] = 0;
-	for(int i = 0; i < comm_size; ++i) {
-		recv_off[i+1] = recv_off[i] + recv_cnt[i];
-	}
-	MPI_Allgatherv(sendbuf, sendcount, MpiTypeOf<T>::type,
-			recvbuf, recv_cnt, recv_off, MpiTypeOf<T>::type, comm);
-	return recv_off[comm_size];
-}
 
 template <typename Mapping>
 void scatter(const Mapping mapping, int data_count, MPI_Comm comm)

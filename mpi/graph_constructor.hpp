@@ -30,6 +30,8 @@ public:
 	, col_len_(NULL)
 #else
 	, row_starts_(NULL)
+	, degree_(NULL)
+	, isolated_edges_(NULL)
 #endif
 	, log_actual_global_verts_(0)
 	, log_global_verts_(0)
@@ -212,6 +214,8 @@ public:
 	SortIdx* col_len_;
 #else
 	int64_t* row_starts_;
+	int64_t* degree_;
+	TwodVertex* isolated_edges_;
 #endif
 
 	int log_actual_global_verts_;
@@ -337,7 +341,6 @@ private:
 	void initializeParameters(
 		int log_max_vertex,
 		int64_t num_global_edges,
-		bool sort_by_degree,
 		GraphType& g)
 	{
 		g.log_actual_global_verts_ = log_max_vertex;
@@ -355,9 +358,9 @@ private:
 
 		wide_row_starts_ = static_cast<int64_t*>
 			(cache_aligned_xmalloc((num_wide_rows+1)*sizeof(wide_row_starts_[0])));
+		memset(wide_row_starts_, 0x00, (num_wide_rows+1)*sizeof(wide_row_starts_[0]));
 		row_starts_sup_ = static_cast<int64_t*>(
 				cache_aligned_xmalloc((num_wide_rows+1)*sizeof(row_starts_sup_[0])));
-		memset(wide_row_starts_, 0x00, (num_wide_rows+1)*sizeof(wide_row_starts_[0]));
 	}
 
 	void scanEdges(TwodVertex* edges, int64_t num_edges, GraphType& g) {
@@ -365,21 +368,10 @@ private:
 		int64_t i;
 #pragma omp parallel for schedule(static)
 		for(i = 0; i < (num_edges&(~3)); i += 4) {
-#if 1
 			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+0])], 1);
 			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+1])], 1);
 			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+2])], 1);
 			__sync_fetch_and_add(&wide_row_starts_[EDGE_PART_IDX(edges[i+3])], 1);
-#else
-#pragma omp atomic
-			wide_row_starts_[EDGE_PART_IDX(edges[i+0])] += 1;
-#pragma omp atomic
-			wide_[EDGE_PART_IDX(edges[i+1])] += 1;
-#pragma omp atomic
-			wide_row_starts_[EDGE_PART_IDX(edges[i+2])] += 1;
-#pragma omp atomic
-			wide_row_starts_[EDGE_PART_IDX(edges[i+3])] += 1;
-#endif
 		}
 		for(i = (num_edges&(~3)); i < num_edges; ++i) {
 			wide_row_starts_[EDGE_PART_IDX(edges[i])]++;
@@ -387,41 +379,39 @@ private:
 #undef EDGE_PART_IDX
 	}
 
-	class CountDegree
+	class DegreeConverter
 	{
 	public:
 		typedef TwodVertex send_type;
+		typedef int64_t recv_type;
 
-		CountDegree(GraphConstructor2DCSR* this__,
-				UnweightedPackedEdge* edges, int64_t* degree_counts, int log_local_verts)
-			: this_(this__)
-			, edges_(edges)
-			, degree_counts_(degree_counts)
-			, log_local_verts_plus_size_r_(log_local_verts + get_msb_index(mpi.size_2dr))
-			, local_verts_mask_((int64_t(1) << log_local_verts) - 1)
+		DegreeConverter(TwodVertex* edges, int64_t* degree, int64_t* recv_degree, int log_local_verts)
+			: edges_(edges)
+			, degree_(degree)
+			, recv_degree_(recv_degree)
+			, log_local_verts_(log_local_verts)
+			, local_verts_mask_((TwodVertex(1) << log_local_verts) - 1)
 		{ }
 		int target(int i) const {
-			const int64_t v1_swizzled = edges_[i].v1();
-			assert ((v1_swizzled >> log_local_verts_plus_size_r_) < mpi.size_2dc);
-			return v1_swizzled >> log_local_verts_plus_size_r_;
+			const TwodVertex v1_swizzled = edges_[i];
+			assert ((v1_swizzled >> log_local_verts_) < mpi.size_2dc);
+			return v1_swizzled >> log_local_verts_;
 		}
 		TwodVertex get(int i) const {
-			return edges_[i].v1() & local_verts_mask_;
+			return edges_[i] & local_verts_mask_;
 		}
-		void set(int i, TwodVertex v1) const {
-#if 0
-#pragma omp atomic
-			degree_counts_[v1] += 1;
-#else
-			__sync_fetch_and_add(&degree_counts_[v1], 1);
-#endif
+		int64_t map(TwodVertex v) const {
+			return degree_[v];
+		}
+		void set(int i, int64_t d) const {
+			recv_degree_[i] = d;
 		}
 	private:
-		GraphConstructor2DCSR* const this_;
-		const UnweightedPackedEdge* const edges_;
-		int64_t* degree_counts_;
-		const int log_local_verts_plus_size_r_;
-		const int64_t local_verts_mask_;
+		const TwodVertex* const edges_;
+		int64_t* degree_;
+		int64_t* recv_degree_;
+		const int log_local_verts_;
+		const TwodVertex local_verts_mask_;
 	};
 
 	// using SFINAE
@@ -476,7 +466,7 @@ private:
 	{
 	}
 
-	void scatterAndScanEdges(EdgeList* edge_list, bool sort_by_degree, GraphType& g) {
+	void scatterAndScanEdges(EdgeList* edge_list, GraphType& g) {
 		VT_TRACER("scan_edge");
 		ScatterContext scatter(mpi.comm_2d);
 		TwodVertex* edges_to_send = static_cast<TwodVertex*>(
@@ -512,7 +502,7 @@ private:
 			const int log_max_vertex = get_msb_index(max_vertex) + 1;
 			if(g.log_actual_global_verts_ == 0) {
 				initializeParameters(log_max_vertex,
-						edge_list->num_local_edges()*mpi.size_2d, sort_by_degree, g);
+						edge_list->num_local_edges()*mpi.size_2d, g);
 			}
 			else if(log_max_vertex != g.log_actual_global_verts_) {
 				// max vertex estimation failure
@@ -591,6 +581,207 @@ private:
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Finished scattering edges.\n");
 	}
 
+	int64_t* computeGlobalDegree(GraphType& g) {
+		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
+		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
+		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length >> LOG_NBPE);
+		const int comm_size = mpi.size_2dc;
+		int send_counts[comm_size], send_offsets[comm_size + 1];
+		int recv_counts[comm_size], recv_offsets[comm_size + 1];
+		const int num_loops = std::max<int>(1, row_bitmap_length * NBPE / EdgeList::CHUNK_SIZE);
+		const TwodVertex bitmap_chunk_size = (num_local_verts / num_loops) >> LOG_NBPE;
+		assert (bitmap_chunk_size > 0);
+		int64_t *degree = static_cast<int64_t*>(
+				cache_aligned_xmalloc(num_local_verts*sizeof(int64_t)));
+		BitmapType *send_bmp = static_cast<BitmapType*>(
+				page_aligned_xmalloc(bitmap_chunk_size * comm_size*sizeof(BitmapType)));
+		BitmapType *recv_bmp = static_cast<BitmapType*>(
+				page_aligned_xmalloc(bitmap_chunk_size * comm_size*sizeof(BitmapType)));
+		int64_t *recv_row_sums = static_cast<int64_t*>(
+				cache_aligned_xmalloc((bitmap_chunk_size + 1) * comm_size*sizeof(int64_t)));
+
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Start computing global degree. %d iterations.\n", num_loops);
+		for(int loop = 0; loop < num_loops; ++loop) {
+			// compute count and offset
+			send_offsets[0] = 0;
+			for(int c = 0; c < mpi.size_2dc; ++c) {
+				TwodVertex bmp_start = ((c * num_local_verts) >> LOG_NBPE) + bitmap_chunk_size * loop;
+				send_counts[c] = g.row_sums_[bmp_start + bitmap_chunk_size] - g.row_sums_[bmp_start];
+				send_offsets[c + 1] = send_counts[c] + send_offsets[c];
+			}
+
+			int64_t *send_degree = static_cast<int64_t*>(
+					cache_aligned_xmalloc(send_offsets[mpi.size_2dc]*sizeof(int64_t)));
+
+			// copy data to send memory
+#pragma omp parallel for
+			for(int c = 0; c < comm_size; ++c) {
+				TwodVertex bmp_start = ((c * num_local_verts) >> LOG_NBPE) + bitmap_chunk_size * loop;
+				memcpy(send_bmp + bitmap_chunk_size * c,
+						g.row_bitmap_ + bmp_start, bitmap_chunk_size * sizeof(BitmapType));
+				int count_c = send_counts[c];
+				for(int64_t r = 0; r < count_c; ++r) {
+					send_degree[send_offsets[c] + r] = g.row_starts_[g.row_sums_[bmp_start] + r + 1]
+					                           - g.row_starts_[g.row_sums_[bmp_start] + r];
+				}
+			}
+
+			// transfer data
+			MpiCol::alltoall(send_bmp, recv_bmp, bitmap_chunk_size, mpi.comm_2dr);
+			int64_t* recv_degree = MpiCol::alltoallv(send_degree, send_counts, send_offsets,
+					recv_counts, recv_offsets, mpi.comm_2dr, comm_size);
+			free(send_degree); send_degree = NULL;
+
+			// create recv_row_sums
+#pragma omp parallel for
+			for(int c = 0; c < comm_size; ++c) {
+				int64_t sum = 0;
+				for(TwodVertex i = 0; i < bitmap_chunk_size; ++i) {
+					recv_row_sums[i + (bitmap_chunk_size + 1) * c] = sum;
+					sum += __builtin_popcountl(recv_bmp[i + bitmap_chunk_size * c]);
+				}
+				recv_row_sums[bitmap_chunk_size + (bitmap_chunk_size + 1) * c] = sum;
+			}
+
+			// count degree
+#pragma omp parallel for
+			for(TwodVertex word_idx = 0; word_idx < bitmap_chunk_size; ++word_idx) {
+				int64_t cnt[NBPE] = {0};
+				for(int c = 0; c < comm_size; ++c) {
+					BitmapType row_bitmap_i = recv_bmp[word_idx + bitmap_chunk_size * c];
+					BitmapType bit_flags = row_bitmap_i;
+					while(bit_flags != BitmapType(0)) {
+						BitmapType vis_bit, mask; int bit_idx;
+						NEXT_BIT(bit_flags, vis_bit, mask, bit_idx);
+						TwodVertex non_zero_idx = recv_row_sums[word_idx] + __builtin_popcountl(row_bitmap_i & mask);
+						cnt[bit_idx] += recv_degree[non_zero_idx];
+					}
+				}
+				for(int i = 0; i < NBPE; ++i) {
+					degree[(bitmap_chunk_size * loop + word_idx) * NBPE + i] = cnt[i];
+				}
+			}
+
+			MPI_Free_mem(recv_degree); recv_degree = NULL;
+			if(mpi.isMaster()) fprintf(IMD_OUT, "%d-th iteration finished.\n", loop);
+		} // for(int loop = 0; loop < num_loops; ++loop) {
+
+		free(send_bmp); send_bmp = NULL;
+		free(recv_bmp); recv_bmp = NULL;
+		free(recv_row_sums); recv_row_sums = NULL;
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Finished computing global degree.\n");
+		return degree;
+	}
+
+	void isolateFirstEdge(GraphType& g) {
+		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
+		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
+		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length >> LOG_NBPE);
+		const TwodVertex non_zero_rows = g.row_sums_[row_bitmap_length];
+#if ISOLATE_FIRST_EDGE
+		g.isolated_edges_ = static_cast<TwodVertex*>(
+				cache_aligned_xmalloc(non_zero_rows*sizeof(g.isolated_edges_[0])));
+#endif
+		const int comm_size = mpi.size_2dc;
+		int64_t num_max_edges = g.row_starts_[non_zero_rows];
+		MPI_Allreduce(MPI_IN_PLACE, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
+		int num_loops = get_blocks<EdgeList::CHUNK_SIZE>(num_max_edges);
+		TwodVertex bitmap_chunk_size = get_blocks(row_bitmap_length, num_loops);
+		int lgl = g.log_local_verts();
+
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Start sorting by degree. %d iterations.\n", num_loops);
+		for(int loop = 0; loop < num_loops; ++loop) {
+			TwodVertex bmp_start = std::min<TwodVertex>(row_bitmap_length, bitmap_chunk_size * loop);
+			TwodVertex bmp_end = std::min<TwodVertex>(row_bitmap_length, bmp_start + bitmap_chunk_size);
+			TwodVertex non_zer_row_start = g.row_sums_[bmp_start];
+			TwodVertex non_zer_row_end = g.row_sums_[bmp_end];
+			int64_t edge_start = g.row_starts_[non_zer_row_start];
+			int64_t edge_end = g.row_starts_[non_zer_row_end];
+			int64_t length = edge_end - edge_start;
+#if GLOBAL_DEGREE || LOCAL_DEGREE
+			int64_t* recv_degree = static_cast<int64_t*>(cache_aligned_xmalloc(length*sizeof(int64_t)));
+#endif
+			// get the degree for the target vertex of each edge.
+#if GLOBAL_DEGREE
+			if(edge_end - edge_start > INT_MAX) {
+				fprintf(IMD_OUT, "Error: Integer overflow (%s:%d)\n", __FILE__, __LINE__);
+			}
+			MpiCol::gather(DegreeConverter(g.edge_array_ + edge_start, g.degree_, recv_degree, lgl),
+					edge_end - edge_start, mpi.comm_2dr);
+#elif LOCAL_DEGREE
+#pragma omp parallel for
+			for(int64_t e_idx = edge_start; e_idx < edge_end; ++e_idx) {
+				TwodVertex v = g.edge_array_[e_idx];
+				TwodVertex word_idx = v >> LOG_NBPE;
+				int bit_idx = v & NBPE_MASK;
+				BitmapType mask = BitmapType(1) << v;
+				BitmapType row_bitmap_i = g.row_bitmap_[word_idx];
+				if(row_bitmap_i & mask) {
+					int64_t non_zero_idx = g.row_sums_[word_idx] + __builtin_popcountl(row_bitmap_i & (mask-1));
+					recv_degree[e_idx - edge_start] = g.row_starts_[non_zero_idx + 1] - g.row_starts_[non_zero_idx];
+				}
+				else {
+					recv_degree[e_idx - edge_start] = 0;
+				}
+			} // #pragma omp parallel for
+#endif
+
+			// sort edges by their degree.
+#pragma omp for
+			for(TwodVertex non_zero_idx = non_zer_row_start; non_zero_idx < non_zer_row_end; ++non_zero_idx) {
+				int64_t e_start = g.row_starts_[non_zero_idx];
+				int64_t e_end = g.row_starts_[non_zero_idx + 1];
+				int64_t e_length = e_end - e_start;
+#if DEGREE_ORDER
+				sort2(recv_degree + e_start - edge_start, g.edge_array_ + e_start,
+						e_end - e_start, std::greater<int64_t>());
+#elif ISOLATE_HIGH_DEGREE
+				// find the edge its target vertex has the highest degree.
+				int64_t pos, max_degree = -1;
+				for(int64_t e_idx = e_start; e_idx < e_end; ++e_idx) {
+					int64_t d = recv_degree[e_idx - edge_start];
+					if(d > max_degree) {
+						pos = e_idx;
+						max_degree = d;
+					}
+				}
+				// move the edge that is to be isolated to the first of the edge list.
+				std::swap(g.edge_array_[pos], g.edge_array_[e_start]);
+#endif
+#if ISOLATE_FIRST_EDGE
+				g.isolated_edges_[non_zero_idx] = g.edge_array_[e_start];
+#endif
+			} // #pragma omp for
+
+#if ISOLATE_FIRST_EDGE
+			// compact edge array
+			// This loop cannot be parallelized.
+			for(TwodVertex non_zero_idx = non_zer_row_start; non_zero_idx < non_zer_row_end; ++non_zero_idx) {
+				int64_t e_start = g.row_starts_[non_zero_idx];
+				int64_t e_end = g.row_starts_[non_zero_idx + 1];
+				int64_t e_length = e_end - e_start;
+				memmove(g.edge_array_ + e_start - non_zero_idx, g.edge_array_ + e_start + 1, sizeof(TwodVertex) * (e_length - 1));
+				g.row_starts_[non_zero_idx] -= non_zero_idx;
+			}
+#endif
+#if GLOBAL_DEGREE || LOCAL_DEGREE
+			free(recv_degree); recv_degree = NULL;
+#endif
+			MPI_Barrier(mpi.comm_2d);
+			if(mpi.isMaster()) fprintf(IMD_OUT, "%d-th iteration finished.\n", loop);
+		} // for(int loop = 0; loop < num_loops; ++loop) {
+
+		// update the last entry of row_starts_ and compact the edge array memory
+		g.row_starts_[non_zero_rows] -= non_zero_rows;
+		g.edge_array_ = static_cast<TwodVertex*>(realloc(g.edge_array_, g.row_starts_[non_zero_rows]));
+		if(g.edge_array_ == NULL) {
+			fprintf(IMD_OUT, "Out of memory trying to re-allocate edge array");
+			throw "OutOfMemoryExpception";
+		}
+
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Finished sorting by degree.\n");
+	}
+
 	void constructFromWideCSR(GraphType& g) {
 		VT_TRACER("form_csr");
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
@@ -598,7 +789,7 @@ private:
 		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
 		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length >> LOG_NBPE);
 		const int64_t num_edge_blocks = std::max<int64_t>(1, src_region_length >> LOG_BFELL_SORT);
-		const int64_t num_local_edges = wide_row_starts_[num_wide_rows];
+		VERVOSE(const int64_t num_local_edges = wide_row_starts_[num_wide_rows]);
 
 		VERVOSE(if(mpi.isMaster()) fprintf(IMD_OUT, "num_local_verts %f M\nsrc_region_length %f M\n"
 				"num_wide_rows %f M\nrow_bitmap_length %f M\n"
@@ -641,7 +832,7 @@ private:
 			g.row_sums_[i+1] = g.row_sums_[i] + num_rows;
 		}
 
-		const int64_t non_zero_rows = g.row_sums_[row_bitmap_length];
+		const TwodVertex non_zero_rows = g.row_sums_[row_bitmap_length];
 		int64_t* row_starts = static_cast<int64_t*>
 			(cache_aligned_xmalloc((non_zero_rows+1)*sizeof(int64_t)));
 
@@ -820,6 +1011,29 @@ private:
 		free(row_starts); row_starts = NULL;
 #else // #if BFELL
 		g.row_starts_ = row_starts;
+#if GLOBAL_DEGREE
+		g.degree_ = computeGlobalDegree(g);
+#elif LOCAL_DEGREE
+		// Compute the local degree.
+		// When it is the local degree mode,
+		// only the local part of the adjacency matrix is considered for counting the degree.
+#pragma omp parallel for
+		for(TwodVertex i = 0; i < num_local_verts; i += NBPE) {
+			TwodVertex v = i + mpi.rank_2dc * num_local_verts;
+			TwodVertex word_idx = v >> LOG_NBPE;
+			BitmapType row_bitmap_i = g.row_bitmap_[word_idx];
+			BitmapType bit_flags = row_bitmap_i;
+			while(bit_flags != BitmapType(0)) {
+				BitmapType vis_bit, mask; int bit_idx;
+				NEXT_BIT(bit_flags, vis_bit, mask, bit_idx);
+				TwodVertex non_zero_idx = g.row_sums_[word_idx] + __builtin_popcountl(row_bitmap_i & mask);
+				g.degree_[i + bit_idx] = g.row_starts_[non_zero_idx + 1] - g.row_starts_[non_zero_idx];
+			}
+		}
+#endif
+#if ISOLATE_FIRST_EDGE || DEGREE_ORDER
+		isolateFirstEdge(g);
+#endif // #if ISOLATE_FIRST_EDGE || DEGREE_ORDER
 #endif // #if BFELL
 
 #if VERVOSE_MODE
@@ -1241,14 +1455,6 @@ private:
 };
 
 } // namespace detail {
-
-template <typename EdgeList>
-void construct_graph(EdgeList* edge_list, bool sort_by_degree, bool enable_folding,
-		Graph2DCSR& g)
-{
-	detail::GraphConstructor2DCSR<EdgeList> constructor;
-	constructor.construct(edge_list, sort_by_degree, enable_folding, g);
-}
 
 
 #endif /* GRAPH_CONSTRUCTOR_HPP_ */
