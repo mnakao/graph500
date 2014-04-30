@@ -645,7 +645,7 @@ public:
 		int log_min_vertices = get_msb_index(std::max<int>(BFELL_SORT, NBPE) * 2 * mpi.size_2d);
 
 		detail::GraphConstructor2DCSR<EdgeList> constructor;
-		constructor.construct(edge_list, log_min_vertices, false /* sorting vertex */, graph_);
+		constructor.construct(edge_list, log_min_vertices, graph_);
 	}
 
 	void prepare_bfs() {
@@ -728,7 +728,7 @@ public:
 				sizeof(memory::SpinBarrier) + sizeof(int) * shared_offset_length;
 		VERVOSE(if(mpi.isMaster()) fprintf(IMD_OUT, "Allocating shared memory: %f GB per node.\n", to_giga(total_size_of_shared_memory)));
 
-		void* smem_ptr = buffer_.shared_memory_ = shared_malloc(mpi.comm_z, total_size_of_shared_memory);
+		void* smem_ptr = buffer_.shared_memory_ = shared_malloc(total_size_of_shared_memory);
 
 		get_shared_mem_pointer<BitmapType>(smem_ptr, bitmap_width, (BitmapType**)&new_visited_, NULL);
 		get_shared_mem_pointer<BitmapType>(smem_ptr, bitmap_width, (BitmapType**)&old_visited_, NULL);
@@ -772,7 +772,7 @@ public:
 
 #pragma omp parallel
 		{
-#if 1	// Only Spec2010 needs this initialization
+#if !INIT_PRED_ONCE	// Only Spec2010 needs this initialization
 #pragma omp for nowait
 			for(int64_t i = 0; i < num_local_vertices; ++i) {
 				pred[i] = -1;
@@ -2168,9 +2168,34 @@ public:
 				BitmapType vis_bit, mask; int idx;
 				NEXT_BIT(bit_flags, vis_bit, mask, idx);
 				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
-
-				graph_.isolated_edges_[non_zero_idx]
-
+#if ISOLATE_FIRST_EDGE
+				// short cut
+				TwodVertex src = graph_.isolated_edges_[non_zero_idx];
+				if(shared_visited_[src >> LOG_NBPE] & (BitmapType(1) << (src & NBPE_MASK))) {
+					// add to next queue
+					visited_i |= vis_bit;
+#if STREAM_UPDATE
+					if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
+						visited_count += packet.length;
+						PROF(profiling::TimeKeeper tk_commit);
+						comm_.send<false>(packet.data.b, packet.length, target_rank);
+						PROF(ts_commit += tk_commit);
+						packet.length = 0;
+					}
+					packet.data.b[packet.length+0] = src;
+					packet.data.b[packet.length+1] = (phase_bmp_off + blk_bmp_off) * NBPE + idx;
+					packet.length += 2;
+#else
+					if(buf->full()) {
+						nq_.push(buf); buf = nq_empty_buffer_.get();
+					}
+					buf->append_nocheck(src, blk_vertex_base + orig);
+#endif // #if STREAM_UPDATE
+					// end this row
+					VERVOSE(tmp_edge_relax += 1);
+					continue;
+				}
+#endif // #if ISOLATE_FIRST_EDGE
 				int64_t e_start = graph_.row_starts_[non_zero_idx];
 				int64_t e_end = graph_.row_starts_[non_zero_idx+1];
 				for(int64_t e = e_start; e < e_end; ++e) {
@@ -2200,8 +2225,7 @@ public:
 						break;
 					}
 				}
-				should_be_inspected &= should_be_inspected - 1;
-			}
+			} // while(bit_flags != BitmapType(0)) {
 			// write back
 			*(phase_bitmap + blk_bmp_off) = visited_i;
 		} // #pragma omp for nowait
@@ -2279,6 +2303,32 @@ public:
 				if(row_bitmap_i & vis_bit) { // I have edges for this vertex ?
 					TwodVertex non_zero_idx = phase_row_sums[word_idx] +
 							__builtin_popcountl(row_bitmap_i & (vis_bit-1));
+#if ISOLATE_FIRST_EDGE
+					TwodVertex src = graph_.isolated_edges_[non_zero_idx];
+					if(shared_visited_[src >> LOG_NBPE] & (BitmapType(1) << (src & NBPE_MASK))) {
+						// add to next queue
+						vertex_enabled[i] = 0; --num_enabled;
+#if STREAM_UPDATE
+						if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
+							PROF(profiling::TimeKeeper tk_commit);
+							comm_.send<false>(packet.data.b, packet.length, target_rank);
+							PROF(ts_commit += tk_commit);
+							packet.length = 0;
+						}
+						packet.data.b[packet.length+0] = src;
+						packet.data.b[packet.length+1] = phase_bmp_off * NBPE + tgt;
+						packet.length += 2;
+#else
+						if(buf->full()) {
+							nq_.push(buf); buf = nq_empty_buffer_.get();
+						}
+						buf->append_nocheck(src, blk_vertex_base + orig);
+#endif // #if STREAM_UPDATE
+						// end this row
+						VERVOSE(tmp_edge_relax += 1);
+						continue;
+					}
+#endif // #if ISOLATE_FIRST_EDGE
 					int64_t e_start = graph_.row_starts_[non_zero_idx];
 					int64_t e_end = graph_.row_starts_[non_zero_idx+1];
 					for(int64_t e = e_start; e < e_end; ++e) {
@@ -2307,7 +2357,7 @@ public:
 							break;
 						}
 					}
-				}
+				} // if(row_bitmap_i & vis_bit) {
 			} while((phase_list[++i] >> LOG_BFELL_SORT) == blk_idx);
 			assert(i <= end);
 		}
@@ -2985,11 +3035,18 @@ public:
 		fprintf(IMD_OUT, "sizeof(BitmapType)=%zd.\n", sizeof(BitmapType));
 		//fprintf(IMD_OUT, "Index Type of Graph: %d bytes per edge.\n", sizeof(TwodVertex));
 		fprintf(IMD_OUT, "sizeof(TwodVertex)=%zd.\n", sizeof(TwodVertex));
+		fprintf(IMD_OUT, "NUMA_BIND=%d.\n", NUMA_BIND);
+		fprintf(IMD_OUT, "SHARED_MEMORY=%d.\n", SHARED_MEMORY);
 		fprintf(IMD_OUT, "VERVOSE_MODE=%d.\n", VERVOSE_MODE);
 		fprintf(IMD_OUT, "PROFILING_MODE=%d.\n", PROFILING_MODE);
 		fprintf(IMD_OUT, "BFELL=%d.\n", BFELL);
+		fprintf(IMD_OUT, "DEGREE_ORDER_ONLY_IE=%d.\n", DEGREE_ORDER_ONLY_IE);
+		fprintf(IMD_OUT, "INIT_PRED_ONCE=%d.\n", INIT_PRED_ONCE);
+
+		fprintf(IMD_OUT, "ISOLATE_FIRST_EDGE=%d.\n", ISOLATE_FIRST_EDGE);
+		fprintf(IMD_OUT, "DEGREE_ORDER=%d.\n", DEGREE_ORDER);
+
 		fprintf(IMD_OUT, "BF_DEEPER_ASYNC=%d.\n", BF_DEEPER_ASYNC);
-		fprintf(IMD_OUT, "SHARED_MEM_VISITED=%d.\n", SHARED_MEM_VISITED);
 		fprintf(IMD_OUT, "VALIDATION_LEVEL=%d.\n", VALIDATION_LEVEL);
 
 		fprintf(IMD_OUT, "PACKET_LENGTH=%d.\n", PACKET_LENGTH);
@@ -3310,8 +3367,9 @@ void BfsBase<PARAMS>::
 
 			fprintf(IMD_OUT, "=== === === === ===\n");
 		}
-		if(global_nq_size_ == 0)
+		if(global_nq_size_ == 0) {
 			break;
+		}
 #endif
 		// expand //
 		if(next_forward_or_backward == forward_or_backward_) {

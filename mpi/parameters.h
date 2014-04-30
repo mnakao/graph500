@@ -8,22 +8,23 @@
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
-// Project includes
+#define NUMA_BIND 0
+#define SHARED_MEMORY 1
+
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define DETAILED_PROF_MODE 0
 #define REPORT_GEN_RPGRESS 1
 
-#define BFELL 0
+#define BFELL 1
 
 #define ISOLATE_FIRST_EDGE 1
-#define GLOBAL_DEGREE 1
-#define ISOLATE_HIGH_DEGREE 1
 #define DEGREE_ORDER 1
+#define DEGREE_ORDER_ONLY_IE 1
+#define INIT_PRED_ONCE 1
 
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
-#define SHARED_MEM_VISITED 1
 
 #define SHARED_VISITED_OPT 1
 
@@ -92,8 +93,6 @@
 #if BFELL
 #	undef ISOLATE_FIRST_EDGE
 #	define ISOLATE_FIRST_EDGE 0
-#	undef GLOBAL_DEGREE
-#	define GLOBAL_DEGREE 0
 #	undef DEGREE_ORDER
 #	define DEGREE_ORDER 0
 #endif
@@ -103,15 +102,6 @@
 #	define ISOLATE_HIGH_DEGREE 0
 #endif
 
-#if (!ISOLATE_HIGH_DEGREE && !DEGREE_ORDER)
-#	define GLOBAL_DEGREE 0
-#	define LOCAL_DEGREE 0
-#elif GLOBAL_DEGREE
-#	define LOCAL_DEGREE 0
-#else
-#	define LOCAL_DEGREE 1
-#endif
-
 #define CACHE_LINE 128
 #define PAGE_SIZE 4096
 
@@ -119,7 +109,7 @@
 
 typedef uint8_t SortIdx;
 typedef uint64_t BitmapType;
-typedef uint32_t TwodVertex;
+typedef int32_t TwodVertex;
 
 #ifdef __cplusplus
 namespace PRM { //

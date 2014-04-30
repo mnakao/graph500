@@ -82,6 +82,13 @@ void graph500_bfs(int SCALE, int edgefactor)
 	int64_t *pred = static_cast<int64_t*>(
 		cache_aligned_xmalloc(nlocalverts*sizeof(pred[0])));
 
+#if INIT_PRED_ONCE	// Only Spec2010 needs this initialization
+#pragma omp parallel for
+	for(int64_t i = 0; i < nlocalverts; ++i) {
+		pred[i] = -1;
+	}
+#endif
+
 	bool result_ok = true;
 
 	if(root_start == 0)

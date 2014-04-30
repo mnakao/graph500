@@ -54,80 +54,8 @@ inline int get_msb_index(int64_t value) {
 #endif // #ifdef __GNUC__
 
 #ifdef __sparc_v9__
-// Since the Fujitsu compiler, which is used on Kei and FX10,does not support __sync_fetch_and_* functions,
-// we define them here.
-// The Fujitsu compiler has a bug and we cannot use both OpenMP and inline assembler in the same function.
-// Be sure that the code using inline assembler is not inlined in the function using OpenMP.
 
-inline int64_t __sync_fetch_and_add_wo_omp(volatile int64_t* ptr, int64_t val) {
-	int64_t old_value;
-	__asm__ (
-			"ldx     [%2], %0\n"
-	"1:\n\t"
-			"add    %0, %3, %%l0\n\t"
-			"casx   [%2], %0, %%l0\n\t"
-			"cmp    %0, %%l0\n\t"
-			"bne,a,pn %%xcc, 1b\n\t"
-			"mov    %%l0, %0\n\t"
-			:"=&r"(old_value),"=m"(*ptr)
-			:"r"(ptr),"r"(val)
-			:"%l0","cc"
-			);
-	return old_value;
-}
-
-inline int32_t __sync_fetch_and_add_wo_omp(volatile int32_t* ptr, int32_t val) {
-	int32_t old_value;
-	__asm__ (
-			"ldsw   [%2], %0\n"
-	"1:\n\t"
-			"add    %0, %3, %%l0\n\t"
-			"cas    [%2], %0, %%l0\n\t"
-			"cmp    %0, %%l0\n\t"
-			"bne,a,pn %%icc, 1b\n\t"
-			"mov    %%l0, %0\n\t"
-			:"=&r"(old_value),"=m"(*ptr)
-			:"r"(ptr),"r"(val)
-			:"%l0","cc"
-			);
-	return old_value;
-}
-
-inline uint64_t __sync_fetch_and_or_wo_omp(volatile uint64_t* ptr, uint64_t val) {
-	uint64_t old_value;
-	__asm__ (
-			"ldx     [%2], %0\n"
-	"1:\n\t"
-			"or     %0, %3, %%l0\n\t"
-			"casx   [%2], %0, %%l0\n\t"
-			"cmp    %0, %%l0\n\t"
-			"bne,a,pn %%xcc, 1b\n\t"
-			"mov    %%l0, %0\n\t"
-			:"=&r"(old_value),"=m"(*ptr)
-			:"r"(ptr),"r"(val)
-			:"%l0","cc"
-			);
-	return old_value;
-}
-
-inline uint32_t __sync_fetch_and_or_wo_omp(volatile uint32_t* ptr, uint32_t val) {
-	uint64_t old_value;
-	__asm__ (
-			"ldsw   [%2], %0\n"
-	"1:\n\t"
-			"or    %0, %3, %%l0\n\t"
-			"cas    [%2], %0, %%l0\n\t"
-			"cmp    %0, %%l0\n\t"
-			"bne,a,pn %%icc, 1b\n\t"
-			"mov    %%l0, %0\n\t"
-			:"=&r"(old_value),"=m"(*ptr)
-			:"r"(ptr),"r"(val)
-			:"%l0","cc"
-			);
-	return old_value;
-}
-
-inline int __builtin_popcountl_wo_omp(uint64_t n) {
+inline int __builtin_popcountl_asm(uint64_t n) {
 	int c;
 	__asm__(
 			"popc %1, %0\n\t"
@@ -138,7 +66,7 @@ inline int __builtin_popcountl_wo_omp(uint64_t n) {
 	return c;
 }
 
-inline int __builtin_popcount_wo_omp(uint32_t n) {
+inline int __builtin_popcount_asm(uint32_t n) {
 	int c;
 	__asm__(
 			"popc %1, %0\n\t"
@@ -150,62 +78,21 @@ inline int __builtin_popcount_wo_omp(uint32_t n) {
 }
 
 inline int __builtin_ctzl_wo_omp(uint64_t n) {
-	return __builtin_popcountl_wo_omp((n&(-n))-1);
+	return __builtin_popcountl_asm((n&(-n))-1);
 }
 
 inline int __builtin_ctz_wo_omp(uint32_t n) {
-	return __builtin_popcount_wo_omp((n&(-n))-1);
+	return __builtin_popcount_asm((n&(-n))-1);
 }
 
-#if 1
-#	ifdef __FUJITSU
-uint64_t __attribute__ ((noinline)) __sync_fetch_and_add(volatile uint64_t* ptr, uint64_t val) {
-	return __sync_fetch_and_add_wo_omp(ptr, val);
-}
-uint32_t __attribute__ ((noinline)) __sync_fetch_and_add(volatile uint32_t* ptr, uint32_t val) {
-	return __sync_fetch_and_add_wo_omp(ptr, val);
-}
-uint64_t __attribute__ ((noinline)) __sync_fetch_and_or(volatile uint64_t* ptr, uint64_t val) {
-	return __sync_fetch_and_or_wo_omp(ptr, val);
-}
-uint32_t __attribute__ ((noinline)) __sync_fetch_and_or(volatile uint32_t* ptr, uint32_t val) {
-	return __sync_fetch_and_or_wo_omp(ptr, val);
-}
-#	endif // #ifdef __FUJITSU
-int __attribute__ ((noinline)) __builtin_popcountl(uint64_t n) {
-	return __builtin_popcountl_wo_omp(n);
-}
-int __attribute__ ((noinline)) __builtin_popcount(uint32_t n) {
-	return __builtin_popcount_wo_omp(n);
-}
-int __attribute__ ((noinline)) __builtin_ctzl(uint64_t n) {
-	return __builtin_ctzl_wo_omp(n);
-}
-int __attribute__ ((noinline)) __builtin_ctz(uint32_t n) {
-	return __builtin_ctz_wo_omp(n);
-}
-#else
-#	ifdef __FUJITSU
-#		define __sync_fetch_and_add __sync_fetch_and_add_wo_omp
-#		define __sync_fetch_and_or __sync_fetch_and_or_wo_omp
-#	endif // #ifdef __FUJITSU
-#	define __builtin_popcountl __builtin_popcountl_wo_omp
-#	define __builtin_popcount __builtin_popcount_wo_omp
-#	define __builtin_ctzl __builtin_ctzl_wo_omp
-#	define __builtin_ctz __builtin_ctz_wo_omp
-#endif
+#define __builtin_ctzl __builtin_ctzl_asm
+#define __builtin_ctz __builtin_ctz_asm
 
 #define NEXT_BIT(flags__, flag__, mask__, idx__) do {\
 	flag__ = flags__ & (-flags__);\
 	mask__ = flag__ - 1;\
 	flags__ &= ~flag__;\
 	idx__ = __builtin_popcountl(mask__); } while(false)\
-
-#define NEXT_BIT_WO_OMP(flags__, flag__, mask__, idx__) do {\
-	flag__ = flags__ & (-flags__);\
-	mask__ = flag__ - 1;\
-	flags__ &= ~flag__;\
-	idx__ = __builtin_popcountl_wo_omp(mask__); } while(false)\
 
 #else // #ifdef __sparc_v9__
 
@@ -214,8 +101,6 @@ int __attribute__ ((noinline)) __builtin_ctz(uint32_t n) {
 	flag__ = BitmapType(1) << idx__;\
 	mask__ = flag__ - 1;\
 	flags__ &= ~flag__; } while(false)\
-
-#define NEXT_BIT_WO_OMP(flags, mask, idx) NEXT_BIT(flags, mask, idx)
 
 #endif // #ifdef __sparc_v9__
 

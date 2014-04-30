@@ -13,7 +13,7 @@
 // for affinity setting //
 #include <unistd.h>
 
-#ifndef NNUMA
+#if NUMA_BIND
 #include <sched.h>
 #include <numa.h>
 #endif
@@ -67,12 +67,12 @@ struct MPI_GLOBALS {
 	int rank_y;
 	int rank_z;
 	int size_2d;
-	int size_2dc;
-	int size_2dr;
-	int size_y;
-	int size_z;
+	int size_2dc; // = comm_2dr.size()
+	int size_2dr; // = comm_2dc.size()
+	int size_y; // = comm_y.size()
+	int size_z; // = comm_z.size()
 	MPI_Comm comm_2d;
-	MPI_Comm comm_2dr;
+	MPI_Comm comm_2dr; // = comm_x
 	MPI_Comm comm_2dc;
 	MPI_Comm comm_y;
 	MPI_Comm comm_z;
@@ -177,7 +177,9 @@ void* page_aligned_xmalloc(const size_t size)
 	return p;
 }
 
-void* shared_malloc(MPI_Comm comm, size_t nbytes) {
+#if SHARED_MEMORY
+void* shared_malloc(size_t nbytes) {
+	MPI_Comm comm = mpi.comm_z;
 	int rank; MPI_Comm_rank(comm, &rank);
 	key_t shm_key;
 	int shmid = -1;
@@ -238,14 +240,38 @@ void shared_free(void* shm) {
 	}
 }
 
+void test_shared_memory() {
+	int* mem = (int*)shared_malloc(sizeof(int));
+	int ref_val = 0;
+	if(mpi.rank_z == 0) {
+		*mem = ref_val = mpi.rank;
+	}
+	MPI_Bcast(&ref_val, 1, MpiTypeOf<int>::type, 0, mpi.comm_z);
+	int result = (*mem == ref_val), global_result;
+	shared_free(mem);
+	MPI_Allreduce(&result, &global_result, 1, MpiTypeOf<int>::type, MPI_LOR, mpi.comm_2d);
+	if(global_result == false) {
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Shared memory test failed!! Please, check MPI_NUM_NODE.\n");
+		MPI_Abort(mpi.comm_2d, 1);
+	}
+}
+#else // #if SHARED_MEMORY
+void* shared_malloc(size_t size) {
+	return cache_aligned_xcalloc(size);
+}
+void shared_free(void* shm) {
+	free(shm);
+}
+#endif // #if SHARED_MEMORY
+
 //-------------------------------------------------------------//
 // CPU Affinity Setting
 //-------------------------------------------------------------//
 
 int g_GpuIndex = -1;
 
-#ifndef NNUMA
 namespace numa {
+#if NUMA_BIND
 
 typedef struct cpuid_register_t {
 	unsigned long eax;
@@ -262,22 +288,6 @@ void cpuid(unsigned long eax, unsigned long ecx, cpuid_register_t *r)
         :"a"(eax), "c"(ecx)
     );
     return;
-}
-
-void test_shared_memory() {
-	int* mem = (int*)shared_malloc(mpi.comm_z, sizeof(int));
-	int ref_val = 0;
-	if(mpi.rank_z == 0) {
-		*mem = ref_val = mpi.rank;
-	}
-	MPI_Bcast(&ref_val, 1, MpiTypeOf<int>::type, 0, mpi.comm_z);
-	int result = (*mem == ref_val), global_result;
-	shared_free(mem);
-	MPI_Allreduce(&result, &global_result, 1, MpiTypeOf<int>::type, MPI_LOR, mpi.comm_2d);
-	if(global_result == false) {
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Shared memory test failed!! Please, check MPI_NUM_NODE.\n");
-		MPI_Abort(mpi.comm_2d, 1);
-	}
 }
 
 class CpuTopology {
@@ -533,17 +543,15 @@ void check_affinity_setting() {
 				mpi.rank, thread_id, init_str, now_str);
 	}
 }
+#define SET_AFFINITY numa::set_core_affinity()
+#define SET_OMP_AFFINITY numa::set_omp_core_affinity()
+#else
+#define SET_AFFINITY
+#define SET_OMP_AFFINITY
+#endif
 
 void set_affinity()
 {
-	// Initialize comm_[yz]
-	mpi.comm_y = mpi.comm_2dc;
-	mpi.comm_z = MPI_COMM_SELF;
-	mpi.size_y = mpi.size_2dr;
-	mpi.size_z = 1;
-	mpi.rank_y = mpi.rank_2dr;
-	mpi.rank_z = 0;
-
 	const char* num_node_str = getenv("MPI_NUM_NODE");
 	if(num_node_str == NULL) {
 		if(mpi.rank == mpi.size_ - 1) {
@@ -558,66 +566,82 @@ void set_affinity()
 	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
 	g_GpuIndex = proc_rank;
 
-	if(cpu_topology.load(max_procs_per_node, proc_rank) == false) {
-		max_procs_per_node = 1;
-	}
 	if(mpi.isRmaster()) {
 		fprintf(IMD_OUT, "process distribution : %s\n", dist_round_robin ? "round robin" : "partition");
 	}
-	if(max_procs_per_node == 3) {
-		if(numa_available() < 0) {
-			fprintf(IMD_OUT, "No NUMA support available on this system.\n");
+#if NUMA_BIND
+	if(max_procs_per_node > 1 && cpu_topology.load(max_procs_per_node, proc_rank)) {
+		if(max_procs_per_node == 3) {
+			if(numa_available() < 0) {
+				fprintf(IMD_OUT, "No NUMA support available on this system.\n");
+			}
+			else {
+				int NUM_SOCKET = numa_max_node() + 1;
+				if(proc_rank < NUM_SOCKET) {
+					numa_set_preferred(proc_rank);
+				}
+				if(NUM_SOCKET != cpu_topology.num_numa_nodes) {
+					if(mpi.isMaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
+							NUM_SOCKET, cpu_topology.num_numa_nodes);
+				}
+			}
+			cpu_set_t set; CPU_ZERO(&set);
+			if(proc_rank < cpu_topology.num_numa_nodes) {
+				for(int core = 0; core < cpu_topology.num_cores_within_numa; core++)
+					for(int smt = 0; smt < cpu_topology.num_cores_within_numa; smt++)
+						CPU_SET(cpu_topology.cpu(proc_rank, core, smt), &set);
+			}
+			else {
+				for(int i = 0; i < cpu_topology.num_procs; i++)
+					CPU_SET(i, &set);
+			}
+			sched_setaffinity(0, sizeof(set), &set);
+
+			if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
+			  fprintf(IMD_OUT, "affinity for executing 3 processed per node is enabled.\n");
+			}
 		}
 		else {
-			int NUM_SOCKET = numa_max_node() + 1;
-			if(proc_rank < NUM_SOCKET) {
-				numa_set_preferred(proc_rank);
+			if(numa_available() < 0) {
+				fprintf(IMD_OUT, "No NUMA support available on this system.\n");
+				return ;
 			}
+			int NUM_SOCKET = numa_max_node() + 1;
 			if(NUM_SOCKET != cpu_topology.num_numa_nodes) {
-				if(mpi.isMaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
+				if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
 						NUM_SOCKET, cpu_topology.num_numa_nodes);
 			}
-		}
-		cpu_set_t set; CPU_ZERO(&set);
-		if(proc_rank < cpu_topology.num_numa_nodes) {
-			for(int core = 0; core < cpu_topology.num_cores_within_numa; core++)
-				for(int smt = 0; smt < cpu_topology.num_cores_within_numa; smt++)
-					CPU_SET(cpu_topology.cpu(proc_rank, core, smt), &set);
-		}
-		else {
-			for(int i = 0; i < cpu_topology.num_procs; i++)
-				CPU_SET(i, &set);
-		}
-		sched_setaffinity(0, sizeof(set), &set);
 
-		if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
-		  fprintf(IMD_OUT, "affinity for executing 3 processed per node is enabled.\n");
+			// set default affinity to numa node
+			numa_run_on_node(proc_rank % NUM_SOCKET);
+
+			// memory affinity
+			numa_set_preferred(proc_rank % NUM_SOCKET);
+
+			core_affinity_enabled = true;
+			if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity is enabled\n");
+
+			if(mpi.rank == mpi.size_-1) { /* print from max rank node for easy debugging */
+			  fprintf(IMD_OUT, "NUMA node affinity is enabled.\n");
+			}
 		}
 	}
-	else if(max_procs_per_node > 1) {
-		if(numa_available() < 0) {
-			fprintf(IMD_OUT, "No NUMA support available on this system.\n");
-			return ;
+	// failed to detect CPU topology or there is only one process here
+	else {
+		if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
+		  fprintf(IMD_OUT, "affinity is disabled.\n");
 		}
-		int NUM_SOCKET = numa_max_node() + 1;
-		if(NUM_SOCKET != cpu_topology.num_numa_nodes) {
-			if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
-					NUM_SOCKET, cpu_topology.num_numa_nodes);
+		cpu_set_t set; CPU_ZERO(&set);
+		for(int i = 0; i < cpu_topology.num_procs; i++) {
+			CPU_SET(i, &set);
 		}
-
-		// set default affinity to numa node
-		numa_run_on_node(proc_rank % NUM_SOCKET);
-
-		// memory affinity
-		numa_set_preferred(proc_rank % NUM_SOCKET);
-
-		core_affinity_enabled = true;
-		if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity is enabled\n");
-
-#if SHARED_MEM_VISITED
+		sched_setaffinity(0, sizeof(set), &set);
+	}
+#endif // #if NUMA_BIND
+#if SHARED_MEMORY
+	if(max_procs_per_node > 1 && max_procs_per_node != 3) {
 		mpi.size_z = max_procs_per_node;
 		mpi.rank_z = proc_rank;
-#endif
 
 		// create comm_z
 		if(mpi.size_z > 1) {
@@ -638,33 +662,14 @@ void set_affinity()
 				MPI_Comm_split(mpi.comm_2dc, mpi.rank_z, mpi.rank_2dc / mpi.size_z, &mpi.comm_y);
 			}
 		}
-
-		if(mpi.rank == mpi.size_-1) { /* print from max rank node for easy debugging */
-		  fprintf(IMD_OUT, "NUMA node affinity is enabled.\n");
-		}
 	}
-	else {
-		if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
-		  fprintf(IMD_OUT, "affinity is disabled.\n");
-		}
-		cpu_set_t set; CPU_ZERO(&set);
-		for(int i = 0; i < cpu_topology.num_procs; i++) {
-			CPU_SET(i, &set);
-		}
-		sched_setaffinity(0, sizeof(set), &set);
-	}
+#endif
 	if(mpi.isMaster()) {
 		  fprintf(IMD_OUT, "Y dimension is %s\n", mpi.isYdimAvailable() ? "Enabled" : "Disabled");
 	}
 }
 
-} // namespace affinity
-#define SET_AFFINITY numa::set_core_affinity()
-#define SET_OMP_AFFINITY numa::set_omp_core_affinity()
-#else
-#define SET_AFFINITY
-#define SET_OMP_AFFINITY
-#endif
+} // namespace numa
 
 //-------------------------------------------------------------//
 // ?
@@ -806,6 +811,14 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		setup_2dcomm(false);
 	}
 
+	// Initialize comm_[yz]
+	mpi.comm_y = mpi.comm_2dc;
+	mpi.comm_z = MPI_COMM_SELF;
+	mpi.size_y = mpi.size_2dr;
+	mpi.size_z = 1;
+	mpi.rank_y = mpi.rank_2dr;
+	mpi.rank_z = 0;
+
 	// enables nested
 	omp_set_nested(0);
 
@@ -852,12 +865,11 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 			fprintf(IMD_OUT, "Error: PAGE_SIZE(%d) is not correct.\n", PAGE_SIZE);
 		}
 	}
-#ifndef NNUMA
+
 	// set affinity
 	if(getenv("NO_AFFINITY") == NULL) {
 		numa::set_affinity();
 	}
-#endif
 
 #if CUDA_ENABLED
 	CudaStreamManager::initialize_cuda(g_GpuIndex);
@@ -876,7 +888,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 
 void cleanup_globals()
 {
-#ifndef NNUMA
+#if NUMA_BIND
 #pragma omp parallel
 	numa::check_affinity_setting();
 #endif
@@ -1115,7 +1127,7 @@ public:
 			}
 		}
 #endif
-		return MpiCol::allgatherv(send_data, send_counts_, send_offsets_,
+		return MpiCol::alltoallv(send_data, send_counts_, send_offsets_,
 				recv_counts_, recv_offsets_, comm_, comm_size_);
 	}
 
