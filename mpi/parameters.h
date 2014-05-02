@@ -8,7 +8,7 @@
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
-#define NUMA_BIND 0
+#define NUMA_BIND 1
 #define SHARED_MEMORY 1
 
 #define VERVOSE_MODE 1
@@ -16,11 +16,11 @@
 #define DETAILED_PROF_MODE 0
 #define REPORT_GEN_RPGRESS 1
 
-#define BFELL 1
+#define BFELL 0
 
 #define ISOLATE_FIRST_EDGE 1
-#define DEGREE_ORDER 1
-#define DEGREE_ORDER_ONLY_IE 1
+#define DEGREE_ORDER 0
+#define DEGREE_ORDER_ONLY_IE 0
 #define INIT_PRED_ONCE 1
 
 #define STREAM_UPDATE 1
@@ -28,7 +28,7 @@
 
 #define SHARED_VISITED_OPT 1
 
-#define PRE_EXEC_TIME 0 // 300 seconds
+#define PRE_EXEC_TIME 30 // 300 seconds
 
 #define BFS_BACKWARD 1
 #define VLQ_COMPRESSION 0
