@@ -1,5 +1,5 @@
-SW = FUJI0
-VAMP = false
+SW = GNU3
+VAMP = true
 
 # default values
 MPICC = mpicc
@@ -12,13 +12,14 @@ INC = # -I$(CUDA_PATH)/include
 BINS = runnable
 OBJS = main.o low_level_func.o ../generator/splittable_mrg.o
 CUOBJ = cuda_kernel.o
-LIBS = -lm -lnuma
+LIBS = -lm
 
 NVFLAG_BASE = -Drestrict=__restrict__ -Xcompiler -fopenmp,-ffast-math,-Wall -arch=compute_20 -code=sm_20
 ifeq ($(SW), GNU3)
 CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math # -g -pg
 NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LDFLAGS = -fopenmp -g # -g -pg
+LIBS := $(LIBS) -lnuma
 endif
 ifeq ($(SW), GNU0)
 CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
@@ -26,6 +27,7 @@ CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
 #NVCCFLAGS = $(NVFLAG_BASE) -g -G -O0
 NVCCFLAGS = $(NVFLAG_BASE) -g -O0
 LDFLAGS = -fopenmp -g # -g -pg
+LIBS := $(LIBS) -lnuma
 endif
 ifeq ($(SW), UVGNU3)
 MPICC = mpicc-gcc4.7

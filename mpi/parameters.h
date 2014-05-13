@@ -8,17 +8,18 @@
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
-#define NUMA_BIND 0
-#define CPU_BIND_CHECK 0
+#define NUMA_BIND 1
+#define CPU_BIND_CHECK 1
 #define PRINT_BINDING 0
-#define SHARED_MEMORY 0
+#define SHARED_MEMORY 1
+#define MPI_FUNNELED 0
 
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define DETAILED_PROF_MODE 0
 #define REPORT_GEN_RPGRESS 1
 
-#define BFELL 1
+#define BFELL 0
 
 #define ISOLATE_FIRST_EDGE 1
 #define DEGREE_ORDER 0
@@ -30,7 +31,7 @@
 
 #define SHARED_VISITED_OPT 1
 
-#define PRE_EXEC_TIME 30 // 300 seconds
+#define PRE_EXEC_TIME 5 // 300 seconds
 
 #define BFS_BACKWARD 1
 #define VLQ_COMPRESSION 0
@@ -44,6 +45,7 @@
 #define AVOID_BUSY_WAIT 0
 #define EDGES_IN_RAIL 1
 
+// org = 1000
 #define DENOM_TOPDOWN_TO_BOTTOMUP 1000
 #define DENOM_BITMAP_TO_LIST 2.0
 

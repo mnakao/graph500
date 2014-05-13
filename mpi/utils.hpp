@@ -1021,7 +1021,12 @@ void cleanup_2dcomm()
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 {
-	MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &mpi.thread_level);
+#if MPI_FUNNELED
+	int reqeust_level = MPI_THREAD_FUNNELED;
+#else
+	int reqeust_level = MPI_THREAD_SINGLE;
+#endif
+	MPI_Init_thread(&argc, &argv, reqeust_level, &mpi.thread_level);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
 
@@ -1050,7 +1055,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 #endif
 		);
 		fprintf(IMD_OUT, "Running Binary: %s\n", argv[0]);
-		fprintf(IMD_OUT, "Provided MPI thread mode: %s (Requested level: MPI_THREAD_FUNNELED)\n", prov_str);
+		fprintf(IMD_OUT, "Provided MPI thread mode: %s\n", prov_str);
 		fprintf(IMD_OUT, "Pre running time will be %d seconds\n", PRE_EXEC_TIME);
 	}
 
