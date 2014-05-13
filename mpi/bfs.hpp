@@ -58,7 +58,7 @@ public:
 	virtual void comm_cmd() = 0;
 };
 
-class AsyncCommManager
+class AsyncCommManager : public Runnable
 {
 	struct CommTarget {
 		CommTarget()
@@ -159,7 +159,7 @@ public:
 		}
 	}
 
-	void enter_comm() { comm_thread_routine(); }
+	virtual void run() { comm_thread_routine(); }
 
 	/**
 	 * Asynchronous send.
@@ -1586,8 +1586,9 @@ public:
 		compute_finished_ = false;
 		TopDownParallelSection par_sec(this);
 
-		compute_thread_.submit(&par_sec, 0);
-		comm_.enter_comm();
+		// If mpi thread level is single, we have to call mpi function from the main thread.
+		compute_thread_.do_in_parallel(&par_sec, &comm_,
+				(mpi.thread_level == MPI_THREAD_SINGLE));
 		while(compute_finished_ == false) ;
 
 		PROF(parallel_reg_time_ += tk_all);
@@ -2741,8 +2742,9 @@ public:
 		compute_finished_ = false;
 		BottomUpBitmapParallelSection par_sec(this, visited_count);
 
-		compute_thread_.submit(&par_sec, 0);
-		comm_.enter_comm();
+		// If mpi thread level is single, we have to call mpi function from the main thread.
+		compute_thread_.do_in_parallel(&par_sec, &comm_,
+				(mpi.thread_level == MPI_THREAD_SINGLE));
 		while(compute_finished_ == false) ;
 
 		// gather visited_count
@@ -2847,8 +2849,9 @@ public:
 		compute_finished_ = false;
 		BottomUpListParallelSection par_sec(this, visited_count, vertex_enabled);
 
-		compute_thread_.submit(&par_sec, 0);
-		comm_.enter_comm();
+		// If mpi thread level is single, we have to call mpi function from the main thread.
+		compute_thread_.do_in_parallel(&par_sec, &comm_,
+				(mpi.thread_level == MPI_THREAD_SINGLE));
 		while(compute_finished_ == false) ;
 
 		bottom_up_gather_nq_size(visited_count);
@@ -3006,12 +3009,13 @@ public:
 			int64_t const_mask = cshifted | levelshifted;
 			TwodVertex* buffer = data_->buffer_;
 			int length = data_->length_ / 2;
+			int64_t* pred = this_->pred_;
 			for(int i = 0; i < length; ++i) {
 				TwodVertex pred_dst = buffer[i*2+0];
 				TwodVertex tgt_local = buffer[i*2+1] & lmask;
 				int64_t pred_v = (int64_t(pred_dst & lmask) << lgsize) | const_mask | (pred_dst >> lgl);
 				assert (this_->pred_[tgt_local] == -1);
-				this_->pred_[tgt_local] = pred_v;
+				pred[tgt_local] = pred_v;
 			}
 
 			this_->comm_buffer_pool_.free(static_cast<BFSCommBufferData*>(data_->obj_ptr_));
@@ -3157,6 +3161,7 @@ template <typename PARAMS>
 void BfsBase<PARAMS>::
 	run_bfs(int64_t root, int64_t* pred)
 {
+	SET_AFFINITY;
 #if SWITCH_FUJI_PROF
 	fapp_start("initialize", 0, 0);
 	start_collection("initialize");

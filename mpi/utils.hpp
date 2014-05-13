@@ -59,6 +59,7 @@
 struct MPI_GLOBALS {
 	int rank;
 	int size_;
+	int thread_level;
 
 	// 2D
 	int rank_2d;
@@ -272,12 +273,37 @@ int g_GpuIndex = -1;
 
 namespace numa {
 
-void cpu_set_to_string(cpu_set_t *set, char* str, int num_procs) {
+__thread int thread_id = -1;
+
+void cpu_set_to_string(cpu_set_t *set, std::string& str, int num_procs) {
+	int set_count = 0;
 	for(int i = 0; i < num_procs; ++i) {
-		if(CPU_ISSET(i, set)) str[i] = 'x';
-		else str[i] = '-';
+		if(CPU_ISSET(i, set)) set_count++;
 	}
-	str[num_procs] = 0;
+	if(set_count < 5) {
+		for(int i = 0; i < num_procs; ++i) {
+			if(CPU_ISSET(i, set)) {
+				char buf[100];
+				sprintf(buf, "%d,", i);
+				str += buf;
+			}
+		}
+	}
+	else {
+		for(int i = 0; i < num_procs; ++i) {
+			if(CPU_ISSET(i, set)) str.push_back('x');
+			else str.push_back('-');
+		}
+	}
+}
+
+void print_current_binding(const char* message) {
+	cpu_set_t set;
+	sched_getaffinity(0, sizeof(set), &set);
+	int num_procs = sysconf(_SC_NPROCESSORS_CONF);
+	std::string str_affinity;
+	cpu_set_to_string(&set, str_affinity, num_procs);
+	fprintf(IMD_OUT, "[r:%d,th:%d] %s -> [%s]\n", mpi.rank, thread_id, message, str_affinity.c_str());
 }
 
 #if NUMA_BIND
@@ -299,10 +325,43 @@ void cpuid(unsigned long eax, unsigned long ecx, cpuid_register_t *r)
     return;
 }
 
-class CpuTopology {
+class CoreBinding {
 public:
-	CpuTopology() {
-		num_procs = sysconf(_SC_NPROCESSORS_CONF);bool ex_apic_supported = false;
+	CoreBinding() {
+		num_procs = sysconf(_SC_NPROCESSORS_CONF);
+	}
+	virtual ~CoreBinding() {
+	}
+	virtual int cpu(int tid) = 0;
+	virtual int num_logical_CPUs() = 0;
+
+	int num_procs;
+};
+
+class ManualCoreBinding : public CoreBinding {
+public:
+	ManualCoreBinding(int* cpuset, int num_avail_procs)
+		: CoreBinding()
+	{
+		avail_procs.insert(avail_procs.begin(), cpuset, cpuset + num_avail_procs);
+	}
+
+	virtual int cpu(int tid) {
+		return avail_procs[tid];
+	}
+	virtual int num_logical_CPUs() {
+		return avail_procs.size();
+	}
+
+	std::vector<int> avail_procs;
+};
+
+class AutoDetectCoreBinding : public CoreBinding {
+public:
+	AutoDetectCoreBinding(int numa_node_size, int numa_node_rank)
+	: CoreBinding()
+	{
+		bool ex_apic_supported = false;
 		union {
 			char ch[13];
 			uint32_t reg[3];
@@ -441,13 +500,31 @@ public:
 			fprintf(IMD_OUT, "\n]\n");
 			*/
 		}
+
+		this->numa_node_rank = numa_node_rank;
+		procs_per_numa_node = (numa_node_size + num_numa_nodes - 1) / num_numa_nodes;
+		idx_within_numa_node = numa_node_rank / num_numa_nodes;
+		num_cores_assgined = num_cores_within_numa / procs_per_numa_node;
+
+		if(num_cores_within_numa != procs_per_numa_node * num_cores_assgined) {
+			if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: Core affinity is disabled because we cannot determine the # of cores to assign.\n");
+			disable_affinity = true;
+		}
 	}
-	virtual ~CpuTopology() {
+
+	virtual ~AutoDetectCoreBinding() {
 		if(apicid_to_cpu) { delete [] apicid_to_cpu; apicid_to_cpu = NULL; }
 	}
-	virtual bool load(int numa_node_size, int numa_node_rank) = 0;
-	virtual int cpu(int tid) = 0;
-	virtual int num_logical_CPUs() = 0;
+
+	virtual int cpu(int tid) {
+		int numa = numa_node_rank % num_numa_nodes;
+		int core = (num_cores_assgined * idx_within_numa_node) + (tid % num_cores_assgined);
+		int smt = (tid / num_cores_assgined) % num_logical_CPUs_within_core;
+
+		return apicid_to_cpu[my_cpu_id(numa, core, smt)];
+	}
+
+	virtual int num_logical_CPUs() { return num_cores_assgined * num_logical_CPUs_within_core; }
 
 	int cpu(int numa_rank, int core_rank, int smt_rank) {
 		if(apicid_to_cpu == NULL || numa_rank >= num_numa_nodes || core_rank >= num_cores_within_numa || smt_rank >= num_logical_CPUs_within_core)
@@ -469,83 +546,13 @@ public:
 		return (((numa_rank << core_bits) | core_rank) << logical_CPU_bits) | smt_rank;
 	}
 
-	int num_procs;
+	bool disable_affinity;
 	int num_logical_CPUs_within_core;
 	int num_cores_within_numa;
 	int num_numa_nodes;
 	int logical_CPU_bits;
 	int core_bits;
 	int *apicid_to_cpu;
-};
-
-class ManualCpuTopology : public CpuTopology {
-public:
-	ManualCpuTopology(const char* affinity_file)
-		: CpuTopology()
-	{
-		FILE* fp = fopen(affinity_file, "r");
-		if(fp == NULL) {
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: Affinity file not found: %s", affinity_file);
-			throw "file not found";
-		}
-		int proc_idx;
-		while(fscanf(fp, "%d\n", &proc_idx) > 0) {
-			avail_procs.push_back(proc_idx);
-		}
-		fclose(fp); fp = NULL;
-	}
-
-	virtual bool load(int numa_node_size, int numa_node_rank_) {
-		procs_per_numa = avail_procs.size() / numa_node_size;
-		numa_node_rank = numa_node_rank_;
-		return true;
-	}
-	virtual int cpu(int tid) {
-		int core_idx = (tid % procs_per_numa) + numa_node_rank * procs_per_numa;
-		return avail_procs[core_idx];
-	}
-	virtual int num_logical_CPUs() {
-		return procs_per_numa;
-	}
-
-	std::vector<int> avail_procs;
-	int procs_per_numa;
-	int numa_node_rank;
-};
-
-class AutomatedCpuTopology : public CpuTopology {
-public:
-	AutomatedCpuTopology()
-		: CpuTopology()
-	{
-		disable_affinity = false;
-	}
-
-	virtual bool load(int numa_node_size, int numa_node_rank) {
-		this->numa_node_rank = numa_node_rank;
-		procs_per_numa_node = (numa_node_size + num_numa_nodes - 1) / num_numa_nodes;
-		idx_within_numa_node = numa_node_rank / num_numa_nodes;
-		num_cores_assgined = num_cores_within_numa / procs_per_numa_node;
-
-		if(num_cores_within_numa != procs_per_numa_node * num_cores_assgined) {
-			if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: Core affinity is disabled because we cannot determine the # of cores to assign.\n");
-			disable_affinity = true;
-		}
-
-		return true;
-	}
-
-	virtual int cpu(int tid) {
-		int numa = numa_node_rank % num_numa_nodes;
-		int core = (num_cores_assgined * idx_within_numa_node) + (tid % num_cores_assgined);
-		int smt = (tid / num_cores_assgined) % num_logical_CPUs_within_core;
-
-		return apicid_to_cpu[my_cpu_id(numa, core, smt)];
-	}
-
-	virtual int num_logical_CPUs() { return num_cores_assgined * num_logical_CPUs_within_core; }
-
-	bool disable_affinity;
 private:
 	int numa_node_rank;
 	int procs_per_numa_node;
@@ -553,50 +560,50 @@ private:
 	int num_cores_assgined;
 };
 
-CpuTopology *cpu_topology = NULL;
+enum AffinityMode {
+	AUTO_DETECT = 1,
+	MAPPING_FILE = 2, // Not supported
+	USE_EXISTING_AFFINITY = 3,
+};
+
+CoreBinding *core_binding = NULL;
+AffinityMode affinity_mode = AUTO_DETECT;
 bool core_affinity_enabled = false;
-int num_base_threads = 1;
+int num_base_threads = 2;
 int next_base_thread_id = 0;
 int next_thread_id = 0;
 
-__thread int thread_id = -1;
+__thread int my_apic_id = -1;
 __thread cpu_set_t initial_affinity;
 
-void set_core_affinity() {
-	if(thread_id == -1) {
-		// This code assumes that there are no nested openmp parallel sections.
-		thread_id = __sync_fetch_and_add(&next_base_thread_id, 1);
-		if(core_affinity_enabled) {
-			if(thread_id >= num_base_threads) {
-				fprintf(IMD_OUT, "[rank:%d,th:%d] WARNING: base_thread_id(%d) >= num_base_threads(%d)\n",
-						mpi.rank, thread_id, thread_id, num_base_threads);
-			}
-			int cpu = cpu_topology->cpu(thread_id);
-			CPU_ZERO(&initial_affinity);
-			CPU_SET(cpu, &initial_affinity);
-			sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
-			char str_affinity[cpu_topology->num_procs+1];
-			cpu_set_to_string(&initial_affinity, str_affinity, cpu_topology->num_procs);
-		//	fprintf(IMD_OUT, "[r:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity, cpu);
-		}
+void print_bind_mode() {
+	const char* mode_str = "Auto";
+	switch(affinity_mode) {
+	case USE_EXISTING_AFFINITY:
+		mode_str = "Use existing affinity";
+		break;
+	case AUTO_DETECT:
+	case MAPPING_FILE:
+		break;
 	}
+	fprintf(IMD_OUT, "Core bind mode: %s\n", mode_str);
 }
 
-void set_omp_core_affinity() {
-	if(thread_id == -1) {
-		// This code assumes that there are no nested openmp parallel sections.
-		do { thread_id = __sync_fetch_and_add(&next_thread_id, 1); }
-		while((thread_id % cpu_topology->num_logical_CPUs()) < num_base_threads);
-		if(core_affinity_enabled) {
-			int cpu = cpu_topology->cpu(thread_id);
-			CPU_ZERO(&initial_affinity);
-			CPU_SET(cpu, &initial_affinity);
-			sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
-			char str_affinity[cpu_topology->num_procs+1];
-			cpu_set_to_string(&initial_affinity, str_affinity, cpu_topology->num_procs);
-		//	fprintf(IMD_OUT, "[r:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity, cpu);
-		}
+inline int get_apic_id() {
+	cpuid_register_t reg;
+	cpuid(0xB, 0, &reg);
+	return reg.edx;
+}
+
+bool ensure_my_apic_id() {
+#if CPU_BIND_CHECK
+	int cur_id = get_apic_id();
+	if(my_apic_id != cur_id) {
+		fprintf(IMD_OUT, "Fatal error: Affinity is changed unexpectedly!!!(%d -> %d)\n", my_apic_id, cur_id);
+		throw "Ivalid affinity";
 	}
+#endif
+	return false;
 }
 
 void check_affinity_setting() {
@@ -608,30 +615,166 @@ void check_affinity_setting() {
 	cpu_set_t set;
 	sched_getaffinity(0, sizeof(set), &set);
 	if(memcmp(&set, &initial_affinity, sizeof(set))) {
-		char init_str[cpu_topology->num_procs+1];
-		char now_str[cpu_topology->num_procs+1];
-		cpu_set_to_string(&initial_affinity, init_str, cpu_topology->num_procs);
-		cpu_set_to_string(&set, now_str, cpu_topology->num_procs);
+		std::string init_str, now_str;
+		cpu_set_to_string(&initial_affinity, init_str, core_binding->num_procs);
+		cpu_set_to_string(&set, now_str, core_binding->num_procs);
 		fprintf(IMD_OUT, "[r:%d,th:%d] affinity is changed [%s] -> [%s]\n",
-				mpi.rank, thread_id, init_str, now_str);
+				mpi.rank, thread_id, init_str.c_str(), now_str.c_str());
+	}
+}
+
+void internal_set_core_affinity(int cpu) {
+	CPU_ZERO(&initial_affinity);
+	CPU_SET(cpu, &initial_affinity);
+	sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
+	sleep(0);
+	my_apic_id = get_apic_id();
+#if PRINT_BINDING
+	std::string str_affinity;
+	cpu_set_to_string(&initial_affinity, str_affinity, sysconf(_SC_NPROCESSORS_CONF));
+	fprintf(IMD_OUT, "[r:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity.c_str(), cpu);
+#endif
+	check_affinity_setting();
+}
+
+void set_omp_default_threads() {
+	const char* internal_num_threads = getenv("BFS_NTHREADS");
+	if(internal_num_threads != NULL) {
+		omp_set_num_threads(atoi(internal_num_threads));
+	}
+}
+
+/**
+ * This function obtain the current core binding
+ * and returns the cpu set the threads are bound to.
+ */
+bool get_core_affinity(std::vector<int>& cpu_set) {
+	const char* num_threads_str = getenv("OMP_NUM_THREADS");
+	if(num_threads_str == NULL) {
+		fprintf(IMD_OUT, "USE_EXISTING_AFFINITY needs OMP_NUM_THREADS\n");
+		return false;
+	}
+	int num_threads = atoi(num_threads_str);
+	cpu_set.resize(num_threads, 0);
+	bool core_affinity = false, process_affinity = false;
+
+#pragma omp parallel num_threads(num_threads), reduction(|:core_affinity, process_affinity)
+	{
+		thread_id = omp_get_thread_num();
+		int num_procs = sysconf(_SC_NPROCESSORS_CONF);
+		cpu_set_t set;
+		sched_getaffinity(0, sizeof(set), &set);
+		int cnt = 0;
+		for(int i = 0; i < num_procs; i++) {
+			if(CPU_ISSET(i, &set)) {
+				cnt++;
+			}
+		}
+		if(cnt == 1) {
+			// Core affinity is set
+			core_affinity = true;
+#if PRINT_BINDING
+			print_binding("detected core binding");
+#endif
+			for(int i = 0; i < num_procs; i++) {
+				if(CPU_ISSET(i, &set)) {
+					cpu_set[thread_id] = i;
+					internal_set_core_affinity(i);
+					break;
+				}
+			}
+		}
+		else if(cnt >= num_threads) {
+			// Process affinity is set.
+			process_affinity = true;
+			if(thread_id == 0) {
+				int cpu_idx = 0;
+#if PRINT_BINDING
+				print_binding("detected process binding");
+#endif
+				for(int i = 0; i < num_procs; i++) {
+					if(CPU_ISSET(i, &set)) {
+						cpu_set[cpu_idx++] = i;
+						if(cpu_idx == num_threads) {
+							break;
+						}
+					}
+				}
+			}
+		}
+		else {
+			// Affinity is set ???
+			core_affinity = process_affinity = true;
+		}
+	}
+	if(core_affinity && process_affinity) {
+		fprintf(IMD_OUT, "Error: failed to detect existing core binding. hetero ?\n");
+		return false;
+	}
+	if(process_affinity) {
+		if(mpi.isRmaster()) fprintf(IMD_OUT, "Detect process affinity\n");
+#pragma omp parallel num_threads(num_threads)
+		internal_set_core_affinity(cpu_set[thread_id]);
+	}
+	else {
+		if(mpi.isRmaster()) fprintf(IMD_OUT, "Detect core affinity\n");
+	}
+
+	next_base_thread_id = 1;
+	next_thread_id = num_threads;
+	set_omp_default_threads();
+
+	return true;
+}
+
+/**
+ * affinity setting for master threads.
+ */
+void set_core_affinity() {
+	if(thread_id == -1) {
+		// This code assumes that there are no nested openmp parallel sections.
+		thread_id = __sync_fetch_and_add(&next_base_thread_id, 1);
+		if(core_affinity_enabled) {
+			if(thread_id >= num_base_threads) {
+				fprintf(IMD_OUT, "[rank:%d,th:%d] WARNING: base_thread_id(%d) >= num_base_threads(%d)\n",
+						mpi.rank, thread_id, thread_id, num_base_threads);
+			}
+			int cpu = core_binding->cpu(thread_id);
+			internal_set_core_affinity(cpu);
+		}
+		set_omp_default_threads();
+	}
+	else if(core_affinity_enabled) {
+		ensure_my_apic_id();
+	}
+}
+
+void set_omp_core_affinity() {
+	if(thread_id == -1) {
+		// This code assumes that there are no nested openmp parallel sections.
+		do { thread_id = __sync_fetch_and_add(&next_thread_id, 1); }
+		while((thread_id % core_binding->num_logical_CPUs()) < num_base_threads);
+		if(core_affinity_enabled) {
+			int cpu = core_binding->cpu(thread_id);
+			internal_set_core_affinity(cpu);
+		}
+	}
+	else if(core_affinity_enabled) {
+		ensure_my_apic_id();
 	}
 }
 #define SET_AFFINITY numa::set_core_affinity()
 #define SET_OMP_AFFINITY numa::set_omp_core_affinity()
 #else
 int next_thread_id = 0;
-__thread int thread_id = -1;
 
 void check_thread_started() {
+#if PRINT_BINDING
 	if(thread_id == -1) {
 		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
-		cpu_set_t set;
-		sched_getaffinity(0, sizeof(set), &set);
-		int num_procs = sysconf(_SC_NPROCESSORS_CONF);
-		char str_affinity[num_procs+1];
-		cpu_set_to_string(&set, str_affinity, num_procs);
-		fprintf(IMD_OUT, "[r:%d,th:%d] started -> %s\n", mpi.rank, thread_id, str_affinity);
+		print_current_binding("started");
 	}
+#endif
 }
 
 #define SET_AFFINITY numa::check_thread_started()
@@ -684,30 +827,25 @@ void set_affinity()
 	}
 #endif
 #if NUMA_BIND
-	const char* cluster_core_bind = getenv("CLUSTER_CORE_BIND");
-	const char* smp_core_bind = getenv("SMP_CORE_BIND");
-	if(cluster_core_bind != NULL || smp_core_bind != NULL) {
-		const char* affinity_file = cluster_core_bind ? cluster_core_bind : smp_core_bind;
-		cpu_topology = new ManualCpuTopology(affinity_file);
-		if(cluster_core_bind) {
-			cpu_topology->load(max_procs_per_node, proc_rank);
-			if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity for clusters is enabled (%s).\n", affinity_file);
+	const char* core_bind = getenv("CORE_BIND");
+	if(core_bind != NULL) {
+		affinity_mode = (AffinityMode)atoi(core_bind);
+	}
+	if(mpi.isRmaster()) print_bind_mode();
+	if(affinity_mode == USE_EXISTING_AFFINITY) {
+		std::vector<int> cpu_set;
+		if(get_core_affinity(cpu_set) == false) {
+			core_affinity_enabled = false;
 		}
 		else {
-			cpu_topology->load(mpi.size_, mpi.rank);
-			if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity for SMP is enabled (%s).\n", affinity_file);
+			core_affinity_enabled = true;
+			core_binding = new ManualCoreBinding(&cpu_set[0], cpu_set.size());
+			if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity is enabled (using existing affinigy)\n");
 		}
-		int numa_node = cpu_topology->numa_id(0);
-		numa_set_preferred(numa_node);
-		if(numa_node != (cpu_topology->cpu(0) / 10)) {
-			if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: numa_rank=%d is different from expected (base cpu index = %d)\n", numa_node, cpu_topology->cpu(0));
-		}
-		core_affinity_enabled = true;
-		/*if(mpi.isRmaster())*/ fprintf(IMD_OUT, "NUMA memory bind is enabled. numa_rank=%d\n", numa_node);
 	}
-	else {
-		cpu_topology = new AutomatedCpuTopology();
-		if(max_procs_per_node > 1 && cpu_topology->load(max_procs_per_node, proc_rank)) {
+	if(core_binding == NULL) {
+		AutoDetectCoreBinding* topology = new AutoDetectCoreBinding(max_procs_per_node, proc_rank);
+		if(max_procs_per_node > 1) {
 			if(max_procs_per_node == 3) {
 				if(numa_available() < 0) {
 					fprintf(IMD_OUT, "No NUMA support available on this system.\n");
@@ -717,19 +855,19 @@ void set_affinity()
 					if(proc_rank < NUM_SOCKET) {
 						numa_set_preferred(proc_rank);
 					}
-					if(NUM_SOCKET != cpu_topology->num_numa_nodes) {
+					if(NUM_SOCKET != topology->num_numa_nodes) {
 						if(mpi.isMaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
-								NUM_SOCKET, cpu_topology->num_numa_nodes);
+								NUM_SOCKET, topology->num_numa_nodes);
 					}
 				}
 				cpu_set_t set; CPU_ZERO(&set);
-				if(proc_rank < cpu_topology->num_numa_nodes) {
-					for(int core = 0; core < cpu_topology->num_cores_within_numa; core++)
-						for(int smt = 0; smt < cpu_topology->num_cores_within_numa; smt++)
-							CPU_SET(cpu_topology->cpu(proc_rank, core, smt), &set);
+				if(proc_rank < topology->num_numa_nodes) {
+					for(int core = 0; core < topology->num_cores_within_numa; core++)
+						for(int smt = 0; smt < topology->num_cores_within_numa; smt++)
+							CPU_SET(topology->cpu(proc_rank, core, smt), &set);
 				}
 				else {
-					for(int i = 0; i < cpu_topology->num_procs; i++)
+					for(int i = 0; i < topology->num_procs; i++)
 						CPU_SET(i, &set);
 				}
 				sched_setaffinity(0, sizeof(set), &set);
@@ -744,9 +882,9 @@ void set_affinity()
 					return ;
 				}
 				int NUM_SOCKET = numa_max_node() + 1;
-				if(NUM_SOCKET != cpu_topology->num_numa_nodes) {
+				if(NUM_SOCKET != topology->num_numa_nodes) {
 					if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
-							NUM_SOCKET, cpu_topology->num_numa_nodes);
+							NUM_SOCKET, topology->num_numa_nodes);
 				}
 
 				// set default affinity to numa node
@@ -769,11 +907,12 @@ void set_affinity()
 			  fprintf(IMD_OUT, "affinity is disabled.\n");
 			}
 			cpu_set_t set; CPU_ZERO(&set);
-			for(int i = 0; i < cpu_topology->num_procs; i++) {
+			for(int i = 0; i < topology->num_procs; i++) {
 				CPU_SET(i, &set);
 			}
 			sched_setaffinity(0, sizeof(set), &set);
 		}
+		core_binding = topology;
 	}
 #endif // #if NUMA_BIND
 	if(mpi.isMaster()) {
@@ -882,13 +1021,12 @@ void cleanup_2dcomm()
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 {
-	int prov;
-	MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &prov);
+	MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &mpi.thread_level);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
 
 	const char* prov_str = "unknown";
-	switch(prov) {
+	switch(mpi.thread_level) {
 	case MPI_THREAD_SINGLE:
 		prov_str = "MPI_THREAD_SINGLE";
 		break;

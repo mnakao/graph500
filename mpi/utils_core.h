@@ -77,16 +77,26 @@ inline int __builtin_popcount_asm(uint32_t n) {
 	return c;
 }
 
-inline int __builtin_ctzl_wo_omp(uint64_t n) {
+inline int __builtin_ctzl_asm(uint64_t n) {
 	return __builtin_popcountl_asm((n&(-n))-1);
 }
 
-inline int __builtin_ctz_wo_omp(uint32_t n) {
+inline int __builtin_ctz_asm(uint32_t n) {
 	return __builtin_popcount_asm((n&(-n))-1);
 }
 
+#define __builtin_popcountl __builtin_popcountl_asm
+#define __builtin_popcount32bit __builtin_popcount_asm
+#define __builtin_popcount64bit __builtin_popcountl_asm
+
 #define __builtin_ctzl __builtin_ctzl_asm
-#define __builtin_ctz __builtin_ctz_asm
+#define __builtin_ctz32bit __builtin_ctz_asm
+#define __builtin_ctz64bit __builtin_ctzl_asm
+
+// Since Fujitsu compiler does not support __sync_synchronize.
+// We define here.
+static __thread int this_is_not_used_ = 0;
+#define __sync_synchronize() do { __sync_fetch_and_or(&this_is_not_used_, 1); } while(false)
 
 #define NEXT_BIT(flags__, flag__, mask__, idx__) do {\
 	flag__ = flags__ & (-flags__);\
@@ -102,15 +112,16 @@ inline int __builtin_ctz_wo_omp(uint32_t n) {
 	mask__ = flag__ - 1;\
 	flags__ &= ~flag__; } while(false)\
 
-#endif // #ifdef __sparc_v9__
-
-// Clear the bit size of each built-in function.
 #define __builtin_popcount32bit __builtin_popcount
 #define __builtin_popcount64bit __builtin_popcountl
-#define __builtin_popcount THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
 
 #define __builtin_ctz32bit __builtin_ctz
 #define __builtin_ctz64bit __builtin_ctzl
+
+#endif // #ifdef __sparc_v9__
+
+// Clear the bit size of each built-in function.
+#define __builtin_popcount THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
 #define __builtin_ctz THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
 
 //-------------------------------------------------------------//

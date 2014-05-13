@@ -8,20 +8,22 @@
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
-#define NUMA_BIND 1
-#define SHARED_MEMORY 1
+#define NUMA_BIND 0
+#define CPU_BIND_CHECK 0
+#define PRINT_BINDING 0
+#define SHARED_MEMORY 0
 
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define DETAILED_PROF_MODE 0
 #define REPORT_GEN_RPGRESS 1
 
-#define BFELL 0
+#define BFELL 1
 
 #define ISOLATE_FIRST_EDGE 1
 #define DEGREE_ORDER 0
 #define DEGREE_ORDER_ONLY_IE 0
-#define INIT_PRED_ONCE 1
+#define INIT_PRED_ONCE 0
 
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
@@ -72,7 +74,7 @@
 #define NETWORK_PROBLEM_AYALISYS 0
 
 #ifdef __FUJITSU
-#	define SWITCH_FUJI_PROF 0
+#	define SWITCH_FUJI_PROF 1
 #	define ESCAPE_ATOMIC_FUNC 1
 #	define USE_SPARC_ASM_POPC 1
 #	define FCC_OMP_ASM_BUG 1

@@ -1,4 +1,4 @@
-SW = GNU3
+SW = FUJI0
 VAMP = false
 
 # default values
@@ -27,16 +27,60 @@ CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
 NVCCFLAGS = $(NVFLAG_BASE) -g -O0
 LDFLAGS = -fopenmp -g # -g -pg
 endif
+ifeq ($(SW), UVGNU3)
+MPICC = mpicc-gcc4.7
+MPICPP = mpicxx-gcc4.7
+CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math # -g -pg
+NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
+LDFLAGS = -fopenmp -g # -g -pg
+LIBS = -lm -lnuma -lmpi
+endif
+ifeq ($(SW), UVGNU0)
+MPICC = mpicc-gcc4.7
+MPICPP = mpicxx-gcc4.7
+CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
+#CFLAGS = -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
+#NVCCFLAGS = $(NVFLAG_BASE) -g -G -O0
+NVCCFLAGS = $(NVFLAG_BASE) -g -O0
+LDFLAGS = -fopenmp -g # -g -pg
+LIBS = -lm -lnuma -lmpi
+endif
 ifeq ($(SW), INTEL3)
+MPICC = icc
+MPICPP = icpc
 CFLAGS = -ipo -no-prec-div -openmp -g3 -Drestrict=__restrict__ -O3 -DNDEBUG
 #CFLAGS = -ipo -openmp -g3 -Drestrict=__restrict__ -O2 -DNDEBUG
 NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
-LDFLAGS = -openmp -g 
+LDFLAGS = -openmp -g
+LIBS = -lm -lnuma -lmpi
 endif
 ifeq ($(SW), INTEL0)
+MPICC = icc
+MPICPP = icpc
 CFLAGS = -ipo -no-prec-div -openmp -g3 -Drestrict=__restrict__ -O0
 NVCCFLAGS = $(NVFLAG_BASE) -g -G -O0
-LDFLAGS = -openmp -g 
+LDFLAGS = -openmp -g
+LIBS = -lm -lnuma -lmpi
+endif
+ifeq ($(SW), FXGNU3)
+MPICC = gcc
+MPICPP = g++
+CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math # -g -pg
+NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
+LDFLAGS = -fopenmp -g # -g -pg
+INC := $(INC) -I/opt/FJSVtclang/GM-1.2.0-16/include/mpi/fujitsu
+LIBS = -L/opt/FJSVtclang/GM-1.2.0-16/lib64 -lm -lmpi -lmpi_cxx #-ltrt -ltrtmetcpp -ltrtmet_c
+endif
+ifeq ($(SW), FXGNU0)
+MPICC = gcc
+MPICPP = g++
+CFLAGS = -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
+#CFLAGS = -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
+#NVCCFLAGS = $(NVFLAG_BASE) -g -G -O0
+NVCCFLAGS = $(NVFLAG_BASE) -g -O0
+LDFLAGS = -fopenmp -g # -g -pg
+INC := $(INC) -I/opt/FJSVtclang/GM-1.2.0-16/include/mpi/fujitsu
+LIBS = -L/opt/FJSVtclang/GM-1.2.0-16/lib64 -lm -lmpi -lmpi_cxx #-ltrt -ltrtmetcpp -ltrtmet_c
 endif
 ifeq ($(SW), FUJI3)
 ifeq ($(PJM_JOBNAME), STDIN)
@@ -48,7 +92,6 @@ MPICPP = mpiFCCpx
 endif
 CFLAGS = -Kopenmp -Koptmsg=2 -Xg -Kfast -Klargepage -Drestrict=__restrict__ -O3 -DNDEBUG -DNNUMA
 LDFLAGS = $(CFLAGS)
-OBJS := $(OBJS) gnu_func.o
 LIBS = -lm
 endif
 ifeq ($(SW), FUJI0)
@@ -62,7 +105,6 @@ endif
 CFLAGS = -Kopenmp -Koptmsg=2 -Xg -g -Drestrict=__restrict__ -O0 -DNNUMA
 #CFLAGS = -Koptmsg=2 -Xg -g -Drestrict=__restrict__ -O0 -DNNUMA
 LDFLAGS = -Kopenmp -Koptmsg=2 -Xg -g
-OBJS := $(OBJS) gnu_func.o
 LIBS = -lm
 endif
 

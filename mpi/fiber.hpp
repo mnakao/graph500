@@ -200,11 +200,22 @@ public:
 			pthread_join(thread_, NULL);
 		}
 	}
+	void do_in_parallel(Runnable* main, Runnable* sub, bool inverse) {
+		if(!inverse) {
+			submit(sub, 0);
+			main->run();
+		}
+		else {
+			submit(main, 0);
+			sub->run();
+		}
+	}
 private:
 	bool cleanup_;
 	pthread_t thread_;
 
 	static void* thread_routine(void* this__) {
+		SET_AFFINITY;
 		((BackgroundThread*)this__)->enter_processing();
 		return NULL;
 	}

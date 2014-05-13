@@ -568,6 +568,7 @@ public:
 template <typename EdgeType>
 class RandomGraphGenerator : public GraphGenerator<EdgeType>
 {
+	typedef GraphGenerator<EdgeType> BaseType;
 public:
 	RandomGraphGenerator(int scale, int edge_factor, int max_weight, int userseed1, int userseed2,
 			InitialEdgeType::type initial_edge_type)
@@ -577,7 +578,7 @@ public:
 	virtual void generateRange(EdgeType* edge_buffer, int64_t start_edge, int64_t end_edge) const
 	{
 		if(start_edge < this->num_initial_edges()) {
-			generateInitialEdge(edge_buffer, start_edge, std::min(end_edge, this->num_initial_edges()));
+			BaseType::generateInitialEdge(edge_buffer, start_edge, std::min(end_edge, this->num_initial_edges()));
 		}
 
 		const int64_t num_global_verts_minus1 = this->num_global_verts() - 1;
@@ -592,13 +593,14 @@ public:
 					this->scramble(mrg_get_uint_orig(&new_state) & num_global_verts_minus1));
 		}
 
-		generateWeight(edge_buffer, start_edge, end_edge);
+		BaseType::generateWeight(edge_buffer, start_edge, end_edge);
 	}
 };
 
 template <typename EdgeType, int INITIATOR_A_NUMERATOR, int INITIATOR_BC_NUMERATOR>
 class RmatGraphGenerator : public GraphGenerator<EdgeType>
 {
+	typedef GraphGenerator<EdgeType> BaseType;
 public:
 	RmatGraphGenerator(int scale, int edge_factor, int max_weight, int userseed1, int userseed2,
 			InitialEdgeType::type initial_edge_type)
@@ -608,7 +610,7 @@ public:
 	virtual void generateRange(EdgeType* edge_buffer, int64_t start_edge, int64_t end_edge) const
 	{
 		if(start_edge < this->num_initial_edges()) {
-			generateInitialEdge(edge_buffer, start_edge, std::min(end_edge, this->num_initial_edges()));
+			BaseType::generateInitialEdge(edge_buffer, start_edge, std::min(end_edge, this->num_initial_edges()));
 		}
 
 #pragma omp for
@@ -619,7 +621,7 @@ public:
 			make_one_edge(this->num_global_verts(), 0, &new_state, &edge_buffer[edge_index - start_edge]);
 		}
 
-		generateWeight(edge_buffer, start_edge, end_edge);
+		BaseType::generateWeight(edge_buffer, start_edge, end_edge);
 	}
 private:
 	enum PARAMS {

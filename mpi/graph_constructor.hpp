@@ -806,12 +806,7 @@ private:
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Making row sums bitmap.\n");
 		for(int64_t i = 0; i < row_bitmap_length; ++i) {
 			// TODO: deal with different BitmapType
-#if USE_SPARC_ASM_POPC && FCC_OMP_ASM_BUG
-			// With FCC, using inline assembler with openmp results broken code.
-			int num_rows = sparc_popc_l_noinline(g.row_bitmap_[i]);
-#else
 			int num_rows = __builtin_popcountl(g.row_bitmap_[i]);
-#endif
 			g.row_sums_[i+1] = g.row_sums_[i] + num_rows;
 		}
 
