@@ -1,4 +1,4 @@
-SW = GNU3
+SW = FUJI3
 VAMP = false
 
 # default values

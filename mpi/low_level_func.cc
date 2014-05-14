@@ -5,6 +5,16 @@
  *      Author: ueno
  */
 
+#ifndef __STDC_CONSTANT_MACROS
+#define __STDC_CONSTANT_MACROS
+#endif
+#ifndef __STDC_LIMIT_MACROS
+#define __STDC_LIMIT_MACROS
+#endif
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
@@ -15,6 +25,7 @@
 
 #include <algorithm>
 
+#include "utils_core.h"
 #include "low_level_func.h"
 
 #if LOW_LEVEL_FUNCTION
@@ -38,7 +49,7 @@ void backward_isolated_edge(
 	int off_end = std::min(half_bitmap_width, off_start + width_per_thread);
 	int num_send = 0;
 
-#if 1 // consolidated
+#if CONSOLIDATE_IFE_PROC
 	for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
 		BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
 		BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
@@ -80,7 +91,7 @@ void backward_isolated_edge(
 		*(phase_bitmap + blk_bmp_off) = visited_i;
 	} // #pragma omp for
 
-#else // separated
+#else // #if CONSOLIDATE_IFE_PROC
 	for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
 		BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
 		BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
@@ -135,7 +146,7 @@ void backward_isolated_edge(
 		// write back
 		*(phase_bitmap + blk_bmp_off) = visited_i;
 	} // #pragma omp for
-#endif
+#endif // #if CONSOLIDATE_IFE_PROC
 
 	buffer->length = num_send;
 }

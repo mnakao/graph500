@@ -8,27 +8,43 @@
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
+// for the systems that contains NUMA nodes
 #define NUMA_BIND 0
 #define CPU_BIND_CHECK 0
 #define PRINT_BINDING 0
 #define SHARED_MEMORY 0
-#define MPI_FUNNELED 0
+
+// Switching the task assignment for the main thread and the sub thread
+// 0: MPI is single mode: Main -> MPI, Sub: OpenMP
+// 1: MPI is funneled mode: Main -> OpenMP, Sub: MPI
+// Since communication and computation is overlapped, we cannot have main thread do both tasks.
+#define MPI_FUNNELED 1
 
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define DETAILED_PROF_MODE 0
-#define REPORT_GEN_RPGRESS 1
 
 #define BFELL 0
 
+// Optimization for CSR
 #define ISOLATE_FIRST_EDGE 1
 #define DEGREE_ORDER 0
 #define DEGREE_ORDER_ONLY_IE 0
+#define CONSOLIDATE_IFE_PROC 1
+
+// We omit initialize predecessor array when this option is enabled.
+// WARNING: In the most case, BFS generates correct answer without initializing predecessor array
+// because all the vertexes reached in the previous would be reached in the current run.
+// But this is not true in the general case. BFS may generate wrong answer in some situation.
 #define INIT_PRED_ONCE 0
 
+// Optimization for backward communication sub steps.
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
+#define PRE_EXEC_TIME 5 // 300 seconds
+
+// below options are deprecated (please do not touch)
 #define SHARED_VISITED_OPT 1
 
 #define PRE_EXEC_TIME 5 // 300 seconds
