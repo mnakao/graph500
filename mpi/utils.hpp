@@ -482,6 +482,7 @@ public:
 			for(int core = 0; core < num_cores_within_numa; ++core) {
 				for(int smt = 0; smt < num_logical_CPUs_within_core; ++smt) {
 					int cpu_idx = ((numa * num_cores_within_numa) + core) * num_logical_CPUs_within_core + smt;
+					assert (my_cpu_id(numa, core, smt) <= max_apic_id);
 					apicid_to_cpu[my_cpu_id(numa, core, smt)] = (core_list[cpu_idx] & 0xFFFF);
 				}
 			}

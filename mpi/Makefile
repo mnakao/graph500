@@ -1,5 +1,5 @@
 SW = GNU3
-VAMP = true
+VAMP = false
 
 # default values
 MPICC = mpicc
@@ -16,7 +16,7 @@ LIBS = -lm
 
 NVFLAG_BASE = -Drestrict=__restrict__ -Xcompiler -fopenmp,-ffast-math,-Wall -arch=compute_20 -code=sm_20
 ifeq ($(SW), GNU3)
-CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math # -g -pg
+CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math# -msse4.2 # -g -pg
 NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LDFLAGS = -fopenmp -g # -g -pg
 LIBS := $(LIBS) -lnuma
@@ -92,7 +92,7 @@ else
 MPICC = mpifccpx
 MPICPP = mpiFCCpx
 endif
-CFLAGS = -Kopenmp -Koptmsg=2 -Xg -Kfast -Klargepage -Drestrict=__restrict__ -O3 -DNDEBUG -DNNUMA
+CFLAGS = -Kopenmp -Xg -Kfast -Klargepage -Drestrict=__restrict__ -O3 -DNDEBUG -DNNUMA # -Koptmsg=2
 LDFLAGS = $(CFLAGS)
 LIBS = -lm
 endif
