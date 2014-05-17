@@ -129,7 +129,7 @@ template <typename T> MPI_Datatype get_mpi_type(T& instance) {
 //-------------------------------------------------------------//
 
 void* xMPI_Alloc_mem(size_t nbytes) {
-  void* p;
+  void* p = NULL;
   MPI_Alloc_mem(nbytes, MPI_INFO_NULL, &p);
   if (nbytes != 0 && !p) {
     fprintf(IMD_OUT, "MPI_Alloc_mem failed for size%zu (%"PRId64") byte(s)\n", nbytes, (int64_t)nbytes);
@@ -138,9 +138,8 @@ void* xMPI_Alloc_mem(size_t nbytes) {
   return p;
 }
 
-void* cache_aligned_xcalloc(const size_t size)
-{
-	void* p;
+void* cache_aligned_xcalloc(const size_t size) {
+    void* p = NULL;
 	if(posix_memalign(&p, CACHE_LINE, size)){
 		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
 		throw "OutOfMemoryExpception";
@@ -150,7 +149,7 @@ void* cache_aligned_xcalloc(const size_t size)
 }
 void* cache_aligned_xmalloc(const size_t size)
 {
-	void* p;
+	void* p = NULL;
 	if(posix_memalign(&p, CACHE_LINE, size)){
 		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
 		throw "OutOfMemoryExpception";
@@ -160,7 +159,7 @@ void* cache_aligned_xmalloc(const size_t size)
 
 void* page_aligned_xcalloc(const size_t size)
 {
-	void* p;
+	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
 		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
 		throw "OutOfMemoryExpception";
@@ -170,7 +169,7 @@ void* page_aligned_xcalloc(const size_t size)
 }
 void* page_aligned_xmalloc(const size_t size)
 {
-	void* p;
+	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
 		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
 		throw "OutOfMemoryExpception";
@@ -570,7 +569,7 @@ enum AffinityMode {
 CoreBinding *core_binding = NULL;
 AffinityMode affinity_mode = AUTO_DETECT;
 bool core_affinity_enabled = false;
-int num_base_threads = 2;
+int num_omp_threads = 1;
 int next_base_thread_id = 0;
 int next_thread_id = 0;
 
@@ -639,9 +638,20 @@ void internal_set_core_affinity(int cpu) {
 }
 
 void set_omp_default_threads() {
-	const char* internal_num_threads = getenv("BFS_NTHREADS");
-	if(internal_num_threads != NULL) {
-		omp_set_num_threads(atoi(internal_num_threads));
+	const char* internal_num_threads_str = getenv("BFS_NTHREADS");
+	if(internal_num_threads_str != NULL) {
+		num_omp_threads = atoi(internal_num_threads_str);
+		omp_set_num_threads(num_omp_threads);
+	}
+}
+
+void* empty_function(void*) { return NULL; }
+
+void launch_dummy_thread(int num_dummy_threads) {
+	for(int i = 0; i < num_dummy_threads; ++i) {
+		pthread_t thread;
+		pthread_create(&thread, NULL, empty_function, NULL);
+		pthread_join(thread, NULL);
 	}
 }
 
@@ -659,6 +669,10 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 	cpu_set.resize(num_threads, 0);
 	bool core_affinity = false, process_affinity = false;
 
+#if SGI_OMPLACE_BUG
+	launch_dummy_thread(1);
+#endif
+
 #pragma omp parallel num_threads(num_threads), reduction(|:core_affinity, process_affinity)
 	{
 		thread_id = omp_get_thread_num();
@@ -675,7 +689,7 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 			// Core affinity is set
 			core_affinity = true;
 #if PRINT_BINDING
-			print_binding("detected core binding");
+			print_current_binding("detected core binding");
 #endif
 			for(int i = 0; i < num_procs; i++) {
 				if(CPU_ISSET(i, &set)) {
@@ -688,11 +702,11 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 		else if(cnt >= num_threads) {
 			// Process affinity is set.
 			process_affinity = true;
+#if PRINT_BINDING
+			print_current_binding("detected process binding");
+#endif
 			if(thread_id == 0) {
 				int cpu_idx = 0;
-#if PRINT_BINDING
-				print_binding("detected process binding");
-#endif
 				for(int i = 0; i < num_procs; i++) {
 					if(CPU_ISSET(i, &set)) {
 						cpu_set[cpu_idx++] = i;
@@ -705,6 +719,9 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 		}
 		else {
 			// Affinity is set ???
+#if PRINT_BINDING
+			print_current_binding("??? binding");
+#endif
 			core_affinity = process_affinity = true;
 		}
 	}
@@ -734,12 +751,15 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 void set_core_affinity() {
 	if(thread_id == -1) {
 		// This code assumes that there are no nested openmp parallel sections.
-		thread_id = __sync_fetch_and_add(&next_base_thread_id, 1);
+		if(core_binding->num_logical_CPUs() <= num_omp_threads) {
+			fprintf(IMD_OUT, "[rank:%d,th:%d] Too many threads.", mpi.rank, thread_id);
+		}
+		int core_id;
+		do {
+			thread_id = __sync_fetch_and_add(&next_base_thread_id, 1);
+			core_id = (thread_id % core_binding->num_logical_CPUs());
+		} while(thread_id != 0 && core_id < num_omp_threads);
 		if(core_affinity_enabled) {
-			if(thread_id >= num_base_threads) {
-				fprintf(IMD_OUT, "[rank:%d,th:%d] WARNING: base_thread_id(%d) >= num_base_threads(%d)\n",
-						mpi.rank, thread_id, thread_id, num_base_threads);
-			}
 			int cpu = core_binding->cpu(thread_id);
 			internal_set_core_affinity(cpu);
 		}
@@ -753,8 +773,11 @@ void set_core_affinity() {
 void set_omp_core_affinity() {
 	if(thread_id == -1) {
 		// This code assumes that there are no nested openmp parallel sections.
-		do { thread_id = __sync_fetch_and_add(&next_thread_id, 1); }
-		while((thread_id % core_binding->num_logical_CPUs()) < num_base_threads);
+		int core_id;
+		do {
+			thread_id = __sync_fetch_and_add(&next_thread_id, 1);
+			core_id = (thread_id % core_binding->num_logical_CPUs());
+		} while(thread_id == 0 || core_id >= num_omp_threads);
 		if(core_affinity_enabled) {
 			int cpu = core_binding->cpu(thread_id);
 			internal_set_core_affinity(cpu);
@@ -828,6 +851,7 @@ void set_affinity()
 	}
 #endif
 #if NUMA_BIND
+	num_omp_threads = omp_get_max_threads();
 	const char* core_bind = getenv("CORE_BIND");
 	if(core_bind != NULL) {
 		affinity_mode = (AffinityMode)atoi(core_bind);

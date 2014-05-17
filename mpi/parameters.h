@@ -23,6 +23,8 @@
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define DETAILED_PROF_MODE 0
+#define REPORT_GEN_RPGRESS 1
+#define ENABLE_FUJI_PROF 1
 
 #define BFELL 0
 
@@ -42,37 +44,18 @@
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
-#define PRE_EXEC_TIME 5 // 300 seconds
+#define PRE_EXEC_TIME 300 // 300 seconds
 
-// below options are deprecated (please do not touch)
-#define SHARED_VISITED_OPT 1
-
-#define PRE_EXEC_TIME 5 // 300 seconds
-
-#define BFS_BACKWARD 1
-#define VLQ_COMPRESSION 0
-#define BFS_EXPAND_COMPRESSION 1
 #define VERTEX_SORTING 0 // do not support backward search
-#define BFS_FORWARD_PREFETCH 1 // for FUJITSU
-#define BFS_BACKWARD_PREFETCH 1
-#define GRAPH_BITVECTOR 1
-#define GRAPH_BITVECTOR_OFFSET 1
 #define LOW_LEVEL_FUNCTION 1
-#define AVOID_BUSY_WAIT 0
-#define EDGES_IN_RAIL 1
 
 // org = 1000
 #define DENOM_TOPDOWN_TO_BOTTOMUP 2000
 #define DENOM_BITMAP_TO_LIST 2.0
 
-#define PREFETCH_INST_WEIGHTED 0
-
-// set 0 with CUDA
-#define SHARED_VISITED_STRIPE 0
-
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 1
+#define VALIDATION_LEVEL 2
 
 #define CUDA_ENABLED 0
 #define CUDA_COMPUTE_EXCLUSIVE_THREAD_MODE 1
@@ -91,18 +74,13 @@
 #define DISABLE_CUDA_CONCCURENT 0
 #define NETWORK_PROBLEM_AYALISYS 0
 
+#define SGI_OMPLACE_BUG 1
+
 #ifdef __FUJITSU
-#	define SWITCH_FUJI_PROF 1
-#	define ESCAPE_ATOMIC_FUNC 1
-#	define USE_SPARC_ASM_POPC 1
-#	define FCC_OMP_ASM_BUG 1
-//#	define AVOID_BUSY_WAIT 1
+
 #else // #ifdef __FUJITSU
-#	define SWITCH_FUJI_PROF 0
-#	define ESCAPE_ATOMIC_FUNC 0
-#	define USE_SPARC_ASM_POPC 0
-#	define FCC_OMP_ASM_BUG 0
-//#	define AVOID_BUSY_WAIT 0
+#	undef ENABLE_FUJI_PROF
+#	define ENABLE_FUJI_PROF 0
 #endif // #ifdef __FUJITSU
 
 #if VTRACE
@@ -117,19 +95,14 @@
 #	define DEGREE_ORDER 0
 #endif
 
-#if !ISOLATE_FIRST_EDGE
-#	undef ISOLATE_HIGH_DEGREE
-#	define ISOLATE_HIGH_DEGREE 0
-#endif
-
 #define CACHE_LINE 128
-#define PAGE_SIZE 4096
+#define PAGE_SIZE 8192
 
 #define IMD_OUT stderr
 
 typedef uint8_t SortIdx;
 typedef uint64_t BitmapType;
-typedef int32_t TwodVertex;
+typedef uint32_t TwodVertex;
 
 #ifdef __cplusplus
 namespace PRM { //
@@ -138,7 +111,7 @@ namespace PRM { //
 #define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
-	NUM_BFS_ROOTS = 32, // spec: 64
+	NUM_BFS_ROOTS = 64, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,

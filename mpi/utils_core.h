@@ -251,7 +251,7 @@ struct MPI_INFO_ON_GPU {
 
 int64_t get_time_in_microsecond();
 
-#if SWITCH_FUJI_PROF
+#if ENABLE_FUJI_PROF
 extern "C" {
 void fapp_start(const char *, int , int);
 void fapp_stop(const  char *, int , int);

@@ -16,7 +16,7 @@ LIBS = -lm
 
 NVFLAG_BASE = -Drestrict=__restrict__ -Xcompiler -fopenmp,-ffast-math,-Wall -arch=compute_20 -code=sm_20
 ifeq ($(SW), GNU3)
-CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math# -msse4.2 # -g -pg
+CFLAGS = -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math -msse4.2 # -g -pg
 NVCCFLAGS = $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LDFLAGS = -fopenmp -g # -g -pg
 LIBS := $(LIBS) -lnuma

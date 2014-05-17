@@ -325,7 +325,7 @@ private:
 	// node list where we need to set receive buffer
 	std::deque<int> recv_stv;
 
-	// accessed by communication thread only
+	// accessed by the communication thread only
 	MPI_Request* mpi_reqs_;
 
 	PROF(profiling::TimeSpan comm_time_);
@@ -1686,7 +1686,7 @@ public:
 		int64_t max_stt[2];
 		MPI_Reduce(send_stt, sum_stt, 2, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
 		MPI_Reduce(send_stt, max_stt, 2, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
-		if(sum_stt[0] != 0 && mpi.isMaster()) {
+		if(mpi.isMaster() && sum_stt[0] != 0) {
 			fprintf(IMD_OUT, "Bottom-Up using List. Total %f M Vertexes / %f M Blocks = %f Max %f %%+ Vertexes %f %%+ Blocks\n",
 					to_mega(sum_stt[0]), to_mega(sum_stt[1]), to_mega(sum_stt[0]) / to_mega(sum_stt[1]),
 					diff_percent(max_stt[0], sum_stt[0], mpi.size_2d),
@@ -3195,7 +3195,7 @@ void BfsBase<PARAMS>::
 	run_bfs(int64_t root, int64_t* pred)
 {
 	SET_AFFINITY;
-#if SWITCH_FUJI_PROF
+#if ENABLE_FUJI_PROF
 	fapp_start("initialize", 0, 0);
 	start_collection("initialize");
 #endif
@@ -3236,7 +3236,7 @@ void BfsBase<PARAMS>::
 	expand_time += cur_expand_time; prev_time = tmp;
 #endif
 
-#if SWITCH_FUJI_PROF
+#if ENABLE_FUJI_PROF
 	stop_collection("initialize");
 	fapp_stop("initialize", 0, 0);
 	char *prof_mes[] = { "bottom-up", "top-down" };
@@ -3249,7 +3249,7 @@ void BfsBase<PARAMS>::
 		num_edge_bottom_up_ = 0;
 		PROF(fiber_man_.reset_wait_time());
 #endif // #if VERVOSE_MODE
-#if SWITCH_FUJI_PROF
+#if ENABLE_FUJI_PROF
 		fapp_start(prof_mes[(int)forward_or_backward_], 0, 0);
 		start_collection(prof_mes[(int)forward_or_backward_]);
 #endif
@@ -3321,7 +3321,7 @@ void BfsBase<PARAMS>::
 			profiling::g_pis.submitCounter(num_edge_bottom_up_, "bottom-up edge relax", current_level_);
 #endif // #if PROFILING_MODE
 #endif // #if VERVOSE_MODE
-#if SWITCH_FUJI_PROF
+#if ENABLE_FUJI_PROF
 		stop_collection(prof_mes[(int)forward_or_backward_]);
 		fapp_stop(prof_mes[(int)forward_or_backward_], 0, 0);
 #endif
@@ -3329,7 +3329,7 @@ void BfsBase<PARAMS>::
 		if(global_nq_size_ == 0)
 			break;
 #endif
-#if SWITCH_FUJI_PROF
+#if ENABLE_FUJI_PROF
 		fapp_start("expand", 0, 0);
 		start_collection("expand");
 #endif
@@ -3428,7 +3428,7 @@ void BfsBase<PARAMS>::
 		}
 		clear_nq_stack(); // currently, this is required only in the top-down phase
 
-#if SWITCH_FUJI_PROF
+#if ENABLE_FUJI_PROF
 		stop_collection("expand");
 		fapp_stop("expand", 0, 0);
 #endif
