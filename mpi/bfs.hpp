@@ -17,550 +17,19 @@
 #endif
 
 #include "utils.hpp"
-#include "double_linked_list.h"
 #include "fiber.hpp"
+#include "abstract_comm.hpp"
+#include "mpi_comm.hpp"
+#include "fjmpi_comm.hpp"
 
 #include "low_level_func.h"
 
-class AsyncCommBuffer {
-public:
-	AsyncCommBuffer() : length_(0) { }
-	virtual ~AsyncCommBuffer() { }
-	virtual void add(void* ptr__, int offset, int length) = 0;
-	int length_;
-};
-
-struct AlltoAllCommSetting {
-	int comm_size;
-	int buffer_size;
-	int send_queue_limit;
-};
-
-class AlltoAllHandler {
-public:
-	virtual ~AlltoAllHandler() { }
-	virtual void get_setting(AlltoAllCommSetting* s) = 0;
-	virtual AsyncCommBuffer* alloc_buffer() = 0;
-	virtual void free_buffer(AsyncCommBuffer* buf) = 0;
-	virtual void set_buffer(bool send_or_recv, AsyncCommBuffer* buf, int target, MPI_Request* req) = 0;
-	virtual int recv_status(AsyncCommBuffer* buf, MPI_Status* stt) = 0;
-	virtual void notify_completion(bool send_or_recv, AsyncCommBuffer* buf, int target) = 0;
-	virtual void finished() = 0;
-};
-
-class AsyncCommHandler {
-public:
-	virtual ~AsyncCommHandler() { }
-	virtual void probe() = 0;
-};
-
-class CommCommand {
-public:
-	virtual ~CommCommand() { }
-	virtual void comm_cmd() = 0;
-};
-
-class AsyncCommManager : public Runnable
-{
-	struct CommTarget {
-		CommTarget()
-			: reserved_size_(0)
-			, filled_size_(0)
-			, next_buf(NULL)
-			, cur_buf(NULL)
-			, send_buf(NULL)
-			, recv_buf(NULL) {
-			pthread_mutex_init(&send_mutex, NULL);
-		}
-		~CommTarget() {
-			pthread_mutex_destroy(&send_mutex);
-		}
-
-		pthread_mutex_t send_mutex;
-		// monitor : send_mutex
-		volatile int reserved_size_;
-		volatile int filled_size_;
-		AsyncCommBuffer* next_buf;
-		AsyncCommBuffer* cur_buf;
-		// monitor : thread_sync_
-		std::deque<AsyncCommBuffer*> send_queue;
-		AsyncCommBuffer* send_buf;
-		AsyncCommBuffer* recv_buf;
-	};
-public:
-	AsyncCommManager(FiberManager* fiber_man__)
-		: fiber_man_(fiber_man__)
-	{
-		cuda_enabled_ = false;
-	}
-	void init(AlltoAllHandler** hdls, int count) {
-		d_ = new DynamicDataSet();
-		pthread_mutex_init(&d_->thread_sync_, NULL);
-		d_->cleanup_ = false;
-		d_->command_active_ = false;
-		d_->suspended_ = false;
-		d_->terminated_ = false;
-
-		node_list_length_ = 0;
-		for(int i = 0; i < count; ++i) {
-			AlltoAllCommSetting s; hdls[i]->get_setting(&s);
-			handlers_.push_back(hdls[i]);
-			if(node_list_length_ < s.comm_size)
-				node_list_length_ = s.comm_size;
-		}
-		active_ = NULL;
-
-		node_ = new CommTarget[node_list_length_]();
-		mpi_reqs_ = (MPI_Request*)malloc(sizeof(mpi_reqs_[0])*node_list_length_*REQ_TOTAL);
-
-		d_->total_send_queue_ = 0;
-		for(int i = 0; i < node_list_length_; ++i) {
-			for(int k = 0; k < REQ_TOTAL; ++k) {
-				mpi_reqs_[REQ_TOTAL*i + k] = MPI_REQUEST_NULL;
-			}
-		}
-	}
-
-	virtual ~AsyncCommManager()
-	{
-		if(!d_->cleanup_) {
-			d_->cleanup_ = true;
-			pthread_mutex_lock(&d_->thread_sync_);
-			d_->terminated_ = true;
-			d_->suspended_ = true;
-			d_->command_active_ = true;
-			pthread_mutex_unlock(&d_->thread_sync_);
-			pthread_mutex_destroy(&d_->thread_sync_);
-
-#if CUDA_ENABLED
-			if(cuda_enabled_) {
-				CudaStreamManager::begin_cuda();
-				CUDA_CHECK(cudaHostUnregister(buffer_.fold_));
-				CudaStreamManager::end_cuda();
-			}
-#endif
-
-			delete [] node_; node_ = NULL;
-			free(mpi_reqs_); mpi_reqs_ = NULL;
-
-			delete d_; d_ = NULL;
-		}
-	}
-
-	void begin_comm(int handler_idx)
-	{
-		assert (active_ == NULL);
-		active_ = handlers_[handler_idx];
-		active_->get_setting(&s_);
-
-		for(int i = 0; i < s_.comm_size; ++i) {
-			CommTarget& node = node_[i];
-			node.reserved_size_ = node.filled_size_ = s_.buffer_size - 1;
-			assert (node.next_buf == NULL);
-			assert (node.cur_buf == NULL);
-		}
-	}
-
-	virtual void run() { comm_thread_routine(); }
-
-	/**
-	 * Asynchronous send.
-	 * When the communicator receive data, it will call fold_received(FoldCommBuffer*) function.
-	 * To reduce the memory consumption, when the communicator detects stacked jobs,
-	 * it also process the tasks in the fiber_man_ except the tasks that have the lowest priority (0).
-	 * This feature realize the fixed memory consumption.
-	 */
-	template <bool proc>
-	void send(void* ptr, int length, int target)
-	{
-		VT_TRACER("comm_send");
-		assert(length > 0);
-		CommTarget& node = node_[target];
-		bool process_task = false;
-
-//#if ASYNC_COMM_LOCK_FREE
-		do {
-			int offset = __sync_fetch_and_add(&node.reserved_size_, length);
-			if(offset > s_.buffer_size) {
-				// wait
-				int count = 0;
-				while(node.reserved_size_ > s_.buffer_size) {
-					if(count++ >= 1000) {
-						if(proc) {
-							if(fiber_man_->process_task(1)) while(fiber_man_->process_task(1)); // process recv task
-							else sched_yield();
-						}
-						//else sched_yield();
-					}
-				}
-				continue ;
-			}
-			else if(offset + length > s_.buffer_size) {
-				// swap buffer
-				assert (offset > 0);
-				while(offset != node.filled_size_) ;
-				if(node.cur_buf != NULL) {
-					send_submit(target);
-				}
-				else {
-					node.cur_buf = get_send_buffer<proc>(); // Maybe, this takes much time.
-				}
-				node.next_buf = get_send_buffer<proc>(); // Maybe, this takes much time.
-				// This order is important.
-				offset = node.filled_size_ = 0;
-				__sync_synchronize(); // membar
-				node.reserved_size_ = length;
-				process_task = true;
-			}
-			node.cur_buf->add(ptr, offset, length);
-			__sync_fetch_and_add(&node.filled_size_, length);
-			break;
-		} while(true);
-
-		if(proc && process_task) {
-			while(fiber_man_->process_task(1)); // process recv task
-		}
-// #endif
-	}
-
-	void send_end(int target)
-	{
-		CommTarget& node = node_[target];
-		assert (node.reserved_size_ == node.filled_size_);
-		assert (node.reserved_size_ != 0);
-
-		if(node.cur_buf != NULL) send_submit(target);
-		else node.cur_buf = get_send_buffer<false>();
-
-		node.reserved_size_ = node.filled_size_ = 0;
-		send_submit(target);
-	}
-
-	void input_command(CommCommand* comm)
-	{
-		InternalCommand cmd;
-		cmd.kind = MANUAL_CMD;
-		cmd.cmd = comm;
-		put_command(cmd);
-	}
-
-	void register_handler(AsyncCommHandler* comm)
-	{
-		InternalCommand cmd;
-		cmd.kind = ADD_HANDLER;
-		cmd.handler = comm;
-		put_command(cmd);
-	}
-
-	void remove_handler(AsyncCommHandler* comm)
-	{
-		InternalCommand cmd;
-		cmd.kind = REMOVE_HANDLER;
-		cmd.handler = comm;
-		put_command(cmd);
-	}
-
-#if PROFILING_MODE
-	void submit_prof_info(const char* str, int number) {
-		comm_time_.submit(str, number);
-	}
-#endif
-#ifndef NDEBUG
-	bool check_num_send_buffer() { return (d_->total_send_queue_ == 0); }
-#endif
-private:
-
-	enum COMM_COMMAND {
-		SEND,
-		MANUAL_CMD,
-		ADD_HANDLER,
-		REMOVE_HANDLER,
-	};
-
-	struct InternalCommand {
-		COMM_COMMAND kind;
-		union {
-			// SEND
-			int target;
-			// COMM_COMMAND
-			CommCommand* cmd;
-			AsyncCommHandler* handler;
-		};
-	};
-
-	struct DynamicDataSet {
-		// lock topology
-		// FoldNode::send_mutex -> thread_sync_
-		pthread_mutex_t thread_sync_;
-
-		bool cleanup_;
-
-		// monitor : thread_sync_
-		volatile bool command_active_;
-		volatile bool suspended_;
-		volatile bool terminated_;
-		std::deque<InternalCommand> command_queue_;
-
-		// accessed by comm thread only
-		volatile int total_send_queue_;
-	} *d_;
-
-	enum MPI_REQ_INDEX {
-		REQ_SEND = 0,
-		REQ_RECV = 1,
-		REQ_TOTAL = 2,
-	};
-
-	std::vector<AlltoAllHandler*> handlers_;
-	std::vector<AsyncCommHandler*> async_comm_handlers_;
-	AlltoAllHandler* active_;
-
-	int node_list_length_;
-	AlltoAllCommSetting s_;
-	CommTarget* node_;
-	FiberManager* fiber_man_;
-
-	bool cuda_enabled_;
-
-	// node list where we need to set receive buffer
-	std::deque<int> recv_stv;
-
-	// accessed by the communication thread only
-	MPI_Request* mpi_reqs_;
-
-	PROF(profiling::TimeSpan comm_time_);
-
-	void comm_thread_routine()
-	{
-		VT_TRACER("comm_routine");
-		int num_recv_active = s_.comm_size;
-		int num_send_active = s_.comm_size;
-
-		for(int i = 0; i < s_.comm_size; ++i) {
-			CommTarget& node = node_[i];
-			assert (node.recv_buf == NULL);
-			node.recv_buf = active_->alloc_buffer();
-			assert (node.recv_buf != NULL);
-			active_->set_buffer(false, node.recv_buf, i, &mpi_reqs_[REQ_TOTAL*i + REQ_RECV]);
-		}
-
-		// command loop
-		while(true) {
-			if(d_->command_active_) {
-				pthread_mutex_lock(&d_->thread_sync_);
-				InternalCommand cmd;
-				while(pop_command(&cmd)) {
-					pthread_mutex_unlock(&d_->thread_sync_);
-					switch(cmd.kind) {
-					case SEND:
-						set_send_buffer(cmd.target);
-						break;
-					case MANUAL_CMD:
-						cmd.cmd->comm_cmd();
-						break;
-					case ADD_HANDLER:
-						async_comm_handlers_.push_back(cmd.handler);
-						break;
-					case REMOVE_HANDLER:
-						for(std::vector<AsyncCommHandler*>::iterator it = async_comm_handlers_.begin();
-								it != async_comm_handlers_.end(); ++it)
-						{
-							if(*it == cmd.handler) {
-								async_comm_handlers_.erase(it);
-								break;
-							}
-						}
-						break;
-					}
-					pthread_mutex_lock(&d_->thread_sync_);
-				}
-				pthread_mutex_unlock(&d_->thread_sync_);
-			}
-			if(num_recv_active == 0 && num_send_active == 0 && async_comm_handlers_.size() == 0) {
-				// finished
-				break;
-			}
-
-			if(num_recv_active != 0 || num_send_active != 0) {
-				int index;
-				int flag;
-				MPI_Status status;
-				MPI_Testany(s_.comm_size * (int)REQ_TOTAL, mpi_reqs_, &index, &flag, &status);
-
-				if(flag != 0 && index != MPI_UNDEFINED) {
-					const int src_c = index/REQ_TOTAL;
-					const MPI_REQ_INDEX req_kind = (MPI_REQ_INDEX)(index%REQ_TOTAL);
-					const bool b_send = (req_kind == REQ_SEND);
-
-					CommTarget& node = node_[src_c];
-					AsyncCommBuffer* buf;
-					if(b_send) {
-						buf = node.send_buf; node.send_buf = NULL;
-					}
-					else {
-						buf = node.recv_buf; node.recv_buf = NULL;
-					}
-
-					assert (mpi_reqs_[index] == MPI_REQUEST_NULL);
-					mpi_reqs_[index] = MPI_REQUEST_NULL;
-
-					if(req_kind == REQ_RECV) {
-						active_->recv_status(buf, &status);
-					}
-
-					bool completion_message = (buf->length_ == 0);
-					// complete
-					if(b_send) {
-						// send buffer
-						active_->free_buffer(buf);
-						if(completion_message) {
-							// sent fold completion
-							--num_send_active;
-						}
-						else {
-							active_->notify_completion(true, buf, src_c);
-							set_send_buffer(src_c);
-						}
-					}
-					else {
-						// recv buffer
-						if(completion_message) {
-							// received fold completion
-							--num_recv_active;
-							active_->free_buffer(buf);
-						}
-						else {
-							// set new buffer for next receiving
-							recv_stv.push_back(src_c);
-
-							active_->notify_completion(false, buf, src_c);
-						}
-					}
-
-					// process recv starves
-					while(recv_stv.size() > 0) {
-						int target = recv_stv.front();
-						CommTarget& node = node_[target];
-						assert (node.recv_buf == NULL);
-						node.recv_buf = active_->alloc_buffer();
-						if(node.recv_buf == NULL) break;
-						active_->set_buffer(false, node.recv_buf, target, &mpi_reqs_[REQ_TOTAL*target + REQ_RECV]);
-						recv_stv.pop_front();
-					}
-				}
-			}
-
-			for(int i = 0; i < (int)async_comm_handlers_.size(); ++i) {
-				async_comm_handlers_[i]->probe();
-			}
-		} // while(true)
-
-		AlltoAllHandler* tmp = active_; active_ = NULL;
-		__sync_synchronize(); // membar
-		tmp->finished();
-	}
-
-	template <bool proc>
-	AsyncCommBuffer* get_send_buffer() {
-#if 0
-		PROF(profiling::TimeKeeper tk_wait);
-		PROF(profiling::TimeSpan ts_proc);
-		while(d_->total_send_queue_ > s_.comm_size * s_.send_queue_limit) if(proc) {
-			PROF(profiling::TimeKeeper tk_proc);
-			while(fiber_man_->process_task(1)) ; // process recv task
-			PROF(ts_proc += tk_proc);
-		}
-		PROF(comm_time_ += profiling::TimeSpan(tk_wait) - ts_proc);
-#endif // #if 0
-		return active_->alloc_buffer();
-	}
-
-	AsyncCommBuffer* get_recv_buffer() {
-		return active_->alloc_buffer();
-	}
-
-	bool pop_command(InternalCommand* cmd) {
-		if(d_->command_queue_.size()) {
-			*cmd = d_->command_queue_[0];
-			d_->command_queue_.pop_front();
-			return true;
-		}
-		d_->command_active_ = false;
-		return false;
-	}
-
-	void put_command(InternalCommand& cmd)
-	{
-		pthread_mutex_lock(&d_->thread_sync_);
-		d_->command_queue_.push_back(cmd);
-		d_->command_active_ = true;
-		pthread_mutex_unlock(&d_->thread_sync_);
-	}
-
-	void set_send_buffer(int target)
-	{
-		CommTarget& node = node_[target];
-		if(node.send_buf) return ;
-		pthread_mutex_lock(&d_->thread_sync_);
-		if(node.send_queue.size() > 0) {
-			node.send_buf = node.send_queue.front(); node.send_queue.pop_front(); --d_->total_send_queue_;
-		}
-		pthread_mutex_unlock(&d_->thread_sync_);
-		if(node.send_buf) active_->set_buffer(true, node.send_buf, target, &mpi_reqs_[REQ_TOTAL*target + REQ_SEND]);
-	}
-
-	/**
-	 * This function does not reset fille_size_ and reserved_size_
-	 * because they are very sensitive and it is easy to generate race condition.
-	 */
-	void send_submit(int target)
-	{
-		CommTarget& node = node_[target];
-		node.cur_buf->length_ = node.filled_size_;
-
-		InternalCommand cmd;
-		cmd.kind = SEND;
-		cmd.target = target;
-
-		pthread_mutex_lock(&d_->thread_sync_);
-		node.send_queue.push_back(node.cur_buf); ++d_->total_send_queue_;
-		d_->command_queue_.push_back(cmd);
-		d_->command_active_ = true;
-		pthread_mutex_unlock(&d_->thread_sync_);
-
-		node.cur_buf = node.next_buf;
-		node.next_buf = NULL;
-	}
-};
-
-template <typename ELEM>
-class BFSCommBufferImpl : public AsyncCommBuffer {
-public:
-	enum { BUF_SIZE = PRM::COMM_BUFFER_SIZE / sizeof(ELEM) };
-	BFSCommBufferImpl(void* buffer__, void* obj_ptr__)
-		: buffer_((ELEM*)buffer__)
-		, obj_ptr_(obj_ptr__)
-	{ }
-	virtual ~BFSCommBufferImpl() { }
-	virtual void add(void* ptr__, int offset, int length) {
-		assert (offset >= 0);
-		assert (offset + length <= BUF_SIZE);
-		memcpy(buffer_ + offset, ptr__, length*sizeof(ELEM));
-	}
-
-	ELEM* buffer_;
-	// info
-	int target_; // rank to which send or from which receive
-	void* obj_ptr_;
-};
-
-
-template <typename PARAMS>
 class BfsBase
 {
-public:
-	typedef BfsBase<PARAMS> ThisType;
+	typedef BfsBase ThisType;
 	typedef Graph2DCSR GraphType;
+
+public:
 	enum {
 		// Number of CQ bitmap entries represent as 1 bit in summary.
 		// Since the type of bitmap entry is int32_t and 1 cache line is composed of 32 bitmap entries,
@@ -578,9 +47,6 @@ public:
 		LOG_BFELL_SORT = PRM::LOG_BFELL_SORT,
 		BFELL_SORT_MASK = PRM::BFELL_SORT_MASK,
 		BFELL_SORT_IN_BMP = BFELL_SORT / NBPE,
-
-		TOP_DOWN_COMM_H = 0,
-		BOTTOM_UP_COMM_H = 1,
 	};
 
 	class QueuedVertexes {
@@ -612,14 +78,18 @@ public:
 		LocalPacket fold_packet[1];
 	};
 
-	BfsBase(double denom_to_bottom_up__, double denom_bitmap_to_list__, bool cuda_enabled)
-		: comm_(&fiber_man_)
+	BfsBase()
+		: fiber_man_()
+		, compute_thread_()
+		, alltoall_comm_(new AlltoallCommType())
+		, comm_(alltoall_comm_, &fiber_man_)
 		, top_down_comm_(this)
 		, bottom_up_comm_(this)
-		, denom_to_bottom_up_(denom_to_bottom_up__)
-		, denom_bitmap_to_list_(denom_bitmap_to_list__)
+		, denom_to_bottom_up_(DENOM_TOPDOWN_TO_BOTTOMUP)
+		, denom_bitmap_to_list_(DENOM_BITMAP_TO_LIST)
 		, thread_sync_(omp_get_max_threads())
-	{ }
+	{
+	}
 
 	virtual ~BfsBase()
 	{ }
@@ -680,6 +150,13 @@ public:
 		int64_t bitmap_width = get_bitmap_size_local();
 		int64_t half_bitmap_width = bitmap_width / 2;
 
+		{
+			AlltoallCommParameter td_prm(mpi.comm_2dc, PRM::TOP_DOWN_FOLD_TAG, &top_down_comm_);
+			top_down_comm_idx_ = alltoall_comm_->reg_comm(td_prm);
+			AlltoallCommParameter bu_prm(mpi.comm_2dr, PRM::BOTTOM_UP_PRED_TAG, &bottom_up_comm_);
+			bottom_up_comm_idx_ = alltoall_comm_->reg_comm(bu_prm);
+		}
+
 		/**
 		 * Buffers for computing BFS
 		 * - next queue: This is vertex list in the top-down phase, and <pred, target> tuple list in the bottom-up phase.
@@ -739,9 +216,6 @@ public:
 		bitmap_or_list_ = false;
 		work_extra_buf_ = NULL;
 		work_extra_buf_size_ = 0;
-
-		AlltoAllHandler* comm_hdlrs[2] = { &top_down_comm_, &bottom_up_comm_ };
-		comm_.init(comm_hdlrs, 2);
 	}
 
 	void deallocate_memory()
@@ -800,6 +274,37 @@ public:
 	// Async communication
 	//-------------------------------------------------------------//
 
+	template <typename ELEM>
+	class BFSCommBufferImpl : public CommunicationBuffer {
+		typedef CommunicationBuffer super;
+	public:
+		enum { BUF_SIZE = PRM::COMM_BUFFER_SIZE / sizeof(ELEM) };
+		BFSCommBufferImpl(void* buffer__, void* obj_ptr__)
+			: buffer_((ELEM*)buffer__)
+			, obj_ptr_(obj_ptr__)
+		{ }
+		virtual ~BFSCommBufferImpl() { }
+		virtual void add(void* ptr__, int offset, int length) {
+			assert (offset >= 0);
+			assert (offset + length <= BUF_SIZE);
+			memcpy(buffer_ + offset, ptr__, length*sizeof(ELEM));
+		}
+		virtual void* base_object() {
+			return obj_ptr_;
+		}
+		virtual int bytes() {
+			return super::length_ * sizeof(ELEM);
+		}
+		virtual void* pointer() {
+			return buffer_;
+		}
+
+		ELEM* buffer_;
+		void* obj_ptr_;
+		// info
+		int src_; // rank to which send or from which receive
+	};
+
 	struct BFSCommBufferData {
 		uint8_t mem[PRM::COMM_BUFFER_SIZE];
 		BFSCommBufferImpl<uint32_t> top_down_buffer;
@@ -811,112 +316,71 @@ public:
 		{ }
 	};
 
-	class CommBufferPool : public memory::ConcurrentPool<BFSCommBufferData> {
-	public:
-		CommBufferPool()
-			: memory::ConcurrentPool<BFSCommBufferData>()
-		{
-			num_extra_buffer_ = 0;
-		}
-
-		int num_extra_buffer_;
-	protected:
-		virtual BFSCommBufferData* allocate_new() {
-			PROF(__sync_fetch_and_add(&num_extra_buffer_, 1));
-			return new (page_aligned_xmalloc(sizeof(BFSCommBufferData))) BFSCommBufferData();
-		}
-	};
-
 	template <typename T>
-	class CommHandlerBase : public AlltoAllHandler {
+	class CommHandlerBase : public AlltoallBufferHandler {
 		typedef BFSCommBufferImpl<T> BufferType;
 	public:
-		CommHandlerBase(ThisType* this__, MPI_Comm comm__, int comm_size__, int tag__)
+		CommHandlerBase(ThisType* this__)
 			: this_(this__)
-			, pool_(&this__->comm_buffer_pool_)
-			, comm_(comm__)
-			, comm_size_(comm_size__)
-			, tag_(tag__)
+			, pool_(this__->alltoall_comm_->get_allocator())
 		{ }
 		virtual ~CommHandlerBase() { }
-		virtual void free_buffer(AsyncCommBuffer* buf__) {
-			BFSCommBufferImpl<T>* buf_ = static_cast<BFSCommBufferImpl<T>*>(buf__);
-			buf_->length_ = 0;
-			BFSCommBufferData* buf = static_cast<BFSCommBufferData*>(buf_->obj_ptr_);
-			pool_->free(buf);
+		virtual void free_buffer(CommunicationBuffer* buf__) {
+			buf__->length_ = 0;
+			pool_->free(static_cast<BFSCommBufferData*>(buf__->base_object()));
 		}
-		virtual void get_setting(AlltoAllCommSetting* s) {
-			s->comm_size = comm_size_;
-			s->buffer_size = BufferType::BUF_SIZE;
-			s->send_queue_limit = PRM::SEND_BUFFER_LIMIT;
+		virtual int buffer_length() {
+			return BufferType::BUF_SIZE;
 		}
-		virtual void set_buffer(bool send_or_recv, AsyncCommBuffer* buf_, int target, MPI_Request* req) {
-			BufferType* buf = static_cast<BufferType*>(buf_);
-			if(send_or_recv) {
-				MPI_Isend(buf->buffer_, buf->length_, MpiTypeOf<T>::type,
-						target, tag_, comm_, req);
-			}
-			else {
-				MPI_Irecv(buf->buffer_, BufferType::BUF_SIZE, MpiTypeOf<T>::type,
-						target, tag_, comm_, req);
-			}
-		}
-		virtual int recv_status(AsyncCommBuffer* buf_, MPI_Status* stt) {
-			BufferType* buf = static_cast<BufferType*>(buf_);
-			MPI_Get_count(stt, MpiTypeOf<T>::type, &buf->length_);
-			return buf->length_;
+		virtual MPI_Datatype data_type() {
+			return MpiTypeOf<T>::type;
 		}
 		virtual void finished() {
 			this_->fiber_man_.end_processing();
 		}
-
 	protected:
 		ThisType* this_;
-		CommBufferPool* pool_;
-		MPI_Comm comm_;
-		int comm_size_;
-		int tag_;
+		memory::Pool<BFSCommBufferData>* pool_;
 	};
 
 	class TopDownCommHandler : public CommHandlerBase<uint32_t> {
 	public:
 		TopDownCommHandler(ThisType* this__)
-			: CommHandlerBase<uint32_t>(this__,
-					mpi.comm_2dc, mpi.size_2dr, PRM::TOP_DOWN_FOLD_TAG)
+			: CommHandlerBase<uint32_t>(this__)
 			  { }
 
-		virtual AsyncCommBuffer* alloc_buffer() {
+		virtual CommunicationBuffer* alloc_buffer() {
 			return &this->pool_->get()->top_down_buffer;
 		}
-		virtual void notify_completion(bool send_or_recv, AsyncCommBuffer* buf_, int target) {
-			if(send_or_recv == false) {
-				BFSCommBufferImpl<uint32_t>* buf = static_cast<BFSCommBufferImpl<uint32_t>*>(buf_);
-				buf->target_ = target;
-				VERVOSE(g_tp_comm += buf->length_ * sizeof(uint32_t));
-				this->this_->fiber_man_.submit(new TopDownReceiver(this->this_, buf), 1);
-			}
+		virtual void received(CommunicationBuffer* buf_, int src) {
+			BFSCommBufferImpl<uint32_t>* buf = static_cast<BFSCommBufferImpl<uint32_t>*>(buf_);
+			buf->src_ = src;
+			VERVOSE(g_tp_comm += buf->length_ * sizeof(uint32_t));
+			this->this_->fiber_man_.submit(new TopDownReceiver(this->this_, buf), 1);
 		}
 	};
 
 	class BottomUpCommHandler : public CommHandlerBase<TwodVertex> {
 	public:
 		BottomUpCommHandler(ThisType* this__)
-			: CommHandlerBase<TwodVertex>(this__,
-					mpi.comm_2dr, mpi.size_2dc, PRM::BOTTOM_UP_PRED_TAG)
+			: CommHandlerBase<TwodVertex>(this__)
 			  { }
 
-		virtual AsyncCommBuffer* alloc_buffer() {
+		virtual CommunicationBuffer* alloc_buffer() {
 			return &this->pool_->get()->bottom_up_buffer;
 		}
-		virtual void notify_completion(bool send_or_recv, AsyncCommBuffer* buf_, int target) {
-			if(send_or_recv == false) {
-				BFSCommBufferImpl<TwodVertex>* buf = static_cast<BFSCommBufferImpl<TwodVertex>*>(buf_);
-				buf->target_ = target;
-				VERVOSE(g_bu_pred_comm += buf->length_ * sizeof(TwodVertex));
-				this->this_->fiber_man_.submit(new BottomUpReceiver(this->this_, buf), 1);
-			}
+		virtual void received(CommunicationBuffer* buf_, int src) {
+			BFSCommBufferImpl<TwodVertex>* buf = static_cast<BFSCommBufferImpl<TwodVertex>*>(buf_);
+			buf->src_ = src;
+			VERVOSE(g_bu_pred_comm += buf->length_ * sizeof(TwodVertex));
+			this->this_->fiber_man_.submit(new BottomUpReceiver(this->this_, buf), 1);
 		}
 	};
+#ifdef ENABLE_FJMPI_RDMA
+	typedef FJMpiAlltoallCommunicator<BFSCommBufferData> AlltoallCommType;
+#else
+	typedef MpiAlltoallCommunicator<BFSCommBufferData> AlltoallCommType;
+#endif
 
 	//-------------------------------------------------------------//
 	// expand phase
@@ -1583,7 +1047,7 @@ public:
 		VT_TRACER("td");
 		PROF(profiling::TimeKeeper tk_all);
 
-		comm_.begin_comm(TOP_DOWN_COMM_H);
+		comm_.prepare(top_down_comm_idx_);
 		compute_finished_ = false;
 		TopDownParallelSection par_sec(this);
 
@@ -1636,7 +1100,7 @@ public:
 			int lgl = this_->graph_.lgl_;
 			int lgsize = lgr + this_->graph_.lgc_;
 			int64_t lmask = ((int64_t(1) << lgl) - 1);
-			int r = data_->target_;
+			int r = data_->src_;
 			// ------------------- //
 
 			for(int i = 0; i < length; ) {
@@ -1668,7 +1132,7 @@ public:
 				}
 			}
 			tlb->cur_buffer = buf;
-			this_->comm_buffer_pool_.free(static_cast<BFSCommBufferData*>(data_->obj_ptr_));
+			this_->top_down_comm_.free_buffer(data_);
 			PROF(this_->recv_proc_time_ += tk_all);
 			delete this;
 		}
@@ -2770,7 +2234,7 @@ public:
 		int visited_count[comm_size*max_threads];
 		for(int i = 0; i < comm_size*max_threads; ++i) visited_count[i] = 0;
 
-		comm_.begin_comm(BOTTOM_UP_COMM_H);
+		comm_.prepare(bottom_up_comm_idx_);
 		compute_finished_ = false;
 		BottomUpBitmapParallelSection par_sec(this, visited_count);
 
@@ -2877,7 +2341,7 @@ public:
 		int visited_count[comm_size];
 		for(int i = 0; i < comm_size; ++i) visited_count[i] = 0;
 
-		comm_.begin_comm(BOTTOM_UP_COMM_H);
+		comm_.prepare(bottom_up_comm_idx_);
 		compute_finished_ = false;
 		BottomUpListParallelSection par_sec(this, visited_count, vertex_enabled);
 
@@ -3036,7 +2500,7 @@ public:
 			int lgl = this_->graph_.lgl_;
 			int lgsize = this_->graph_.lgr_ + this_->graph_.lgc_;
 			TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
-			int64_t cshifted = int64_t(data_->target_) << this_->graph_.lgr_;
+			int64_t cshifted = int64_t(data_->src_) << this_->graph_.lgr_;
 			int64_t levelshifted = int64_t(this_->current_level_) << 48;
 			int64_t const_mask = cshifted | levelshifted;
 			TwodVertex* buffer = data_->buffer_;
@@ -3050,7 +2514,7 @@ public:
 				pred[tgt_local] = pred_v;
 			}
 
-			this_->comm_buffer_pool_.free(static_cast<BFSCommBufferData*>(data_->obj_ptr_));
+			this_->bottom_up_comm_.free_buffer(data_);
 			PROF(this_->recv_proc_time_ += tk_all);
 			delete this;
 		}
@@ -3118,13 +2582,13 @@ public:
 
 	FiberManager fiber_man_;
 	BackgroundThread compute_thread_;
-	AsyncCommManager comm_;
+	AlltoallCommType* alltoall_comm_;
+	AsyncAlltoallManager comm_;
 	TopDownCommHandler top_down_comm_;
-#if STREAM_UPDATE
 	BottomUpCommHandler bottom_up_comm_;
-#endif
+	AlltoallSubCommunicator top_down_comm_idx_;
+	AlltoallSubCommunicator bottom_up_comm_idx_;
 	ThreadLocalBuffer** thread_local_buffer_;
-	CommBufferPool comm_buffer_pool_;
 	memory::ConcurrentPool<QueuedVertexes> nq_empty_buffer_;
 	memory::ConcurrentStack<QueuedVertexes*> nq_;
 
@@ -3188,11 +2652,7 @@ public:
 	PROF(profiling::TimeSpan seq_proc_time_);
 };
 
-
-
-template <typename PARAMS>
-void BfsBase<PARAMS>::
-	run_bfs(int64_t root, int64_t* pred)
+void BfsBase::run_bfs(int64_t root, int64_t* pred)
 {
 	SET_AFFINITY;
 #if ENABLE_FUJI_PROF
@@ -3280,7 +2740,7 @@ void BfsBase<PARAMS>::
 		}
 
 		global_visited_vertices += global_nq_size_;
-		assert(comm_.check_num_send_buffer());
+		assert(alltoall_comm_->check_num_send_buffer());
 
 #if VERVOSE_MODE
 		tmp = MPI_Wtime();
@@ -3312,7 +2772,7 @@ void BfsBase<PARAMS>::
 		recv_proc_time_.submit("recv proc", current_level_);
 		gather_nq_time_.submit("gather NQ info", current_level_);
 		seq_proc_time_.submit("sequential processing", current_level_);
-		comm_.submit_prof_info("send comm wait", current_level_);
+		comm_.submit_prof_info(current_level_);
 		fiber_man_.submit_wait_time("fiber man wait", current_level_);
 
 		if(forward_or_backward_)
@@ -3357,7 +2817,7 @@ void BfsBase<PARAMS>::
 		}
 
 #if VERVOSE_MODE
-		int send_num_bufs[2] = { comm_buffer_pool_.size(), nq_empty_buffer_.size() };
+		int send_num_bufs[2] = { alltoall_comm_->get_allocator()->size(), nq_empty_buffer_.size() };
 		int sum_num_bufs[2], max_num_bufs[2];
 		MPI_Reduce(send_num_bufs, sum_num_bufs, 2, MPI_INT, MPI_SUM, 0, mpi.comm_2d);
 		MPI_Reduce(send_num_bufs, max_num_bufs, 2, MPI_INT, MPI_MAX, 0, mpi.comm_2d);

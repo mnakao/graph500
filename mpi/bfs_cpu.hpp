@@ -10,20 +10,6 @@
 
 #include "bfs.hpp"
 
-struct BfsOnCPU_Params {
-	enum {
-		LOG_PACKING_EDGE_LISTS = 6, // 2^6 = 64
-		LOG_CQ_SUMMARIZING = 4, // 2^4 = 16 -> sizeof(int64_t)*32 = 128bytes
-	};
-};
-
-class BfsOnCPU
-	: public BfsBase<BfsOnCPU_Params>
-{
-public:
-	BfsOnCPU(double demon_to_bottom_up__, double denom_bitmap_to_list__)
-	: BfsBase<BfsOnCPU_Params>(demon_to_bottom_up__, denom_bitmap_to_list__, false)
-	  { }
-};
+typedef BfsBase BfsOnCPU;
 
 #endif /* BFS_CPU_HPP_ */

@@ -1,4 +1,4 @@
-SW = FUJI3
+SW = FUJI0
 VAMP = false
 
 # default values

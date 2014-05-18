@@ -686,7 +686,7 @@ private:
 		//const int comm_size = mpi.size_2dc;
 		int64_t num_max_edges = g.row_starts_[non_zero_rows];
 		MPI_Allreduce(MPI_IN_PLACE, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
-		int num_loops = get_blocks<EdgeList::CHUNK_SIZE>(num_max_edges);
+		int num_loops = get_blocks<EdgeList::CHUNK_SIZE*4>(num_max_edges);
 		TwodVertex bitmap_chunk_size = get_blocks(row_bitmap_length, num_loops);
 		int lgl = g.log_local_verts();
 
@@ -696,34 +696,32 @@ private:
 			TwodVertex bmp_end = std::min<TwodVertex>(row_bitmap_length, bmp_start + bitmap_chunk_size);
 			TwodVertex non_zer_row_start = g.row_sums_[bmp_start];
 			TwodVertex non_zer_row_end = g.row_sums_[bmp_end];
+#if DEGREE_ORDER
 			int64_t edge_start = g.row_starts_[non_zer_row_start];
 			int64_t edge_end = g.row_starts_[non_zer_row_end];
 			int64_t length = edge_end - edge_start;
-#if DEGREE_ORDER
-			int64_t* recv_degree = static_cast<int64_t*>(cache_aligned_xmalloc(length*sizeof(int64_t)));
-#endif
-			// get the degree for the target vertex of each edge.
-#if DEGREE_ORDER
-			if(edge_end - edge_start > INT_MAX) {
+			int64_t* recv_degree = static_cast<int64_t*>(
+					cache_aligned_xmalloc(length*sizeof(int64_t)));
+			if(length > INT_MAX) {
 				fprintf(IMD_OUT, "Error: Integer overflow (%s:%d)\n", __FILE__, __LINE__);
 			}
 			MpiCol::gather(DegreeConverter(g.edge_array_ + edge_start, g.degree_, recv_degree, lgl),
-					edge_end - edge_start, mpi.comm_2dc);
+					length, mpi.comm_2dc);
 #endif
 
 			// sort edges by their degree.
 #pragma omp for
 			for(TwodVertex non_zero_idx = non_zer_row_start; non_zero_idx < non_zer_row_end; ++non_zero_idx) {
 				int64_t e_start = g.row_starts_[non_zero_idx];
-				int64_t e_end = g.row_starts_[non_zero_idx + 1];
-		//		int64_t e_length = e_end - e_start;
 #if DEGREE_ORDER_ONLY_IE
+				int64_t e_end = g.row_starts_[non_zero_idx + 1];
 				int64_t* origin_degree = recv_degree - edge_start;
 				int64_t pos = std::max_element(origin_degree + e_start, origin_degree + e_end) - origin_degree;
 				g.isolated_edges_[non_zero_idx] = g.edge_array_[pos];
 				memmove(g.edge_array_ + e_start + 1, g.edge_array_ + e_start, (pos - e_start)*sizeof(TwodVertex));
 #else // #if DEGREE_ORDER_ONLY_IE
 #if DEGREE_ORDER
+				int64_t e_end = g.row_starts_[non_zero_idx + 1];
 				sort2(recv_degree + e_start - edge_start, g.edge_array_ + e_start,
 						e_end - e_start, std::greater<int64_t>());
 #endif
@@ -757,8 +755,7 @@ private:
 		g.edge_array_ = static_cast<TwodVertex*>(realloc(g.edge_array_,
 				g.row_starts_[non_zero_rows] * sizeof(TwodVertex)));
 		if(g.edge_array_ == NULL) {
-			fprintf(IMD_OUT, "Out of memory trying to re-allocate edge array");
-			throw "OutOfMemoryExpception";
+			throw_exception("Out of memory trying to re-allocate edge array");
 		}
 #endif
 

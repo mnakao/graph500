@@ -57,7 +57,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
 	BfsOnCPU::printInformation();
-	BfsOnCPU* benchmark = new BfsOnCPU(DENOM_TOPDOWN_TO_BOTTOMUP, DENOM_BITMAP_TO_LIST);
 
 	if(mpi.isMaster()) fprintf(IMD_OUT, "Graph generation\n");
 	double generation_time = MPI_Wtime();
@@ -65,6 +64,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 	generation_time = MPI_Wtime() - generation_time;
 
 	if(mpi.isMaster()) fprintf(IMD_OUT, "Graph construction\n");
+	BfsOnCPU* benchmark = new BfsOnCPU();
 	double construction_time = MPI_Wtime();
 	benchmark->construct(&edge_list);
 	construction_time = MPI_Wtime() - construction_time;

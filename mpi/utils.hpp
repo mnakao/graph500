@@ -125,6 +125,20 @@ template <typename T> MPI_Datatype get_mpi_type(T& instance) {
 }
 
 //-------------------------------------------------------------//
+// Exception
+//-------------------------------------------------------------//
+
+void throw_exception(const char* format, ...) {
+	char buf[300];
+	va_list arg;
+	va_start(arg, format);
+    vsnprintf(buf, sizeof(buf), format, arg);
+    va_end(arg);
+    fprintf(IMD_OUT, "[r:%d] %s\n", mpi.rank, buf);
+    throw buf;
+}
+
+//-------------------------------------------------------------//
 // Memory Allocation
 //-------------------------------------------------------------//
 
@@ -132,8 +146,7 @@ void* xMPI_Alloc_mem(size_t nbytes) {
   void* p = NULL;
   MPI_Alloc_mem(nbytes, MPI_INFO_NULL, &p);
   if (nbytes != 0 && !p) {
-    fprintf(IMD_OUT, "MPI_Alloc_mem failed for size%zu (%"PRId64") byte(s)\n", nbytes, (int64_t)nbytes);
-    throw "OutOfMemoryExpception";
+	  throw_exception("MPI_Alloc_mem failed for size%zu (%"PRId64") byte(s)", nbytes, (int64_t)nbytes);
   }
   return p;
 }
@@ -141,8 +154,7 @@ void* xMPI_Alloc_mem(size_t nbytes) {
 void* cache_aligned_xcalloc(const size_t size) {
     void* p = NULL;
 	if(posix_memalign(&p, CACHE_LINE, size)){
-		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
-		throw "OutOfMemoryExpception";
+		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
 	memset(p, 0, size);
 	return p;
@@ -151,8 +163,7 @@ void* cache_aligned_xmalloc(const size_t size)
 {
 	void* p = NULL;
 	if(posix_memalign(&p, CACHE_LINE, size)){
-		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
-		throw "OutOfMemoryExpception";
+		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
 	return p;
 }
@@ -161,8 +172,7 @@ void* page_aligned_xcalloc(const size_t size)
 {
 	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
-		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
-		throw "OutOfMemoryExpception";
+		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
 	memset(p, 0, size);
 	return p;
@@ -171,8 +181,7 @@ void* page_aligned_xmalloc(const size_t size)
 {
 	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
-		fprintf(IMD_OUT, "Out of memory trying to allocate %zu (%"PRId64") byte(s)\n", size, (int64_t)size);
-		throw "OutOfMemoryExpception";
+		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
 	return p;
 }
@@ -528,7 +537,7 @@ public:
 
 	int cpu(int numa_rank, int core_rank, int smt_rank) {
 		if(apicid_to_cpu == NULL || numa_rank >= num_numa_nodes || core_rank >= num_cores_within_numa || smt_rank >= num_logical_CPUs_within_core)
-			throw "Invalid rank";
+			throw_exception("Invalid rank");
 
 		return apicid_to_cpu[my_cpu_id(numa_rank, core_rank, smt_rank)];
 	}
@@ -600,7 +609,7 @@ bool ensure_my_apic_id() {
 	int cur_id = get_apic_id();
 	if(my_apic_id != cur_id) {
 		fprintf(IMD_OUT, "Fatal error: Affinity is changed unexpectedly!!!(%d -> %d)\n", my_apic_id, cur_id);
-		throw "Ivalid affinity";
+		throw_exception("Invalid affinity");
 	}
 #endif
 	return false;
@@ -2166,8 +2175,7 @@ public:
 			PacketIndex* pk_idx;
 			int remain_packet_length = max_packet_size;
 			if(reserve_packet(&buf, &pk_idx, max_packet_size) == false) {
-				fprintf(IMD_OUT, "Not enough buffer: bitmap_to_stream\n");
-				throw "Not enough buffer: bitmap_to_stream";
+				throw_exception("Not enough buffer: bitmap_to_stream");
 			}
 			uint8_t* ptr = buf;
 			int num_int = 0;
@@ -2345,6 +2353,7 @@ protected:
 	}
 };
 
+//! Only get() and free() are thread-safe. The other functions are NOT thread-safe.
 template <typename T>
 class ConcurrentPool : public Pool<T> {
 	typedef Pool<T> super_;

@@ -18,6 +18,94 @@
 
 #include "logfile.h"
 
+#ifdef __FUJITSU
+#include <mpi-ext.h>
+
+// Progress report for K computer
+class ProgressReport
+{
+public:
+	ProgressReport(int max_progress)
+		: max_progress_(max_progress)
+	{
+		if(mpi.isMaster()) {
+			g_progress_ = new int[mpi.size_2d]();
+			FJMPI_Rdma_reg_mem(0, g_progress_, sizeof(int)*mpi.size_2d);
+		}
+		local_send_address_ = FJMPI_Rdma_reg_mem(1, &my_progress_, sizeof(int));
+		MPI_Barrier(mpi.comm_2d);
+		remote_write_address_ = FJMPI_Rdma_get_remote_addr(0, 0) + sizeof(int)*mpi.rank_2d;
+	}
+	~ProgressReport() {
+		if(mpi.isMaster()) {
+			FJMPI_Rdma_dereg_mem(0);
+		}
+		FJMPI_Rdma_dereg_mem(1);
+	}
+	void begin_progress() {
+		my_progress_ = 0;
+		if(mpi.isMaster()) {
+			pthread_create(&thread_, NULL, update_status_thread, this);
+			fprintf(IMD_OUT, "Begin Reporting Progress. Info: Rank is 2D rank.\n");
+		}
+	}
+	void advace() {
+		++my_progress_;
+		FJMPI_Rdma_put(0, 0, remote_write_address_, local_send_address_, sizeof(int),
+				FJMPI_RDMA_LOCAL_NIC0 | FJMPI_RDMA_IMMEDIATE_RETURN);
+		while(FJMPI_Rdma_poll_cq(FJMPI_RDMA_LOCAL_NIC0, NULL)) ;
+	}
+	void end_progress() {
+		if(mpi.isMaster()) {
+			pthread_join(thread_, NULL);
+		}
+		MPI_Barrier(mpi.comm_2d);
+		while(FJMPI_Rdma_poll_cq(FJMPI_RDMA_LOCAL_NIC0, NULL)) ;
+	}
+
+private:
+	pthread_t thread_;
+	int max_progress_;
+	int my_progress_;
+	int* g_progress_; // length=mpi.size
+	uint64_t local_send_address_;
+	uint64_t remote_write_address_;
+
+	static void* update_status_thread(void* this_) {
+		static_cast<ProgressReport*>(this_)->update_status();
+		return NULL;
+	}
+
+	void update_status() {
+		int* tmp_progress = new int[mpi.size_2d];
+		int* node_list = new int[mpi.size_2d];
+		double print_time = MPI_Wtime();
+		while(true) {
+			usleep(400*1000); // sleep 400 ms
+			if(MPI_Wtime() - print_time >= 2.0) {
+				print_time = MPI_Wtime();
+				for(int i = 0; i < mpi.size_2d; ++i) {
+					tmp_progress[i] = g_progress_[i];
+					node_list[i] = i;
+				}
+				sort2(tmp_progress, node_list, mpi.size_2d);
+				fprintf(IMD_OUT, "(Rank,Iter)=");
+				for(int i = 0; i < std::min(mpi.size_2d, 8); ++i) {
+					fprintf(IMD_OUT, "(%d,%d)", node_list[i], tmp_progress[i]);
+				}
+				fprintf(IMD_OUT, "\n");
+				if(tmp_progress[0] == max_progress_) {
+					break;
+				}
+			}
+		}
+		delete [] tmp_progress;
+		delete [] node_list;
+	}
+};
+
+#else // #ifdef __FUJITSU
+
 class ProgressReport
 {
 public:
@@ -35,7 +123,6 @@ public:
 			send_buf_[i] = i + 1;
 		}
 		pthread_mutex_init(&thread_sync_, NULL);
-		pthread_cond_init(&thread_state_,  NULL);
 		if(mpi.isMaster()) {
 			recv_req_ = new MPI_Request[mpi.size_2d]();
 			recv_buf_  = new int[mpi.size_2d]();
@@ -47,7 +134,6 @@ public:
 	}
 	~ProgressReport() {
 		pthread_mutex_destroy(&thread_sync_);
-		pthread_cond_destroy(&thread_state_);
 		delete [] send_req_; send_req_ = NULL;
 		delete [] recv_req_; recv_req_ = NULL;
 		delete [] send_buf_; send_buf_ = NULL;
@@ -58,7 +144,7 @@ public:
 		my_progress_ = 0;
 		if(mpi.isMaster()) {
 			pthread_create(&thread_, NULL, update_status_thread, this);
-			fprintf(IMD_OUT, "Begin Reporting Progress. Info: Rank is 1D MPI rank, not 2D.\n");
+			fprintf(IMD_OUT, "Begin Reporting Progress. Info: Rank is 2D.\n");
 		}
 	}
 	void advace() {
@@ -136,7 +222,6 @@ private:
 
 	pthread_t thread_;
 	pthread_mutex_t thread_sync_;
-	pthread_cond_t thread_state_;
 	int max_progress_;
 	int my_progress_;
 	MPI_Request *send_req_; // length=max_progress
@@ -145,6 +230,7 @@ private:
 	int* recv_buf_; // length=mpi.size
 	int* g_progress_; // length=mpi.size
 };
+#endif // #ifdef __FUJITSU
 
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)

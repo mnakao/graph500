@@ -25,6 +25,7 @@
 #define DETAILED_PROF_MODE 0
 #define REPORT_GEN_RPGRESS 1
 #define ENABLE_FUJI_PROF 1
+#define ENABLE_FJMPI_RDMA 1
 
 #define BFELL 0
 
@@ -44,7 +45,7 @@
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
-#define PRE_EXEC_TIME 300 // 300 seconds
+#define PRE_EXEC_TIME 5 // 300 seconds
 
 #define VERTEX_SORTING 0 // do not support backward search
 #define LOW_LEVEL_FUNCTION 1
@@ -81,6 +82,8 @@
 #else // #ifdef __FUJITSU
 #	undef ENABLE_FUJI_PROF
 #	define ENABLE_FUJI_PROF 0
+//#	undef ENABLE_FJMPI_RDMA
+//#	define ENABLE_FJMPI_RDMA 0
 #endif // #ifdef __FUJITSU
 
 #if VTRACE
@@ -111,7 +114,7 @@ namespace PRM { //
 #define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
-	NUM_BFS_ROOTS = 64, // spec: 64
+	NUM_BFS_ROOTS = 32, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,
