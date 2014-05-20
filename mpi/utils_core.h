@@ -250,6 +250,13 @@ struct MPI_INFO_ON_GPU {
 };
 
 int64_t get_time_in_microsecond();
+void print_with_prefix(const char* format, ...);
+
+#if DEBUG_PRINT
+#define debug(...) print_with_prefix(__VA_ARGS__)
+#else
+#define debug(...)
+#endif
 
 #if ENABLE_FUJI_PROF
 extern "C" {

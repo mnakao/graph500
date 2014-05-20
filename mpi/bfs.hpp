@@ -151,9 +151,9 @@ public:
 		int64_t half_bitmap_width = bitmap_width / 2;
 
 		{
-			AlltoallCommParameter td_prm(mpi.comm_2dc, PRM::TOP_DOWN_FOLD_TAG, &top_down_comm_);
+			AlltoallCommParameter td_prm(mpi.comm_2dc, PRM::TOP_DOWN_FOLD_TAG, 4, &top_down_comm_);
 			top_down_comm_idx_ = alltoall_comm_->reg_comm(td_prm);
-			AlltoallCommParameter bu_prm(mpi.comm_2dr, PRM::BOTTOM_UP_PRED_TAG, &bottom_up_comm_);
+			AlltoallCommParameter bu_prm(mpi.comm_2dr, PRM::BOTTOM_UP_PRED_TAG, 4, &bottom_up_comm_);
 			bottom_up_comm_idx_ = alltoall_comm_->reg_comm(bu_prm);
 		}
 
@@ -292,8 +292,8 @@ public:
 		virtual void* base_object() {
 			return obj_ptr_;
 		}
-		virtual int bytes() {
-			return super::length_ * sizeof(ELEM);
+		virtual int element_size() {
+			return sizeof(ELEM);
 		}
 		virtual void* pointer() {
 			return buffer_;
@@ -376,7 +376,7 @@ public:
 			this->this_->fiber_man_.submit(new BottomUpReceiver(this->this_, buf), 1);
 		}
 	};
-#ifdef ENABLE_FJMPI_RDMA
+#if ENABLE_FJMPI_RDMA
 	typedef FJMpiAlltoallCommunicator<BFSCommBufferData> AlltoallCommType;
 #else
 	typedef MpiAlltoallCommunicator<BFSCommBufferData> AlltoallCommType;
@@ -2773,6 +2773,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		gather_nq_time_.submit("gather NQ info", current_level_);
 		seq_proc_time_.submit("sequential processing", current_level_);
 		comm_.submit_prof_info(current_level_);
+		alltoall_comm_->submit_prof_info(current_level_);
 		fiber_man_.submit_wait_time("fiber man wait", current_level_);
 
 		if(forward_or_backward_)

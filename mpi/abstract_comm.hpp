@@ -8,6 +8,7 @@
 #ifndef ABSTRACT_COMM_HPP_
 #define ABSTRACT_COMM_HPP_
 
+#include <limits.h>
 #include "utils.hpp"
 #include "fiber.hpp"
 
@@ -16,7 +17,7 @@ public:
 	virtual ~CommunicationBuffer() { }
 	virtual void add(void* data, int offset, int length) = 0;
 	virtual void* base_object() = 0;
-	virtual int bytes() = 0;
+	virtual int element_size() = 0;
 	virtual void* pointer() = 0;
 	int length_;
 };
@@ -46,9 +47,11 @@ struct AlltoallCommParameter {
 
 	AlltoallCommParameter(MPI_Comm comm__,
 			int tag__,
+			int num_nics_to_use__,
 			AlltoallBufferHandler* handler__) {
 		base_communicator = comm__;
 		tag = tag__;
+		num_nics_to_use = num_nics_to_use__;
 		handler = handler__;
 	}
 };

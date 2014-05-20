@@ -19,6 +19,9 @@
 #endif
 
 #include <omp.h>
+#if ENABLE_FJMPI_RDMA
+#include <mpi-ext.h>
+#endif
 
 #include <sys/types.h>
 #include <sys/time.h>
@@ -136,6 +139,16 @@ void throw_exception(const char* format, ...) {
     va_end(arg);
     fprintf(IMD_OUT, "[r:%d] %s\n", mpi.rank, buf);
     throw buf;
+}
+
+void print_with_prefix(const char* format, ...) {
+	char buf[300];
+	va_list arg;
+	va_start(arg, format);
+    vsnprintf(buf, sizeof(buf), format, arg);
+    va_end(arg);
+    //if(mpi.isMaster())
+    	fprintf(IMD_OUT, "[r:%d] %s\n", mpi.rank, buf);
 }
 
 //-------------------------------------------------------------//
@@ -1063,6 +1076,9 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	MPI_Init_thread(&argc, &argv, reqeust_level, &mpi.thread_level);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
+#if ENABLE_FJMPI_RDMA
+	FJMPI_Rdma_init();
+#endif
 
 	const char* prov_str = "unknown";
 	switch(mpi.thread_level) {
@@ -1192,6 +1208,9 @@ void cleanup_globals()
 	CudaStreamManager::finalize_cuda();
 #endif
 
+#if ENABLE_FJMPI_RDMA
+	FJMPI_Rdma_finalize();
+#endif
 	MPI_Finalize();
 }
 
@@ -2313,7 +2332,7 @@ public:
 	{
 	}
 	virtual ~Pool() {
-		clear();
+		clear_();
 	}
 
 	virtual T* get() {
@@ -2329,6 +2348,10 @@ public:
 		free_list_.push_back(buffer);
 	}
 
+	virtual void clear() {
+		clear_();
+	}
+
 	bool empty() const {
 		return free_list_.size() == 0;
 	}
@@ -2337,19 +2360,20 @@ public:
 		return free_list_.size();
 	}
 
-	void clear() {
-		for(int i = 0; i < (int)free_list_.size(); ++i) {
-			free_list_[i]->~T();
-			::free(free_list_[i]);
-		}
-		free_list_.clear();
-	}
-
 protected:
 	std::vector<T*> free_list_;
 
 	virtual T* allocate_new() {
 		return new (malloc(sizeof(T))) T();
+	}
+
+private:
+	void clear_() {
+		for(int i = 0; i < (int)free_list_.size(); ++i) {
+			free_list_[i]->~T();
+			::free(free_list_[i]);
+		}
+		free_list_.clear();
 	}
 };
 
@@ -2384,6 +2408,12 @@ public:
 	virtual void free(T* buffer) {
 		pthread_mutex_lock(&thread_sync_);
 		this->free_list_.push_back(buffer);
+		pthread_mutex_unlock(&thread_sync_);
+	}
+
+	virtual void clear() {
+		pthread_mutex_lock(&thread_sync_);
+		super_::clear();
 		pthread_mutex_unlock(&thread_sync_);
 	}
 
