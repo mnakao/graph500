@@ -18,7 +18,7 @@
 
 #include "logfile.h"
 
-#ifdef __FUJITSU
+#if ENABLE_FJMPI_RDMA
 #include <mpi-ext.h>
 
 // Progress report for K computer
@@ -46,7 +46,7 @@ public:
 		my_progress_ = 0;
 		if(mpi.isMaster()) {
 			pthread_create(&thread_, NULL, update_status_thread, this);
-			fprintf(IMD_OUT, "Begin Reporting Progress. Info: Rank is 2D rank.\n");
+			print_with_prefix("Begin Reporting Progress. Info: Rank is 2D rank.");
 		}
 	}
 	void advace() {
@@ -89,6 +89,7 @@ private:
 					node_list[i] = i;
 				}
 				sort2(tmp_progress, node_list, mpi.size_2d);
+				print_prefix();
 				fprintf(IMD_OUT, "(Rank,Iter)=");
 				for(int i = 0; i < std::min(mpi.size_2d, 8); ++i) {
 					fprintf(IMD_OUT, "(%d,%d)", node_list[i], tmp_progress[i]);
@@ -104,7 +105,7 @@ private:
 	}
 };
 
-#else // #ifdef __FUJITSU
+#else // #if ENABLE_FJMPI_RDMA
 
 class ProgressReport
 {
@@ -144,7 +145,7 @@ public:
 		my_progress_ = 0;
 		if(mpi.isMaster()) {
 			pthread_create(&thread_, NULL, update_status_thread, this);
-			fprintf(IMD_OUT, "Begin Reporting Progress. Info: Rank is 2D.\n");
+			print_with_prefix("Begin Reporting Progress. Info: Rank is 2D.");
 		}
 	}
 	void advace() {
@@ -188,6 +189,7 @@ private:
 					node_list[i] = i;
 				}
 				sort2(tmp_progress, node_list, mpi.size_2d);
+				print_prefix();
 				fprintf(IMD_OUT, "(Rank,Iter)=");
 				for(int i = 0; i < std::min(mpi.size_2d, 8); ++i) {
 					fprintf(IMD_OUT, "(%d,%d)", node_list[i], tmp_progress[i]);
@@ -230,7 +232,7 @@ private:
 	int* recv_buf_; // length=mpi.size
 	int* g_progress_; // length=mpi.size
 };
-#endif // #ifdef __FUJITSU
+#endif // #if ENABLE_FJMPI_RDMA
 
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
@@ -250,13 +252,13 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 	if(mpi.isMaster()) {
 		double global_data_size = (double)num_global_edges * 16.0 / 1000000000.0;
 		double local_data_size = global_data_size / mpi.size_2d;
-		fprintf(IMD_OUT, "Graph data size: %f GB ( %f GB per process )\n", global_data_size, local_data_size);
-		fprintf(IMD_OUT, "Using storage: %s\n", edge_list->data_is_in_file() ? "yes" : "no");
+		print_with_prefix("Graph data size: %f GB ( %f GB per process )", global_data_size, local_data_size);
+		print_with_prefix("Using storage: %s", edge_list->data_is_in_file() ? "yes" : "no");
 		if(edge_list->data_is_in_file()) {
-			fprintf(IMD_OUT, "Filepath: %s 1 2 ...\n", edge_list->get_filepath());
+			print_with_prefix("Filepath: %s 1 2 ...", edge_list->get_filepath());
 		}
-		fprintf(IMD_OUT, "Communication chunk size: %d\n", EdgeList::CHUNK_SIZE);
-		fprintf(IMD_OUT, "Generating graph: Total number of iterations: %"PRId64"\n", num_iterations);
+		print_with_prefix("Communication chunk size: %d", EdgeList::CHUNK_SIZE);
+		print_with_prefix("Generating graph: Total number of iterations: %"PRId64"", num_iterations);
 	}
 #if REPORT_GEN_RPGRESS
 	report->begin_progress();
@@ -277,14 +279,14 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 #if 0
 			for(int64_t i = start_edge; i < end_edge; ++i) {
 				if( edge_buffer[i-start_edge].weight_ != 0xBEEF ) {
-		//			fprintf(IMD_OUT, "Weight > 32: idx: %"PRId64"\n", i);
+		//			print_with_prefix("Weight > 32: idx: %"PRId64"", i);
 				}
 			}
 #endif
 			edge_list->write(edge_buffer, end_edge - start_edge);
 
 			if(mpi.isMaster()) {
-				fprintf(IMD_OUT, "Time for iteration %"PRId64" is %f \n", i, MPI_Wtime() - logging_time);
+				print_with_prefix("Time for iteration %"PRId64" is %f ", i, MPI_Wtime() - logging_time);
 				logging_time = MPI_Wtime();
 			}
 #if REPORT_GEN_RPGRESS
@@ -300,7 +302,7 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 	delete report; report = NULL;
 #endif
 	free(edge_buffer);
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Finished generating.\n");
+	if(mpi.isMaster()) print_with_prefix("Finished generating.");
 }
 
 template <typename EdgeList>
@@ -333,7 +335,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 	int num_loops = edge_list->beginRead(true);
 	edge_list->beginWrite();
 
-	if(mpi.isMaster()) fprintf(IMD_OUT, "%d iterations.\n", num_loops);
+	if(mpi.isMaster()) print_with_prefix("%d iterations.", num_loops);
 
 	const int rmask = ((1 << get_msb_index(mpi.size_2dr)) - 1);
 	const int cmask = ((1 << get_msb_index(mpi.size_2d)) - 1 - rmask);
@@ -371,16 +373,16 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Scatter edges.\n");
+		if(mpi.isMaster()) print_with_prefix("Scatter edges.");
 
 		EdgeType* recv_edges = scatter.scatter(edges_to_send);
 		const int64_t num_recv_edges = scatter.get_recv_count();
 		edge_list->write(recv_edges, num_recv_edges);
 		scatter.free(recv_edges);
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Iteration %d finished.\n", loop_count);
+		if(mpi.isMaster()) print_with_prefix("Iteration %d finished.", loop_count);
 	}
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Finished.\n");
+	if(mpi.isMaster()) print_with_prefix("Finished.");
 	edge_list->endWrite();
 	edge_list->endRead();
 	MPI_Free_mem(edges_to_send);
@@ -451,7 +453,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::no_
 		edge_list->write(recv_edges, num_recv_edges);
 		scatter.free(recv_edges);
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Iteration %d finished.\n", loop_count);
+		if(mpi.isMaster()) print_with_prefix("Iteration %d finished.", loop_count);
 	}
 	edge_list->endWrite();
 	edge_list->endRead();
@@ -547,7 +549,7 @@ int read_log_file(LogFileFormat* log, int SCALE, int edgefactor, double* bfs_tim
 			if(fp != NULL) {
 				fread(log, sizeof(log[0]), 1, fp);
 				if(log->scale != SCALE || log->edge_factor != edgefactor || log->mpi_size != mpi.size_2d) {
-					fprintf(IMD_OUT, "Log file is not match the current run: params:(current),(log): SCALE:%d,%d, edgefactor:%d,%d, size:%d,%d\n",
+					print_with_prefix("Log file is not match the current run: params:(current),(log): SCALE:%d,%d, edgefactor:%d,%d, size:%d,%d",
 					SCALE, log->scale, edgefactor, log->edge_factor, mpi.size_2d, log->mpi_size);
 					resume_root_idx = -2;
 				}
@@ -593,7 +595,7 @@ void update_log_file(LogFileFormat* log, double bfs_time, double validate_time, 
 		// save log;
 		FILE* fp = fopen(logfilename, "wb");
 		if(fp == NULL) {
-			fprintf(IMD_OUT, "Cannot create log file ... skipping\n");
+			print_with_prefix("Cannot create log file ... skipping");
 		}
 		else {
 			fwrite(log, sizeof(log[0]), 1, fp);

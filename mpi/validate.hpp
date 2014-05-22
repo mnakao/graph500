@@ -123,19 +123,19 @@ void histogram_sort_size_tMPI_Aint
   for (i = 0; i < rowstart[numkeys]; ++i) {
     int key = keys[i];
     assert (key >= 0 && key < numkeys);
-    // fprintf(IMD_OUT, "i = %d, key = %d\n", i, key);
+    // print_with_prefix("i = %d, key = %d", i, key);
     while (!(i >= rowstart[key] && i < insert_positions[key])) {
       int target_pos = insert_positions[key]++;
-      // fprintf(IMD_OUT, "target_pos = %d from limit %d\n", target_pos, rowstart[key + 1]);
+      // print_with_prefix("target_pos = %d from limit %d", target_pos, rowstart[key + 1]);
       if (target_pos == i) continue;
       assert (target_pos < rowstart[key + 1]);
-      // fprintf(IMD_OUT, "swapping [%d] = (%d, %d, %d) with [%d] = (%d, %d, %d)\n", i, keys[i], (int)values1[i], (int)values2[i], target_pos, keys[target_pos], (int)values1[target_pos], (int)values2[target_pos]);
+      // print_with_prefix("swapping [%d] = (%d, %d, %d) with [%d] = (%d, %d, %d)", i, keys[i], (int)values1[i], (int)values2[i], target_pos, keys[target_pos], (int)values1[target_pos], (int)values2[target_pos]);
       {int t = keys[i]; key = keys[target_pos]; keys[i] = key; keys[target_pos] = t;}
       {size_t t = values1[i]; values1[i] = values1[target_pos]; values1[target_pos] = t;}
       {MPI_Aint t = values2[i]; values2[i] = values2[target_pos]; values2[target_pos] = t;}
       assert (key >= 0 && key < numkeys);
     }
-    // fprintf(IMD_OUT, "done\n");
+    // print_with_prefix("done");
   }
   for (i = 1; i < rowstart[numkeys]; ++i) {
     assert (keys[i] >= keys[i - 1]);
@@ -421,10 +421,10 @@ void histogram_sort_MPI_Aintcharblock
   for (i = 0; i < rowstart[numkeys]; ++i) {
     int key = keys[i];
     assert (key >= 0 && key < numkeys);
-    fprintf(IMD_OUT, "i = %d, key = %d\n", i, key);
+    print_with_prefix("i = %d, key = %d", i, key);
     while (!(i >= rowstart[key] && i < insert_positions[key])) {
       int target_pos = insert_positions[key]++;
-      fprintf(IMD_OUT, "target_pos = %d from limit %d\n", target_pos, rowstart[key + 1]);
+      print_with_prefix("target_pos = %d from limit %d", target_pos, rowstart[key + 1]);
       if (target_pos == i) continue;
       assert (target_pos < rowstart[key + 1]);
       {int t = keys[i]; key = keys[target_pos]; keys[i] = key; keys[target_pos] = t;}
@@ -432,7 +432,7 @@ void histogram_sort_MPI_Aintcharblock
       {char t[elt_size2]; memcpy(t, values2 + i * elt_size2, elt_size2); memcpy(values2 + i * elt_size2, values2 + target_pos * elt_size2, elt_size2); memcpy(values2 + target_pos * elt_size2, t, elt_size2);}
       assert (key >= 0 && key < numkeys);
     }
-    fprintf(IMD_OUT, "done\n");
+    print_with_prefix("done");
   }
   for (i = 1; i < rowstart[numkeys]; ++i) {
     assert (keys[i] >= keys[i - 1]);
@@ -517,11 +517,11 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
   int64_t error_counts = 0;
   error_counts += check_value_ranges(nglobalverts, nlocalverts, pred);
   if (root < 0 || root >= nglobalverts) {
-	fprintf(IMD_OUT, "%d: Validation error: root vertex %" PRId64 " is invalid.\n", mpi.rank_2d, root);
+	print_with_prefix("Validation error: root vertex %" PRId64 " is invalid.", root);
   }
   if (error_counts) return 0; /* Fail */
 #if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) fprintf(IMD_OUT, "L:%d,time:%f\n", __LINE__, MPI_Wtime() - validate_start);
+	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
 #endif
   assert (pred);
 
@@ -537,7 +537,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
   if (root_is_mine) {
 	assert (root_local < nlocalverts);
 	if (get_pred_from_pred_entry(pred[root_local]) != root) {
-	  fprintf(IMD_OUT, "%d: Validation error: parent of root vertex %" PRId64 " is %" PRId64 ", not the root itself.\n", mpi.rank_2d, root, get_pred_from_pred_entry(pred[root_local]));
+	  print_with_prefix("Validation error: parent of root vertex %" PRId64 " is %" PRId64 ", not the root itself.", root, get_pred_from_pred_entry(pred[root_local]));
 	  ++error_counts;
 	}
   }
@@ -545,7 +545,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 
   assert (pred);
 #if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) fprintf(IMD_OUT, "L:%d,time:%f\n", __LINE__, MPI_Wtime() - validate_start);
+	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
 #endif
 
   /* Check that nothing else is its own parent. */
@@ -570,7 +570,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 			pred_owner[i - i_start] == mpi.rank_2d &&
 			pred_local[i - i_start] == i) {
 			if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-			  fprintf(IMD_OUT, "%d: Validation error: parent of non-root vertex %" PRId64 " is itself.\n", mpi.rank_2d, i * mpi.size_2d + mpi.rank_2d);
+			  print_with_prefix("Validation error: parent of non-root vertex %" PRId64 " is itself.", i * mpi.size_2d + mpi.rank_2d);
 		}
 	  }
 	}
@@ -581,7 +581,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 
   assert (pred);
 #if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) fprintf(IMD_OUT, "L:%d,time:%f\n", __LINE__, MPI_Wtime() - validate_start);
+	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
 #endif
 
   if (true) { // TODO:
@@ -592,7 +592,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
   }
   if (error_counts) return 0; /* Fail */
 #if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) fprintf(IMD_OUT, "L:%d,time:%f\n", __LINE__, MPI_Wtime() - validate_start);
+	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
 #endif
 
   {
@@ -759,14 +759,14 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 			  uint16_t tgt_depth = get_depth_from_pred_entry(edge_preds[i * 2 + 1]);
 			  if (src_depth != UINT16_MAX && tgt_depth == UINT16_MAX) {
 				  if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-					  fprintf(IMD_OUT, "%d: Validation error: edge connects vertex %" PRId64 " in the BFS tree (depth %" PRIu16 ") to vertex %" PRId64 " outside the tree.\n", mpi.rank_2d, src, src_depth, tgt);
+					  print_with_prefix("Validation error: edge connects vertex %" PRId64 " in the BFS tree (depth %" PRIu16 ") to vertex %" PRId64 " outside the tree.", src, src_depth, tgt);
 			  } else if (src_depth == UINT16_MAX && tgt_depth != UINT16_MAX) {
 				  if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-					  fprintf(IMD_OUT, "%d: Validation error: edge connects vertex %" PRId64 " in the BFS tree (depth %" PRIu16 ") to vertex %" PRId64 " outside the tree.\n", mpi.rank_2d, tgt, tgt_depth, src);
+					  print_with_prefix("Validation error: edge connects vertex %" PRId64 " in the BFS tree (depth %" PRIu16 ") to vertex %" PRId64 " outside the tree.", tgt, tgt_depth, src);
 			  } else if (src_depth - tgt_depth < -1 ||
 						 src_depth - tgt_depth > 1) {
 				  if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-					  fprintf(IMD_OUT, "%d: Validation error: depths of edge endpoints %" PRId64 " (depth %" PRIu16 ") and %" PRId64 " (depth %" PRIu16 ") are too far apart (abs. val. > 1).\n", mpi.rank_2d, src, src_depth, tgt, tgt_depth);
+					  print_with_prefix("Validation error: depths of edge endpoints %" PRId64 " (depth %" PRIu16 ") and %" PRId64 " (depth %" PRIu16 ") are too far apart (abs. val. > 1).", src, src_depth, tgt, tgt_depth);
 			  } else if (src_depth != UINT16_MAX) {
 				++edge_visit_count;
 			  }
@@ -844,7 +844,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 
 	//destroy_scatter_constant(pred_valid_win);
 #if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) fprintf(IMD_OUT, "L:%d,time:%f\n", __LINE__, MPI_Wtime() - validate_start);
+	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
 #endif
 	ptrdiff_t i;
 #pragma omp parallel for
@@ -856,7 +856,7 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 	  if (!found_pred_edge) {
 		int64_t v = i * mpi.size_2d + mpi.rank_2d;
 		if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-			fprintf(IMD_OUT, "%d: Validation error: no graph edge from vertex %" PRId64 " to its parent %" PRId64 ".\n", mpi.rank_2d, v, get_pred_from_pred_entry(pred[i]));
+			print_with_prefix("Validation error: no graph edge from vertex %" PRId64 " to its parent %" PRId64 ".", v, get_pred_from_pred_entry(pred[i]));
 	  }
 	}
 	free(pred_valid);
@@ -866,25 +866,25 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 #if PRINT_VALIDATION_TIME_DETAIL
 	if(rank == 0){
 		const int num_times = 11;
-		fprintf(IMD_OUT, "main loop total:%f\n", main_loop_time);
+		print_with_prefix("main loop total:%f", main_loop_time);
 		double inner_total = 0.0;
 		for(i = 0; i < num_times; ++i){
 			inner_total += inner_computation_time[i];
-			fprintf(IMD_OUT, "#%d:%f\n", (int)i, inner_computation_time[i]);
+			print_with_prefix("#%d:%f", (int)i, inner_computation_time[i]);
 		}
-		fprintf(IMD_OUT, "inner loop total:%f\n", inner_total);
+		print_with_prefix("inner loop total:%f", inner_total);
 	}
-  //  fprintf(IMD_OUT, "R:%d,n_send_pred=%"PRId64"\n", mpi.rank_2d, n_send_pred);
+  //  print_with_prefix("R:%d,n_send_pred=%"PRId64"", mpi.rank_2d, n_send_pred);
 #endif
   }
 #if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) fprintf(IMD_OUT, "L:%d,time:%f\n", __LINE__, MPI_Wtime() - validate_start);
+	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
 #endif
 
   /* Collect the global validation result. */
   MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, mpi.comm_2d);
 #if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) fprintf(IMD_OUT, "L:%d,time:%f\n", __LINE__, MPI_Wtime() - validate_start);
+	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
 #endif
   return error_counts == 0;
 }
@@ -926,7 +926,7 @@ int64_t check_value_ranges(const int64_t nglobalverts, const int64_t nlocalverts
         int64_t p = get_pred_from_pred_entry(pred[i]);
         if (p < -1 || p >= nglobalverts) {
 			if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-        		fprintf(IMD_OUT, "%d: Validation error: parent of vertex %" PRId64 " is out-of-range value %" PRId64 ".\n", mpi.rank_2d, i * mpi.size_2d + mpi.rank_2d, p);
+        		print_with_prefix("Validation error: parent of vertex %" PRId64 " is out-of-range value %" PRId64 ".", i * mpi.size_2d + mpi.rank_2d, p);
         }
       }
     }
@@ -990,7 +990,7 @@ int64_t build_bfs_depth_map(const int64_t root, int64_t* const pred)
           if (get_depth_from_pred_entry(pred_pred[i - i_start]) != UINT16_MAX) {
             if (get_depth_from_pred_entry(pred[i]) != UINT16_MAX && get_depth_from_pred_entry(pred[i]) != get_depth_from_pred_entry(pred_pred[i - i_start]) + 1) {
 				  if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-            		fprintf(IMD_OUT, "%d: Validation error: BFS predecessors do not form a tree; see vertices %" PRId64 " (depth %" PRIu16 ") and %" PRId64 " (depth %" PRIu16 ").\n", mpi.rank_2d, i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]), get_pred_from_pred_entry(pred[i]), get_depth_from_pred_entry(pred_pred[i - i_start]));
+            		print_with_prefix("Validation error: BFS predecessors do not form a tree; see vertices %" PRId64 " (depth %" PRIu16 ") and %" PRId64 " (depth %" PRIu16 ").", i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]), get_pred_from_pred_entry(pred[i]), get_depth_from_pred_entry(pred_pred[i - i_start]));
             } else if (get_depth_from_pred_entry(pred[i]) == get_depth_from_pred_entry(pred_pred[i - i_start]) + 1) {
               /* Nothing to do */
             } else {
@@ -1026,7 +1026,7 @@ int64_t check_bfs_depth_map_using_predecessors(const int64_t root, const int64_t
 
   {
     if (root_is_mine && get_depth_from_pred_entry(pred[root_local]) != 0) {
-      fprintf(IMD_OUT, "%d: Validation error: depth of root vertex %" PRId64 " is %" PRIu16 ", not 0.\n", mpi.rank_2d, root, get_depth_from_pred_entry(pred[root_local]));
+      print_with_prefix("Validation error: depth of root vertex %" PRId64 " is %" PRIu16 ", not 0.", root, get_depth_from_pred_entry(pred[root_local]));
       ++error_counts;
     }
 #pragma omp parallel for
@@ -1034,11 +1034,11 @@ int64_t check_bfs_depth_map_using_predecessors(const int64_t root, const int64_t
       if (get_pred_from_pred_entry(pred[i]) == -1 &&
           get_depth_from_pred_entry(pred[i]) != UINT16_MAX) {
 		  if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-    		  fprintf(IMD_OUT, "%d: Validation error: depth of vertex %" PRId64 " with no predecessor is %" PRIu16 ", not UINT16_MAX.\n", mpi.rank_2d, i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]));
+    		  print_with_prefix("Validation error: depth of vertex %" PRId64 " with no predecessor is %" PRIu16 ", not UINT16_MAX.", i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]));
       } else if (get_pred_from_pred_entry(pred[i]) != -1 &&
                  get_depth_from_pred_entry(pred[i]) == UINT16_MAX) {
 		  if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-    		  fprintf(IMD_OUT, "%d: Validation error: predecessor of claimed unreachable vertex %" PRId64 " is %" PRId64 ", not -1.\n", mpi.rank_2d, i * mpi.size_2d + mpi.rank_2d, get_pred_from_pred_entry(pred[i]));
+    		  print_with_prefix("Validation error: predecessor of claimed unreachable vertex %" PRId64 " is %" PRId64 ", not -1.", i * mpi.size_2d + mpi.rank_2d, get_pred_from_pred_entry(pred[i]));
       }
     }
   }
@@ -1075,11 +1075,11 @@ int64_t check_bfs_depth_map_using_predecessors(const int64_t root, const int64_t
         if (get_pred_from_pred_entry(pred[i]) == -1) continue; /* Already checked */
         if (get_depth_from_pred_entry(pred_pred[i - i_start]) == UINT16_MAX) {
 			if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-      		  fprintf(IMD_OUT, "%d: Validation error: predecessor %" PRId64 " of vertex %" PRId64 " (depth %" PRIu16 ") is marked as unreachable.\n", mpi.rank_2d, get_pred_from_pred_entry(pred[i]), i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]));
+      		  print_with_prefix("Validation error: predecessor %" PRId64 " of vertex %" PRId64 " (depth %" PRIu16 ") is marked as unreachable.", get_pred_from_pred_entry(pred[i]), i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]));
         }
         if (get_depth_from_pred_entry(pred[i]) != get_depth_from_pred_entry(pred_pred[i - i_start]) + 1) {
 			  if(__sync_fetch_and_add(&error_counts, 1) < MAX_OUTPUT)
-			  fprintf(IMD_OUT, "%d: Validation error: BFS predecessors do not form a tree; see vertices %" PRId64 " (depth %" PRIu16 ") and %" PRId64 " (depth %" PRIu16 ").\n", mpi.rank_2d, i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]), get_pred_from_pred_entry(pred[i]), get_depth_from_pred_entry(pred_pred[i - i_start]));
+			  print_with_prefix("Validation error: BFS predecessors do not form a tree; see vertices %" PRId64 " (depth %" PRIu16 ") and %" PRId64 " (depth %" PRIu16 ").", i * mpi.size_2d + mpi.rank_2d, get_depth_from_pred_entry(pred[i]), get_pred_from_pred_entry(pred[i]), get_depth_from_pred_entry(pred_pred[i - i_start]));
         }
       }
     }

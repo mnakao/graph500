@@ -9,6 +9,7 @@
 #define UTILS_IMPL_HPP_
 
 #include <stdint.h>
+#include <stdarg.h>
 
 // for affinity setting //
 #include <unistd.h>
@@ -19,6 +20,9 @@
 #endif
 
 #include <omp.h>
+#if BACKTRACE_ON_SIGNAL
+#include <signal.h>
+#endif
 #if ENABLE_FJMPI_RDMA
 #include <mpi-ext.h>
 #endif
@@ -40,11 +44,37 @@
 
 #if VTRACE
 #include "vt_user.h"
+#elif BACKTRACE_ON_SIGNAL
+extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD);
+
+struct ScopedRegion {
+	const char* name_;
+	int line_;
+	ScopedRegion(const char* name, int line) {
+		int flag = 102;
+		name_ = name;
+		line_ = line;
+		user_defined_proc(&flag, name_, &line_, NULL);
+	}
+	~ScopedRegion() {
+		int flag = 103;
+		user_defined_proc(&flag, name_, &line_, NULL);
+	}
+};
+
+#define VT_USER_START(s) do { int line = __LINE__; int flag = 102;\
+		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
+#define VT_USER_END(s) do { int line = __LINE__; int flag = 103;\
+		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
+#define VT_TRACER(s) ScopedRegion my_trace_obj(__FILE__, __LINE__)
+
 #else // #if VTRACE
-#define VT_USER_START(s) ;
-#define VT_USER_END(s) ;
-#define VT_TRACER(s) ;
+#define VT_USER_START(s)
+#define VT_USER_END(s)
+#define VT_TRACER(s)
 #endif // #if VTRACE
+#define MY_TRACE VT_TRACER(__func__)
+
 
 #if VERVOSE_MODE
 #define VERVOSE(s) s
@@ -56,6 +86,13 @@
 #define PROF(s) s
 #else
 #define PROF(s)
+#endif
+
+#if BACKTRACE_ON_SIGNAL
+namespace backtrace {
+void start_thread();
+void thread_join();
+}
 #endif
 
 
@@ -127,6 +164,28 @@ template <typename T> MPI_Datatype get_mpi_type(T& instance) {
 	return MpiTypeOf<T>::type;
 }
 
+int64_t get_time_in_microsecond()
+{
+	struct timeval l;
+	gettimeofday(&l, NULL);
+	return ((int64_t)l.tv_sec*1000000 + l.tv_usec);
+}
+
+#if PRINT_WITH_TIME
+struct GLOBAL_CLOCK {
+	int64_t clock_start;
+	void init() {
+		clock_start = get_time_in_microsecond();
+		MPI_Bcast(&clock_start, 1, MpiTypeOf<int64_t>::type, 0, MPI_COMM_WORLD);
+	}
+	int64_t get() {
+		return get_time_in_microsecond() - clock_start;
+	}
+};
+
+GLOBAL_CLOCK global_clock;
+#endif // #if PRINT_WITH_TIME
+
 //-------------------------------------------------------------//
 // Exception
 //-------------------------------------------------------------//
@@ -137,8 +196,20 @@ void throw_exception(const char* format, ...) {
 	va_start(arg, format);
     vsnprintf(buf, sizeof(buf), format, arg);
     va_end(arg);
+#if PRINT_WITH_TIME
+    fprintf(IMD_OUT, "[r:%d,%f] %s\n", mpi.rank, global_clock.get() / 1000000.0, buf);
+#else
     fprintf(IMD_OUT, "[r:%d] %s\n", mpi.rank, buf);
+#endif
     throw buf;
+}
+
+void print_prefix() {
+#if PRINT_WITH_TIME
+	fprintf(IMD_OUT, "[r:%d,%f] ", mpi.rank, global_clock.get() / 1000000.0);
+#else
+    fprintf(IMD_OUT, "[r:%d] ", mpi.rank, buf);
+#endif
 }
 
 void print_with_prefix(const char* format, ...) {
@@ -147,8 +218,11 @@ void print_with_prefix(const char* format, ...) {
 	va_start(arg, format);
     vsnprintf(buf, sizeof(buf), format, arg);
     va_end(arg);
-    //if(mpi.isMaster())
-    	fprintf(IMD_OUT, "[r:%d] %s\n", mpi.rank, buf);
+#if PRINT_WITH_TIME
+	fprintf(IMD_OUT, "[r:%d,%f] %s\n", mpi.rank, global_clock.get() / 1000000.0, buf);
+#else
+    fprintf(IMD_OUT, "[r:%d] %s\n", mpi.rank, buf);
+#endif
 }
 
 //-------------------------------------------------------------//
@@ -273,7 +347,7 @@ void test_shared_memory() {
 	shared_free(mem);
 	MPI_Allreduce(&result, &global_result, 1, MpiTypeOf<int>::type, MPI_LOR, mpi.comm_2d);
 	if(global_result == false) {
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Shared memory test failed!! Please, check MPI_NUM_NODE.\n");
+		if(mpi.isMaster()) print_with_prefix("Shared memory test failed!! Please, check MPI_NUM_NODE.");
 		MPI_Abort(mpi.comm_2d, 1);
 	}
 }
@@ -285,6 +359,79 @@ void shared_free(void* shm) {
 	free(shm);
 }
 #endif // #if SHARED_MEMORY
+
+//-------------------------------------------------------------//
+// Other functions
+//-------------------------------------------------------------//
+
+template <int width> size_t roundup(size_t size)
+{
+	return (size + width - 1) / width * width;
+}
+
+template <int width> size_t get_blocks(size_t size)
+{
+	return (size + width - 1) / width;
+}
+
+inline size_t roundup_2n(size_t size, size_t width)
+{
+	return (size + width - 1) & -width;
+}
+
+inline size_t get_blocks(size_t size, size_t width)
+{
+	return (size + width - 1) / width;
+}
+
+template <typename T>
+void get_partition(T size, int num_part, int part_idx, T& begin, T& end) {
+	T part_size = (size + num_part - 1) / num_part;
+	begin = std::min(part_size * part_idx, size);
+	end = std::min(begin + part_size, size);
+}
+
+// # of partition = num_blks * parts_factor
+template <typename T>
+void get_partition(T* blk_offset, int num_blks, int parts_per_blk, int part_idx, T& begin, T& end) {
+	int blk_idx = part_idx / parts_per_blk;
+	T blk_begin = blk_offset[blk_idx];
+	T blk_size = blk_offset[blk_idx+1] - blk_begin;
+	get_partition(blk_size, parts_per_blk, part_idx - blk_idx * parts_per_blk, begin, end);
+	begin += blk_begin;
+	end += blk_begin;
+}
+
+template <typename T>
+void get_partition(int64_t size, T* sorted, int log_blk,
+		int num_part, int part_idx, int64_t& begin, int64_t& end)
+{
+	if(size == 0) {
+		begin = end = 0;
+		return ;
+	}
+	get_partition(size, num_part, part_idx, begin, end);
+	if(begin != 0) {
+		T piv = sorted[begin] >> log_blk;
+		while(begin < size && (sorted[begin] >> log_blk) == piv) ++begin;
+	}
+	if(end != 0) {
+		T piv = sorted[end] >> log_blk;
+		while(end < size && (sorted[end] >> log_blk) == piv) ++end;
+	}
+}
+/*
+template <typename T>
+void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value,
+		int64_t min_blk_size, int num_part, int part_idx, T*& begin, T*& end)
+{
+	T blk_size = std::max(min_blk_size, (max_value - min_value + num_part - 1) / num_part);
+	int64_t begin_value = min_value + blk_size * part_idx;
+	int64_t end_value = begin_value + blk_size;
+	begin = std::lower_bound(sorted, sorted + size, begin_value);
+	end = std::lower_bound(sorted, sorted + size, end_value);
+}
+*/
 
 //-------------------------------------------------------------//
 // CPU Affinity Setting
@@ -324,7 +471,7 @@ void print_current_binding(const char* message) {
 	int num_procs = sysconf(_SC_NPROCESSORS_CONF);
 	std::string str_affinity;
 	cpu_set_to_string(&set, str_affinity, num_procs);
-	fprintf(IMD_OUT, "[r:%d,th:%d] %s -> [%s]\n", mpi.rank, thread_id, message, str_affinity.c_str());
+	print_with_prefix("th:%d %s -> [%s]", thread_id, message, str_affinity.c_str());
 }
 
 #if NUMA_BIND
@@ -442,7 +589,7 @@ public:
 			}
 		}
 		else {
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: Unknown CPU: %s", vendor_sign.ch);
+			if(mpi.isMaster()) print_with_prefix("Error: Unknown CPU: %s", vendor_sign.ch);
 		}
 
 		cpu_set_t set;
@@ -471,13 +618,14 @@ public:
 				apicid = (reg.ebx >> 24) & 0xFF;
 			}
 			if(max_apic_id < apicid) max_apic_id = apicid;
-		//	fprintf(IMD_OUT, "%d-th -> apicid=%d\n", i, apicid);
+		//	print_with_prefix("%d-th -> apicid=%d", i, apicid);
 			core_list[i] = (apicid << 16) | i;
 		}
 
 		std::sort(core_list, core_list + num_procs);
 		if(mpi.isMaster()) {
 			// print detected numa rank
+			print_prefix();
 			fprintf(IMD_OUT, "Core list:[");
 			for(int i = 0; i < num_procs; i++) {
 				if((i % 100) == 0) fprintf(IMD_OUT, "\n%d-%d: ", i, i+100);
@@ -493,7 +641,7 @@ public:
 		num_numa_nodes = num_procs / logical_CPUs_within_numa;
 
 		if(num_procs != (num_logical_CPUs_within_core * num_cores_within_numa * num_numa_nodes)) {
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: Affinity feature does not support heterogeneous systems.\n"
+			if(mpi.isMaster()) print_with_prefix("Error: Affinity feature does not support heterogeneous systems."
 					"(num_procs=%d, SMT=%d, Cores=%d, NUMA Nodes=%d)\n",
 					num_procs, num_logical_CPUs_within_core, num_cores_within_numa, num_numa_nodes);
 		}
@@ -510,7 +658,7 @@ public:
 		}
 
 		if(mpi.isMaster()) {
-			fprintf(IMD_OUT, "CPU Topology: # of socket: %d, # of cores: %d, # of SMT: %d\n",
+			print_with_prefix("CPU Topology: # of socket: %d, # of cores: %d, # of SMT: %d",
 					num_numa_nodes, num_cores_within_numa, num_logical_CPUs_within_core);
 /*
 			// print detected numa rank
@@ -529,7 +677,7 @@ public:
 		num_cores_assgined = num_cores_within_numa / procs_per_numa_node;
 
 		if(num_cores_within_numa != procs_per_numa_node * num_cores_assgined) {
-			if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: Core affinity is disabled because we cannot determine the # of cores to assign.\n");
+			if(mpi.isRmaster()) print_with_prefix("Warning: Core affinity is disabled because we cannot determine the # of cores to assign.");
 			disable_affinity = true;
 		}
 	}
@@ -608,7 +756,7 @@ void print_bind_mode() {
 	case MAPPING_FILE:
 		break;
 	}
-	fprintf(IMD_OUT, "Core bind mode: %s\n", mode_str);
+	print_with_prefix("Core bind mode: %s", mode_str);
 }
 
 inline int get_apic_id() {
@@ -621,8 +769,7 @@ bool ensure_my_apic_id() {
 #if CPU_BIND_CHECK
 	int cur_id = get_apic_id();
 	if(my_apic_id != cur_id) {
-		fprintf(IMD_OUT, "Fatal error: Affinity is changed unexpectedly!!!(%d -> %d)\n", my_apic_id, cur_id);
-		throw_exception("Invalid affinity");
+		throw_exception("Fatal error: Affinity is changed unexpectedly!!!(%d -> %d)\n", my_apic_id, cur_id);
 	}
 #endif
 	return false;
@@ -631,7 +778,7 @@ bool ensure_my_apic_id() {
 void check_affinity_setting() {
 	if(core_affinity_enabled == false) return ;
 	if(thread_id == -1) {
-		fprintf(IMD_OUT, "[rank:%d,th:%d] affinity is not set\n", mpi.rank, thread_id);
+		print_with_prefix("th:%d affinity is not set", thread_id);
 		return ;
 	}
 	cpu_set_t set;
@@ -640,8 +787,8 @@ void check_affinity_setting() {
 		std::string init_str, now_str;
 		cpu_set_to_string(&initial_affinity, init_str, core_binding->num_procs);
 		cpu_set_to_string(&set, now_str, core_binding->num_procs);
-		fprintf(IMD_OUT, "[r:%d,th:%d] affinity is changed [%s] -> [%s]\n",
-				mpi.rank, thread_id, init_str.c_str(), now_str.c_str());
+		print_with_prefix("th:%d affinity is changed [%s] -> [%s]",
+				thread_id, init_str.c_str(), now_str.c_str());
 	}
 }
 
@@ -654,7 +801,7 @@ void internal_set_core_affinity(int cpu) {
 #if PRINT_BINDING
 	std::string str_affinity;
 	cpu_set_to_string(&initial_affinity, str_affinity, sysconf(_SC_NPROCESSORS_CONF));
-	fprintf(IMD_OUT, "[r:%d,th:%d] thread started [%s](%d)\n", mpi.rank, thread_id, str_affinity.c_str(), cpu);
+	print_with_prefix("th:%d thread started [%s](%d)", thread_id, str_affinity.c_str(), cpu);
 #endif
 	check_affinity_setting();
 }
@@ -684,7 +831,7 @@ void launch_dummy_thread(int num_dummy_threads) {
 bool get_core_affinity(std::vector<int>& cpu_set) {
 	const char* num_threads_str = getenv("OMP_NUM_THREADS");
 	if(num_threads_str == NULL) {
-		fprintf(IMD_OUT, "USE_EXISTING_AFFINITY needs OMP_NUM_THREADS\n");
+		print_with_prefix("USE_EXISTING_AFFINITY needs OMP_NUM_THREADS");
 		return false;
 	}
 	int num_threads = atoi(num_threads_str);
@@ -748,16 +895,16 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 		}
 	}
 	if(core_affinity && process_affinity) {
-		fprintf(IMD_OUT, "Error: failed to detect existing core binding. hetero ?\n");
+		print_with_prefix("Error: failed to detect existing core binding. hetero ?");
 		return false;
 	}
 	if(process_affinity) {
-		if(mpi.isRmaster()) fprintf(IMD_OUT, "Detect process affinity\n");
+		if(mpi.isRmaster()) print_with_prefix("Detect process affinity");
 #pragma omp parallel num_threads(num_threads)
 		internal_set_core_affinity(cpu_set[thread_id]);
 	}
 	else {
-		if(mpi.isRmaster()) fprintf(IMD_OUT, "Detect core affinity\n");
+		if(mpi.isRmaster()) print_with_prefix("Detect core affinity");
 	}
 
 	next_base_thread_id = 1;
@@ -774,7 +921,7 @@ void set_core_affinity() {
 	if(thread_id == -1) {
 		// This code assumes that there are no nested openmp parallel sections.
 		if(core_binding->num_logical_CPUs() <= num_omp_threads) {
-			fprintf(IMD_OUT, "[rank:%d,th:%d] Too many threads.", mpi.rank, thread_id);
+			print_with_prefix("th:%d Too many threads.", thread_id);
 		}
 		int core_id;
 		do {
@@ -832,7 +979,7 @@ void set_affinity()
 	const char* num_node_str = getenv("MPI_NUM_NODE");
 	if(num_node_str == NULL) {
 		if(mpi.rank == mpi.size_ - 1) {
-			fprintf(IMD_OUT, "Error: failed to get # of node. Please set MPI_NUM_NODE=<# of node>\n");
+			print_with_prefix("Error: failed to get # of node. Please set MPI_NUM_NODE=<# of node>");
 		}
 		return ;
 	}
@@ -844,7 +991,7 @@ void set_affinity()
 	g_GpuIndex = proc_rank;
 
 	if(mpi.isRmaster()) {
-		fprintf(IMD_OUT, "process distribution : %s\n", dist_round_robin ? "round robin" : "partition");
+		print_with_prefix("process distribution : %s", dist_round_robin ? "round robin" : "partition");
 	}
 #if SHARED_MEMORY
 	if(max_procs_per_node > 1 && max_procs_per_node != 3) {
@@ -887,7 +1034,7 @@ void set_affinity()
 		else {
 			core_affinity_enabled = true;
 			core_binding = new ManualCoreBinding(&cpu_set[0], cpu_set.size());
-			if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity is enabled (using existing affinigy)\n");
+			if(mpi.isRmaster()) print_with_prefix("Core affinity is enabled (using existing affinigy)");
 		}
 	}
 	if(core_binding == NULL) {
@@ -895,7 +1042,7 @@ void set_affinity()
 		if(max_procs_per_node > 1) {
 			if(max_procs_per_node == 3) {
 				if(numa_available() < 0) {
-					fprintf(IMD_OUT, "No NUMA support available on this system.\n");
+					print_with_prefix("No NUMA support available on this system.");
 				}
 				else {
 					int NUM_SOCKET = numa_max_node() + 1;
@@ -903,7 +1050,7 @@ void set_affinity()
 						numa_set_preferred(proc_rank);
 					}
 					if(NUM_SOCKET != topology->num_numa_nodes) {
-						if(mpi.isMaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
+						if(mpi.isMaster()) print_with_prefix("Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)",
 								NUM_SOCKET, topology->num_numa_nodes);
 					}
 				}
@@ -920,17 +1067,17 @@ void set_affinity()
 				sched_setaffinity(0, sizeof(set), &set);
 
 				if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
-				  fprintf(IMD_OUT, "affinity for executing 3 processed per node is enabled.\n");
+				  print_with_prefix("affinity for executing 3 processed per node is enabled.");
 				}
 			}
 			else {
 				if(numa_available() < 0) {
-					fprintf(IMD_OUT, "No NUMA support available on this system.\n");
+					print_with_prefix("No NUMA support available on this system.");
 					return ;
 				}
 				int NUM_SOCKET = numa_max_node() + 1;
 				if(NUM_SOCKET != topology->num_numa_nodes) {
-					if(mpi.isRmaster()) fprintf(IMD_OUT, "Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)\n",
+					if(mpi.isRmaster()) print_with_prefix("Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)",
 							NUM_SOCKET, topology->num_numa_nodes);
 				}
 
@@ -941,17 +1088,17 @@ void set_affinity()
 				numa_set_preferred(proc_rank % NUM_SOCKET);
 
 				core_affinity_enabled = true;
-				if(mpi.isRmaster()) fprintf(IMD_OUT, "Core affinity is enabled\n");
+				if(mpi.isRmaster()) print_with_prefix("Core affinity is enabled");
 
 				if(mpi.rank == mpi.size_-1) { /* print from max rank node for easy debugging */
-				  fprintf(IMD_OUT, "NUMA node affinity is enabled.\n");
+				  print_with_prefix("NUMA node affinity is enabled.");
 				}
 			}
 		}
 		// failed to detect CPU topology or there is only one process here
 		else {
 			if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
-			  fprintf(IMD_OUT, "affinity is disabled.\n");
+			  print_with_prefix("affinity is disabled.");
 			}
 			cpu_set_t set; CPU_ZERO(&set);
 			for(int i = 0; i < topology->num_procs; i++) {
@@ -963,7 +1110,7 @@ void set_affinity()
 	}
 #endif // #if NUMA_BIND
 	if(mpi.isMaster()) {
-		  fprintf(IMD_OUT, "Y dimension is %s\n", mpi.isYdimAvailable() ? "Enabled" : "Disabled");
+		  print_with_prefix("Y dimension is %s", mpi.isYdimAvailable() ? "Enabled" : "Disabled");
 	}
 }
 
@@ -982,7 +1129,7 @@ static void setup_2dcomm(bool row_major)
 	if(twod_r_str){
 		int twod_r = atoi((char*)twod_r_str);
 		if(twod_r == 0 || /* Check for power of 2 */ (twod_r & (twod_r - 1)) != 0) {
-			fprintf(IMD_OUT, "Number of Rows %d is not a power of two.\n", twod_r);
+			print_with_prefix("Number of Rows %d is not a power of two.", twod_r);
 		}
 		else {
 			log_size_r = get_msb_index(twod_r);
@@ -994,7 +1141,7 @@ static void setup_2dcomm(bool row_major)
 	mpi.size_2dr = (1 << log_size_r);
 	mpi.size_2dc = (1 << log_size_c);
 
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Dimension: (%dx%d)\n", mpi.size_2dr, mpi.size_2dc);
+	if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 
 	if(row_major) {
 		// row major
@@ -1029,9 +1176,9 @@ static void setup_2dcomm_on_3d()
 		mpi.size_2dr = 1 << get_msb_index(A);
 		mpi.size_2dc = 1 << get_msb_index(B);
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Dimension: (%dx%dx%dx%d) -> (%dx%d) -> (%dx%d)\n", X, Y, Z1, Z2, A, B, mpi.size_2dr, mpi.size_2dc);
+		if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%dx%dx%d) -> (%dx%d) -> (%dx%d)", X, Y, Z1, Z2, A, B, mpi.size_2dr, mpi.size_2dc);
 		if(mpi.size_ < A*B) {
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: There are not enough processes.\n");
+			if(mpi.isMaster()) print_with_prefix("Error: There are not enough processes.");
 		}
 
 		int x, y, z1, z2;
@@ -1052,7 +1199,7 @@ static void setup_2dcomm_on_3d()
 		}
 	}
 	else if((1 << log_size) != mpi.size_) {
-		if(mpi.isMaster()) fprintf(IMD_OUT, "The program needs dimension information when mpi processes is not a power of two.\n");
+		if(mpi.isMaster()) print_with_prefix("The program needs dimension information when mpi processes is not a power of two.");
 	}
 
 }
@@ -1068,6 +1215,15 @@ void cleanup_2dcomm()
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 {
+#if BACKTRACE_ON_SIGNAL
+	{ // block PRINT_BT_SIGNAL so that only dedicated thread receive the signal
+		sigset_t set;
+		sigemptyset(&set);
+		sigaddset(&set, PRINT_BT_SIGNAL);
+		int s = pthread_sigmask(SIG_BLOCK, &set, NULL);
+		if(s != 0) throw_exception("failed to set sigmask");
+	}
+#endif
 #if MPI_FUNNELED
 	int reqeust_level = MPI_THREAD_FUNNELED;
 #else
@@ -1078,6 +1234,9 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
 #if ENABLE_FJMPI_RDMA
 	FJMPI_Rdma_init();
+#endif
+#if PRINT_WITH_TIME
+	global_clock.init();
 #endif
 
 	const char* prov_str = "unknown";
@@ -1097,17 +1256,21 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	}
 
 	if(mpi.isMaster()) {
-		fprintf(IMD_OUT, "Graph500 Benchmark: SCALE: %d, edgefactor: %d %s\n", SCALE, edgefactor,
+		print_with_prefix("Graph500 Benchmark: SCALE: %d, edgefactor: %d %s", SCALE, edgefactor,
 #ifdef NDEBUG
 				""
 #else
 				"(Debug Mode)"
 #endif
 		);
-		fprintf(IMD_OUT, "Running Binary: %s\n", argv[0]);
-		fprintf(IMD_OUT, "Provided MPI thread mode: %s\n", prov_str);
-		fprintf(IMD_OUT, "Pre running time will be %d seconds\n", PRE_EXEC_TIME);
+		print_with_prefix("Running Binary: %s", argv[0]);
+		print_with_prefix("Provided MPI thread mode: %s", prov_str);
+		print_with_prefix("Pre running time will be %d seconds", PRE_EXEC_TIME);
 	}
+
+#if BACKTRACE_ON_SIGNAL
+	backtrace::start_thread();
+#endif
 
 	if(getenv("TREED_MAP")) {
 		setup_2dcomm_on_3d();
@@ -1151,9 +1314,9 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		  kind_str = "omp_sched_auto";
 		  break;
 	  }
-	  fprintf(IMD_OUT, "OpenMP default scheduling : %s, %d\n", kind_str, modifier);
+	  print_with_prefix("OpenMP default scheduling : %s, %d", kind_str, modifier);
 #else
-	  fprintf(IMD_OUT, "OpenMP version : %d\n", _OPENMP);
+	  print_with_prefix("OpenMP version : %d", _OPENMP);
 #endif
 	}
 #endif
@@ -1166,8 +1329,8 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	if(mpi.isMaster()) {
 		long page_size = sysconf(_SC_PAGESIZE);
 		if(page_size != PAGE_SIZE) {
-			fprintf(IMD_OUT, "System Page Size: %ld\n", page_size);
-			fprintf(IMD_OUT, "Error: PAGE_SIZE(%d) is not correct.\n", PAGE_SIZE);
+			print_with_prefix("System Page Size: %ld", page_size);
+			print_with_prefix("Error: PAGE_SIZE(%d) is not correct.", PAGE_SIZE);
 		}
 	}
 
@@ -1207,7 +1370,9 @@ void cleanup_globals()
 #if CUDA_ENABLED
 	CudaStreamManager::finalize_cuda();
 #endif
-
+#if BACKTRACE_ON_SIGNAL
+	backtrace::thread_join();
+#endif
 #if ENABLE_FJMPI_RDMA
 	FJMPI_Rdma_finalize();
 #endif
@@ -1625,85 +1790,6 @@ const char* TypeName<int64_t>::value = "int64_t";
 template <> struct TypeName<uint64_t> { static const char* value; };
 const char* TypeName<uint64_t>::value = "uint64_t";
 
-//-------------------------------------------------------------//
-// Other functions
-//-------------------------------------------------------------//
-
-int64_t get_time_in_microsecond()
-{
-	struct timeval l;
-	gettimeofday(&l, NULL);
-	return ((int64_t)l.tv_sec*1000000 + l.tv_usec);
-}
-
-template <int width> size_t roundup(size_t size)
-{
-	return (size + width - 1) / width * width;
-}
-
-template <int width> size_t get_blocks(size_t size)
-{
-	return (size + width - 1) / width;
-}
-
-inline size_t roundup_2n(size_t size, size_t width)
-{
-	return (size + width - 1) & -width;
-}
-
-inline size_t get_blocks(size_t size, size_t width)
-{
-	return (size + width - 1) / width;
-}
-
-template <typename T>
-void get_partition(T size, int num_part, int part_idx, T& begin, T& end) {
-	T part_size = (size + num_part - 1) / num_part;
-	begin = std::min(part_size * part_idx, size);
-	end = std::min(begin + part_size, size);
-}
-
-// # of partition = num_blks * parts_factor
-template <typename T>
-void get_partition(T* blk_offset, int num_blks, int parts_per_blk, int part_idx, T& begin, T& end) {
-	int blk_idx = part_idx / parts_per_blk;
-	T blk_begin = blk_offset[blk_idx];
-	T blk_size = blk_offset[blk_idx+1] - blk_begin;
-	get_partition(blk_size, parts_per_blk, part_idx - blk_idx * parts_per_blk, begin, end);
-	begin += blk_begin;
-	end += blk_begin;
-}
-
-template <typename T>
-void get_partition(int64_t size, T* sorted, int log_blk,
-		int num_part, int part_idx, int64_t& begin, int64_t& end)
-{
-	if(size == 0) {
-		begin = end = 0;
-		return ;
-	}
-	get_partition(size, num_part, part_idx, begin, end);
-	if(begin != 0) {
-		T piv = sorted[begin] >> log_blk;
-		while(begin < size && (sorted[begin] >> log_blk) == piv) ++begin;
-	}
-	if(end != 0) {
-		T piv = sorted[end] >> log_blk;
-		while(end < size && (sorted[end] >> log_blk) == piv) ++end;
-	}
-}
-/*
-template <typename T>
-void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value,
-		int64_t min_blk_size, int num_part, int part_idx, T*& begin, T*& end)
-{
-	T blk_size = std::max(min_blk_size, (max_value - min_value + num_part - 1) / num_part);
-	int64_t begin_value = min_value + blk_size * part_idx;
-	int64_t end_value = begin_value + blk_size;
-	begin = std::lower_bound(sorted, sorted + size, begin_value);
-	end = std::lower_bound(sorted, sorted + size, end_value);
-}
-*/
 //-------------------------------------------------------------//
 // VarInt Encoding
 //-------------------------------------------------------------//
@@ -2282,7 +2368,7 @@ private:
 			if(O_TO_S(pk_head[i+1].offset - pk_head[i].offset) - L_TO_S(pk_head[i].length) > 32)
 				break;
 		}
-		VERVOSE(fprintf(IMD_OUT, "Move %ld length\n", out_len - sizeof(PacketIndex) - O_TO_S(pk_head[i+1].offset)));
+		VERVOSE(print_with_prefix("Move %ld length", out_len - sizeof(PacketIndex) - O_TO_S(pk_head[i+1].offset)));
 		for( ; i < num_packet; ++i) {
 			memmove(outbuf + TO_S(pk_head[i].offset, pk_head[i].length),
 					outbuf + O_TO_S(pk_head[i+1].offset),
@@ -2796,6 +2882,172 @@ private:
 };
 
 } // namespace profiling
+
+#if BACKTRACE_ON_SIGNAL
+
+namespace backtrace {
+
+#define SPIN_LOCK(lock) while(__sync_bool_compare_and_swap(&(lock), 0, 1) == false)
+// this CAS will never be failed. We use __sync function to enable memory barrier here.
+#define SPIN_UNLOCK(lock) __sync_bool_compare_and_swap(&(lock), 1, 0)
+
+struct StackFrame {
+	PROF(int64_t enter_clock;)
+	const char* name;
+	int line;
+};
+
+struct ThreadStack {
+	int tid;
+	volatile int* lock;
+	const std::vector<StackFrame>* frames;
+};
+
+std::vector<ThreadStack>* thread_stacks = NULL;
+volatile int thread_stack_lock = 0;
+volatile int next_thread_id = 0;
+volatile bool finish_backtrace_thread = false;
+pthread_t backtrace_thread;
+
+__thread bool disable_trace = false;
+__thread int thread_id = -1;
+__thread volatile int stack_frame_lock = 0;
+__thread std::vector<StackFrame>* stack_frames = NULL;
+
+void* backtrace_thread_routine(void* p) {
+	char filename[300];
+	int print_count = 0;
+	sprintf(filename, "log-backtrace.%d", mpi.rank);
+	FILE* fp = fopen(filename, "w");
+	if(fp == NULL) {
+		throw_exception("failed to open the file %s", filename);
+	}
+
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, PRINT_BT_SIGNAL);
+
+	int sig;
+	while(sigwait(&set, &sig) == 0) {
+		if(finish_backtrace_thread) {
+			fclose(fp); fp = NULL;
+			return NULL;
+		}
+		fprintf(fp, "======= Print Backtrace (%d-th) =======\n", print_count++);
+
+		// disable tracing to avoid modifying data during printing
+		disable_trace = true;
+		SPIN_LOCK(thread_stack_lock);
+		if(thread_stacks != NULL) {
+			for(int i = 0; i < int(thread_stacks->size()); ++i) {
+				ThreadStack th = (*thread_stacks)[i];
+				SPIN_LOCK(*th.lock);
+				const std::vector<StackFrame>& frames = *(th.frames);
+				int num_frames = int(frames.size());
+				fprintf(fp, "Thread %d:\n", th.tid);
+				for(int s = 0; s < num_frames; ++s) {
+					const StackFrame& frame = frames[num_frames - s - 1];
+					fprintf(fp, "    %2d:"PROF("[%f]")" %s:%d\n", s,
+#if PROFILING_MODE
+							(double)frame.enter_clock / 1000000.0,
+#endif
+							frame.name, frame.line);
+				}
+				SPIN_UNLOCK(*th.lock);
+			}
+		}
+		SPIN_UNLOCK(thread_stack_lock);
+		// restart tracing
+		disable_trace = false;
+
+		fprintf(fp, "============= Backtrace end ===========\n");
+		fflush(fp);
+	}
+
+	throw_exception("Error on sigwait");
+	return NULL;
+}
+
+void start_thread() {
+	pthread_create(&backtrace_thread, NULL, backtrace_thread_routine, NULL);
+}
+
+void thread_join() {
+	finish_backtrace_thread = true;
+	pthread_kill(backtrace_thread, PRINT_BT_SIGNAL);
+	pthread_join(backtrace_thread, NULL);
+	SPIN_LOCK(thread_stack_lock);
+	delete thread_stacks; thread_stacks = NULL;
+	SPIN_UNLOCK(thread_stack_lock);
+}
+
+} // namespace backtrace {
+
+extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD) {
+	using namespace backtrace;
+
+	if(disable_trace) {
+		return ;
+	}
+
+	if(thread_id == -1) {
+		// initialize thread local storage
+		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
+		stack_frames = new std::vector<StackFrame>();
+		// add thread info to thread_stacks
+		ThreadStack th;
+		th.tid = thread_id;
+		th.lock = &stack_frame_lock;
+		th.frames = stack_frames;
+
+		SPIN_LOCK(thread_stack_lock);
+		if(finish_backtrace_thread == false) {
+			if(thread_stacks == NULL) {
+				thread_stacks = new std::vector<ThreadStack>();
+			}
+			thread_stacks->push_back(th);
+		}
+		SPIN_UNLOCK(thread_stack_lock);
+	}
+
+	SPIN_LOCK(stack_frame_lock);
+	if(finish_backtrace_thread) {
+		if(stack_frames != NULL) {
+			delete stack_frames; stack_frames = NULL;
+		}
+	}
+	else {
+		switch(*FLAG) {
+		case 2:
+		case 4:
+		case 102:
+		{
+			StackFrame frame;
+			PROF(frame.enter_clock = global_clock.get());
+			frame.name = NAME;
+			frame.line = *LINE;
+			stack_frames->push_back(frame);
+		}
+			break;
+		case 3:
+		case 5:
+		case 103:
+		{
+			assert(stack_frames->size() > 0);
+			stack_frames->pop_back();
+		}
+			break;
+		default:
+			break;
+		}
+	}
+	SPIN_UNLOCK(stack_frame_lock);
+}
+
+#undef SPIN_LOCK
+#undef SPIN_UNLOCK
+
+#endif // #if BACKTRACE_ON_SIGNAL
 
 #if VERVOSE_MODE
 volatile int64_t g_tp_comm;

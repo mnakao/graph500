@@ -20,9 +20,10 @@
 // Since communication and computation is overlapped, we cannot have main thread do both tasks.
 #define MPI_FUNNELED 1
 
+#define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
-#define DEBUG_PRINT 1
+#define DEBUG_PRINT 0
 #define REPORT_GEN_RPGRESS 1
 #define ENABLE_FUJI_PROF 1
 #define ENABLE_FJMPI_RDMA 1
@@ -50,13 +51,16 @@
 #define VERTEX_SORTING 0 // do not support backward search
 #define LOW_LEVEL_FUNCTION 1
 
+#define BACKTRACE_ON_SIGNAL 1
+#define PRINT_BT_SIGNAL SIGTRAP
+
 // org = 1000
-#define DENOM_TOPDOWN_TO_BOTTOMUP 2000
+#define DENOM_TOPDOWN_TO_BOTTOMUP 2000.0
 #define DENOM_BITMAP_TO_LIST 2.0
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 2
+#define VALIDATION_LEVEL 1
 
 #define CUDA_ENABLED 0
 #define CUDA_COMPUTE_EXCLUSIVE_THREAD_MODE 1
@@ -98,7 +102,8 @@
 #endif
 
 #define CACHE_LINE 128
-#define PAGE_SIZE 8192
+//#define PAGE_SIZE 8192
+#define PAGE_SIZE 16
 
 #define IMD_OUT stderr
 

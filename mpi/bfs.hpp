@@ -196,7 +196,7 @@ public:
 				work_buf_size_ * mpi.size_z + // work_buf_
 				bitmap_width * sizeof(BitmapType) * mpi.size_2dr * 2 + // two shared visited memory
 				sizeof(memory::SpinBarrier) + sizeof(int) * shared_offset_length;
-		VERVOSE(if(mpi.isMaster()) fprintf(IMD_OUT, "Allocating shared memory: %f GB per node.\n", to_giga(total_size_of_shared_memory)));
+		VERVOSE(if(mpi.isMaster()) print_with_prefix("Allocating shared memory: %f GB per node.", to_giga(total_size_of_shared_memory)));
 
 		void* smem_ptr = buffer_.shared_memory_ = shared_malloc(total_size_of_shared_memory);
 
@@ -1151,7 +1151,7 @@ public:
 		MPI_Reduce(send_stt, sum_stt, 2, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
 		MPI_Reduce(send_stt, max_stt, 2, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
 		if(mpi.isMaster() && sum_stt[0] != 0) {
-			fprintf(IMD_OUT, "Bottom-Up using List. Total %f M Vertexes / %f M Blocks = %f Max %f %%+ Vertexes %f %%+ Blocks\n",
+			print_with_prefix("Bottom-Up using List. Total %f M Vertexes / %f M Blocks = %f Max %f %%+ Vertexes %f %%+ Blocks",
 					to_mega(sum_stt[0]), to_mega(sum_stt[1]), to_mega(sum_stt[0]) / to_mega(sum_stt[1]),
 					diff_percent(max_stt[0], sum_stt[0], mpi.size_2d),
 					diff_percent(max_stt[1], sum_stt[1], mpi.size_2d));
@@ -1170,9 +1170,9 @@ public:
 			for(int i = 0; i < count_length; ++i) {
 				total_nq += phase_recv[i];
 			}
-			fprintf(IMD_OUT, "Bottom-Up: %"PRId64" vertexes found. Break down ...\n", total_nq);
+			print_with_prefix("Bottom-Up: %"PRId64" vertexes found. Break down ...", total_nq);
 			for(int i = 0; i < count_length; ++i) {
-				fprintf(IMD_OUT, "step %d / %d  %f M Vertexes ( %f %% )\n",
+				print_with_prefix("step %d / %d  %f M Vertexes ( %f %% )",
 						i+1, count_length, to_mega(phase_recv[i]), (double)phase_recv[i] / (double)total_nq * 100.0);
 			}
 		}
@@ -2526,51 +2526,72 @@ public:
 	{
 		if(mpi.isMaster() == false) return ;
 		using namespace PRM;
-		//fprintf(IMD_OUT, "Welcome to Graph500 Benchmark World.\n");
-		//fprintf(IMD_OUT, "Check it out! You are running highly optimized BFS implementation.\n");
+		print_with_prefix("===== Settings and Parameters. ====");
 
-		fprintf(IMD_OUT, "===== Settings and Parameters. ====\n");
-		fprintf(IMD_OUT, "NUM_BFS_ROOTS=%d.\n", NUM_BFS_ROOTS);
-		fprintf(IMD_OUT, "max threads=%d.\n", omp_get_max_threads());
-		fprintf(IMD_OUT, "sizeof(BitmapType)=%zd.\n", sizeof(BitmapType));
-		//fprintf(IMD_OUT, "Index Type of Graph: %d bytes per edge.\n", sizeof(TwodVertex));
-		fprintf(IMD_OUT, "sizeof(TwodVertex)=%zd.\n", sizeof(TwodVertex));
-		fprintf(IMD_OUT, "NUMA_BIND=%d.\n", NUMA_BIND);
-		fprintf(IMD_OUT, "SHARED_MEMORY=%d.\n", SHARED_MEMORY);
-		fprintf(IMD_OUT, "VERVOSE_MODE=%d.\n", VERVOSE_MODE);
-		fprintf(IMD_OUT, "PROFILING_MODE=%d.\n", PROFILING_MODE);
-		fprintf(IMD_OUT, "BFELL=%d.\n", BFELL);
-		fprintf(IMD_OUT, "DEGREE_ORDER_ONLY_IE=%d.\n", DEGREE_ORDER_ONLY_IE);
-		fprintf(IMD_OUT, "INIT_PRED_ONCE=%d.\n", INIT_PRED_ONCE);
+#define PRINT_VAL(fmt, val) print_with_prefix(#val " = " fmt ".", val)
+		PRINT_VAL("%d", NUM_BFS_ROOTS);
+		PRINT_VAL("%d", omp_get_max_threads());
+		PRINT_VAL("%zd", sizeof(BitmapType));
+		PRINT_VAL("%zd", sizeof(TwodVertex));
 
-		fprintf(IMD_OUT, "ISOLATE_FIRST_EDGE=%d.\n", ISOLATE_FIRST_EDGE);
-		fprintf(IMD_OUT, "DEGREE_ORDER=%d.\n", DEGREE_ORDER);
+		PRINT_VAL("%d", NUMA_BIND);
+		PRINT_VAL("%d", CPU_BIND_CHECK);
+		PRINT_VAL("%d", PRINT_BINDING);
+		PRINT_VAL("%d", SHARED_MEMORY);
 
-		fprintf(IMD_OUT, "BF_DEEPER_ASYNC=%d.\n", BF_DEEPER_ASYNC);
-		fprintf(IMD_OUT, "VALIDATION_LEVEL=%d.\n", VALIDATION_LEVEL);
+		PRINT_VAL("%d", MPI_FUNNELED);
 
-		fprintf(IMD_OUT, "PACKET_LENGTH=%d.\n", PACKET_LENGTH);
-		fprintf(IMD_OUT, "COMM_BUFFER_SIZE=%d.\n", COMM_BUFFER_SIZE);
-		fprintf(IMD_OUT, "SEND_BUFFER_LIMIT=%d.\n", SEND_BUFFER_LIMIT);
-		fprintf(IMD_OUT, "BOTTOM_UP_BUFFER=%d.\n", BOTTOM_UP_BUFFER);
-		fprintf(IMD_OUT, "NBPE=%d.\n", NBPE);
-		fprintf(IMD_OUT, "BFELL_SORT=%d.\n", BFELL_SORT);
+		PRINT_VAL("%d", VERVOSE_MODE);
+		PRINT_VAL("%d", PROFILING_MODE);
+		PRINT_VAL("%d", DEBUG_PRINT);
+		PRINT_VAL("%d", REPORT_GEN_RPGRESS);
+		PRINT_VAL("%d", ENABLE_FUJI_PROF);
+		PRINT_VAL("%d", ENABLE_FJMPI_RDMA);
 
-		fprintf(IMD_OUT, "DENOM_TOPDOWN_TO_BOTTOMUP=%d.\n", DENOM_TOPDOWN_TO_BOTTOMUP);
-		fprintf(IMD_OUT, "DENOM_BITMAP_TO_LIST=%f.\n", DENOM_BITMAP_TO_LIST);
+		PRINT_VAL("%d", BFELL);
+
+		PRINT_VAL("%d", ISOLATE_FIRST_EDGE);
+		PRINT_VAL("%d", DEGREE_ORDER);
+		PRINT_VAL("%d", DEGREE_ORDER_ONLY_IE);
+		PRINT_VAL("%d", CONSOLIDATE_IFE_PROC);
+
+		PRINT_VAL("%d", INIT_PRED_ONCE);
+
+		PRINT_VAL("%d", STREAM_UPDATE);
+		PRINT_VAL("%d", BF_DEEPER_ASYNC);
+
+		PRINT_VAL("%d", PRE_EXEC_TIME);
+
+		PRINT_VAL("%d", VERTEX_SORTING);
+		PRINT_VAL("%d", LOW_LEVEL_FUNCTION);
+		PRINT_VAL("%d", BACKTRACE_ON_SIGNAL);
+		PRINT_VAL("%d", PRINT_BT_SIGNAL);
+
+		PRINT_VAL("%d", PACKET_LENGTH);
+		PRINT_VAL("%d", COMM_BUFFER_SIZE);
+		PRINT_VAL("%d", SEND_BUFFER_LIMIT);
+		PRINT_VAL("%d", BOTTOM_UP_BUFFER);
+		PRINT_VAL("%d", NBPE);
+		PRINT_VAL("%d", BFELL_SORT);
+		PRINT_VAL("%f", DENOM_TOPDOWN_TO_BOTTOMUP);
+		PRINT_VAL("%f", DENOM_BITMAP_TO_LIST);
+
+		PRINT_VAL("%d", VALIDATION_LEVEL);
+		PRINT_VAL("%d", SGI_OMPLACE_BUG);
+#undef PRINT_VAL
 
 		if(NUM_BFS_ROOTS == 64 && VALIDATION_LEVEL == 2)
-			fprintf(IMD_OUT, "===== Benchmark Mode OK ====\n");
+			print_with_prefix("===== Benchmark Mode OK ====");
 		else
-			fprintf(IMD_OUT, "===== Non Benchmark Mode ====\n");
+			print_with_prefix("===== Non Benchmark Mode ====");
 	}
 #if VERVOSE_MODE
 	void printTime(const char* fmt, double* sum, double* max, int idx) {
-		fprintf(IMD_OUT, fmt, sum[idx] / mpi.size_2d * 1000.0,
+		print_with_prefix(fmt, sum[idx] / mpi.size_2d * 1000.0,
 				diff_percent(max[idx], sum[idx], mpi.size_2d));
 	}
 	void printCounter(const char* fmt, int64_t* sum, int64_t* max, int idx) {
-		fprintf(IMD_OUT, fmt, to_mega(sum[idx] / mpi.size_2d),
+		print_with_prefix(fmt, to_mega(sum[idx] / mpi.size_2d),
 				diff_percent(max[idx], sum[idx], mpi.size_2d));
 	}
 #endif
@@ -2674,7 +2695,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	initialize_memory(pred);
 
 #if VERVOSE_MODE
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Time of initialize memory: %f ms\n", (MPI_Wtime() - prev_time) * 1000.0);
+	if(mpi.isMaster()) print_with_prefix("Time of initialize memory: %f ms", (MPI_Wtime() - prev_time) * 1000.0);
 	prev_time = MPI_Wtime();
 #endif
 
@@ -2827,20 +2848,20 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 			double nq_unvis_rate = (double)global_nq_size_ / global_unvisited_vertices;
 			double unvis_rate = (double)global_unvisited_vertices / graph_.num_global_verts_;
 			double time_of_level = cur_expand_time + cur_fold_time;
-			fprintf(IMD_OUT, "=== Level %d complete ===\n", current_level_);
-			fprintf(IMD_OUT, "Direction %s\n", forward_or_backward_ ? "top-down" : "bottom-up");
+			print_with_prefix("=== Level %d complete ===", current_level_);
+			print_with_prefix("Direction %s", forward_or_backward_ ? "top-down" : "bottom-up");
 
-			fprintf(IMD_OUT, "Expand Time: %f ms\n", cur_expand_time * 1000.0);
-			fprintf(IMD_OUT, "Fold Time: %f ms\n", cur_fold_time * 1000.0);
-			fprintf(IMD_OUT, "Level Total Time: %f ms\n", time_of_level * 1000.0);
+			print_with_prefix("Expand Time: %f ms", cur_expand_time * 1000.0);
+			print_with_prefix("Fold Time: %f ms", cur_fold_time * 1000.0);
+			print_with_prefix("Level Total Time: %f ms", time_of_level * 1000.0);
 
-			fprintf(IMD_OUT, "NQ %"PRId64", 1/ %f, %f %% of global, 1/ %f, %f %% of Unvisited\n"
-							"Unvisited %"PRId64", 1/ %f, %f %% of global\n",
+			print_with_prefix("NQ %"PRId64", 1/ %f, %f %% of global, 1/ %f, %f %% of Unvisited"
+							"Unvisited %"PRId64", 1/ %f, %f %% of global",
 						global_nq_size_, 1/nq_rate, nq_rate*100, 1/nq_unvis_rate, nq_unvis_rate*100,
 						global_unvisited_vertices, 1/unvis_rate, unvis_rate*100);
 
 			int64_t edge_relaxed = forward_or_backward_ ? num_edge_top_down_ : num_edge_bottom_up_;
-			fprintf(IMD_OUT, "Edge relax: %"PRId64", %f %%, %f M/s (Level), %f M/s (Fold)\n",
+			print_with_prefix("Edge relax: %"PRId64", %f %%, %f M/s (Level), %f M/s (Fold)",
 					edge_relaxed, (double)edge_relaxed / graph_.num_global_edges_ * 100.0,
 					to_mega(edge_relaxed) / time_of_level,
 					to_mega(edge_relaxed) / cur_fold_time);
@@ -2849,27 +2870,27 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 			int64_t max_cb_size = int64_t(max_num_bufs[0]) * PRM::COMM_BUFFER_SIZE;
 			int64_t total_qb_size = int64_t(sum_num_bufs[1]) * BUCKET_UNIT_SIZE;
 			int64_t max_qb_size = int64_t(max_num_bufs[1]) * BUCKET_UNIT_SIZE;
-			fprintf(IMD_OUT, "Comm buffer: %f MB per node, Max %f %%+\n",
+			print_with_prefix("Comm buffer: %f MB per node, Max %f %%+",
 					to_mega(total_cb_size / mpi.size_2d), diff_percent(max_cb_size, total_cb_size, mpi.size_2d));
-			fprintf(IMD_OUT, "Queue buffer: %f MB per node, Max %f %%+\n",
+			print_with_prefix("Queue buffer: %f MB per node, Max %f %%+",
 					to_mega(total_qb_size / mpi.size_2d), diff_percent(max_qb_size, total_qb_size, mpi.size_2d));
 
 			if(next_forward_or_backward != forward_or_backward_) {
 				if(forward_or_backward_)
-					fprintf(IMD_OUT, "Direction Change: top-down -> bottom-up\n");
+					print_with_prefix("Direction Change: top-down -> bottom-up");
 				else
-					fprintf(IMD_OUT, "Direction Change: bottom-up -> top-down\n");
+					print_with_prefix("Direction Change: bottom-up -> top-down");
 			}
 			if(next_bitmap_or_list != bitmap_or_list_) {
 				if(bitmap_or_list_)
-					fprintf(IMD_OUT, "Format Change: bitmap -> list\n");
+					print_with_prefix("Format Change: bitmap -> list");
 				else
-					fprintf(IMD_OUT, "Format Change: list -> bitmap\n");
+					print_with_prefix("Format Change: list -> bitmap");
 			}
-			fprintf(IMD_OUT, "Next expand format: %s\n",
+			print_with_prefix("Next expand format: %s",
 					expand_bitmap_or_list ? "Bitmap" : "List");
 
-			fprintf(IMD_OUT, "=== === === === ===\n");
+			print_with_prefix("=== === === === ===");
 		}
 		if(global_nq_size_ == 0) {
 			break;
@@ -2900,7 +2921,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 #endif
 	} // while(true) {
 #if VERVOSE_MODE
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Time of BFS: %f ms\n", (MPI_Wtime() - start_time) * 1000.0);
+	if(mpi.isMaster()) print_with_prefix("Time of BFS: %f ms", (MPI_Wtime() - start_time) * 1000.0);
 	int64_t total_edge_relax = total_edge_top_down + total_edge_bottom_up;
 	int time_cnt = 2, cnt_cnt = 9;
 	double send_time[] = { fold_time, expand_time }, sum_time[time_cnt], max_time[time_cnt];
@@ -2913,17 +2934,17 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	MPI_Reduce(send_cnt, sum_cnt, cnt_cnt, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
 	MPI_Reduce(send_cnt, max_cnt, cnt_cnt, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
 	if(mpi.isMaster()) {
-		printTime("Avg time of fold: %f ms, %f %%+\n", sum_time, max_time, 0);
-		printTime("Avg time of expand: %f ms, %f %%+\n", sum_time, max_time, 1);
-		printCounter("Avg top-down fold recv: %f MiB, %f %%+\n", sum_cnt, max_cnt, 0);
-		printCounter("Avg bottom-up pred update recv: %f MiB, %f %%+\n", sum_cnt, max_cnt, 1);
-		printCounter("Avg bottom-up bitmap send: %f MiB, %f %%+\n", sum_cnt, max_cnt, 2);
-		printCounter("Avg bottom-up list send: %f MiB, %f %%+\n", sum_cnt, max_cnt, 3);
-		printCounter("Avg expand bitmap recv: %f MiB, %f %%+\n", sum_cnt, max_cnt, 4);
-		printCounter("Avg expand list recv: %f MiB, %f %%+\n", sum_cnt, max_cnt, 5);
-		printCounter("Avg top-down traversed edges: %f MiB, %f %%+\n", sum_cnt, max_cnt, 6);
-		printCounter("Avg bottom-up traversed edges: %f MiB, %f %%+\n", sum_cnt, max_cnt, 7);
-		printCounter("Avg total relaxed traversed: %f MiB, %f %%+\n", sum_cnt, max_cnt, 8);
+		printTime("Avg time of fold: %f ms, %f %%+", sum_time, max_time, 0);
+		printTime("Avg time of expand: %f ms, %f %%+", sum_time, max_time, 1);
+		printCounter("Avg top-down fold recv: %f MiB, %f %%+", sum_cnt, max_cnt, 0);
+		printCounter("Avg bottom-up pred update recv: %f MiB, %f %%+", sum_cnt, max_cnt, 1);
+		printCounter("Avg bottom-up bitmap send: %f MiB, %f %%+", sum_cnt, max_cnt, 2);
+		printCounter("Avg bottom-up list send: %f MiB, %f %%+", sum_cnt, max_cnt, 3);
+		printCounter("Avg expand bitmap recv: %f MiB, %f %%+", sum_cnt, max_cnt, 4);
+		printCounter("Avg expand list recv: %f MiB, %f %%+", sum_cnt, max_cnt, 5);
+		printCounter("Avg top-down traversed edges: %f MiB, %f %%+", sum_cnt, max_cnt, 6);
+		printCounter("Avg bottom-up traversed edges: %f MiB, %f %%+", sum_cnt, max_cnt, 7);
+		printCounter("Avg total relaxed traversed: %f MiB, %f %%+", sum_cnt, max_cnt, 8);
 	}
 #endif
 }

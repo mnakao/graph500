@@ -266,8 +266,9 @@ public:
 	{ }
 	~GraphConstructor2DCSR()
 	{
-		free(src_vertexes_); src_vertexes_ = NULL;
-		free(wide_row_starts_); wide_row_starts_ = NULL;
+		// since the heap checker of FUJITSU compiler reports error on free(NULL) ...
+		if(src_vertexes_ != NULL) { free(src_vertexes_); src_vertexes_ = NULL; }
+		if(wide_row_starts_ != NULL) { free(wide_row_starts_); wide_row_starts_ = NULL; }
 	}
 
 	void construct(EdgeList* edge_list, int log_minimum_global_verts, GraphType& g)
@@ -284,13 +285,13 @@ public:
 		sortEdges(g);
 		free(row_starts_sup_); row_starts_sup_ = NULL;
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Wide CSR creation complete.\n");
+		if(mpi.isMaster()) print_with_prefix("Wide CSR creation complete.");
 
 		constructFromWideCSR(g);
 
 		computeNumVertices(g);
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Graph construction complete.\n");
+		if(mpi.isMaster()) print_with_prefix("Graph construction complete.");
 	}
 
 	void copy_to_gpu(GraphType& g, bool graph_on_gpu_) {
@@ -476,7 +477,7 @@ private:
 		uint64_t max_vertex = 0;
 		int max_weight = 0;
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Begin counting edges. Number of iterations is %d.\n", num_loops);
+		if(mpi.isMaster()) print_with_prefix("Begin counting edges. Number of iterations is %d.", num_loops);
 
 		for(int loop_count = 0; loop_count < num_loops; ++loop_count) {
 			EdgeType* edge_data;
@@ -491,13 +492,13 @@ private:
 			scatter.sum();
 
 #if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) fprintf(IMD_OUT, "MPI_Allreduce...\n");
+			if(mpi.isMaster()) print_with_prefix("MPI_Allreduce...");
 #endif
 
 			MPI_Allreduce(MPI_IN_PLACE, &max_vertex, 1, MpiTypeOf<uint64_t>::type, MPI_BOR, mpi.comm_2d);
 
 #if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) fprintf(IMD_OUT, "OK! \n");
+			if(mpi.isMaster()) print_with_prefix("OK! ");
 #endif
 
 			const int log_max_vertex = get_msb_index(max_vertex) + 1;
@@ -508,7 +509,7 @@ private:
 			else if(log_max_vertex != g.log_actual_global_verts_) {
 				// max vertex estimation failure
 				if (mpi.isMaster() == 0) {
-					fprintf(IMD_OUT, "Restarting because of change of log_max_vertex from %d"
+					print_with_prefix("Restarting because of change of log_max_vertex from %d"
 							" to %d\n", g.log_actual_global_verts_, log_max_vertex);
 				}
 
@@ -543,14 +544,14 @@ private:
 			} // #pragma omp parallel
 
 #if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) fprintf(IMD_OUT, "MPI_Alltoall...\n");
+			if(mpi.isMaster()) print_with_prefix("MPI_Alltoall...");
 #endif
 
 #undef SWIZZLE_VERTEX_SRC
 			TwodVertex* recv_edges = scatter.scatter(edges_to_send);
 
 #if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) fprintf(IMD_OUT, "OK! \n");
+			if(mpi.isMaster()) print_with_prefix("OK! ");
 #endif
 
 			const int64_t num_recv_edges = scatter.get_recv_count();
@@ -558,7 +559,7 @@ private:
 
 			scatter.free(recv_edges);
 
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Iteration %d finished.\n", loop_count);
+			if(mpi.isMaster()) print_with_prefix("Iteration %d finished.", loop_count);
 		}
 		edge_list->endRead();
 		MPI_Free_mem(edges_to_send);
@@ -566,7 +567,7 @@ private:
 		reduceMaxWeight<EdgeType>(max_weight, g);
 
 		if(wide_row_starts_ != NULL) {
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Computing edge offset.\n");
+			if(mpi.isMaster()) print_with_prefix("Computing edge offset.");
 			const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 			const int64_t src_region_length = num_local_verts * mpi.size_2dc;
 			const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
@@ -574,12 +575,12 @@ private:
 				wide_row_starts_[i+1] += wide_row_starts_[i];
 			}
 #ifndef NDEBUG
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Copying edge_counts for debugging.\n");
+			if(mpi.isMaster()) print_with_prefix("Copying edge_counts for debugging.");
 			memcpy(row_starts_sup_, wide_row_starts_, (num_wide_rows+1)*sizeof(row_starts_sup_[0]));
 #endif
 		}
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Finished scattering edges.\n");
+		if(mpi.isMaster()) print_with_prefix("Finished scattering edges.");
 	}
 #if !BFELL
 	int64_t* computeGlobalDegree(GraphType& g) {
@@ -590,7 +591,7 @@ private:
 		int send_counts[comm_size], send_offsets[comm_size + 1];
 		int recv_counts[comm_size], recv_offsets[comm_size + 1];
 		const int num_loops = std::max<int>(1, row_bitmap_length * NBPE / EdgeList::CHUNK_SIZE);
-		const TwodVertex bitmap_chunk_size = (num_local_verts / num_loops) >> LOG_NBPE;
+		const int64_t bitmap_chunk_size = (num_local_verts / num_loops) >> LOG_NBPE;
 		assert (bitmap_chunk_size > 0);
 		int64_t *degree = static_cast<int64_t*>(
 				cache_aligned_xmalloc(num_local_verts*sizeof(int64_t)));
@@ -601,7 +602,7 @@ private:
 		int64_t *recv_row_sums = static_cast<int64_t*>(
 				cache_aligned_xmalloc((bitmap_chunk_size + 1) * comm_size*sizeof(int64_t)));
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Start computing global degree. %d iterations.\n", num_loops);
+		if(mpi.isMaster()) print_with_prefix("Start computing global degree. %d iterations.", num_loops);
 		for(int loop = 0; loop < num_loops; ++loop) {
 			// compute count and offset
 			send_offsets[0] = 0;
@@ -617,7 +618,7 @@ private:
 			// copy data to send memory
 #pragma omp parallel for
 			for(int c = 0; c < comm_size; ++c) {
-				TwodVertex bmp_start = ((c * num_local_verts) >> LOG_NBPE) + bitmap_chunk_size * loop;
+				int64_t bmp_start = ((c * num_local_verts) >> LOG_NBPE) + bitmap_chunk_size * loop;
 				memcpy(send_bmp + bitmap_chunk_size * c,
 						g.row_bitmap_ + bmp_start, bitmap_chunk_size * sizeof(BitmapType));
 				int count_c = send_counts[c];
@@ -637,7 +638,7 @@ private:
 #pragma omp parallel for
 			for(int c = 0; c < comm_size; ++c) {
 				int64_t sum = 0;
-				for(TwodVertex i = 0; i < bitmap_chunk_size; ++i) {
+				for(int64_t i = 0; i < bitmap_chunk_size; ++i) {
 					recv_row_sums[i + (bitmap_chunk_size + 1) * c] = sum;
 					sum += __builtin_popcountl(recv_bmp[i + bitmap_chunk_size * c]);
 				}
@@ -646,7 +647,7 @@ private:
 
 			// count degree
 #pragma omp parallel for
-			for(TwodVertex word_idx = 0; word_idx < bitmap_chunk_size; ++word_idx) {
+			for(int64_t word_idx = 0; word_idx < bitmap_chunk_size; ++word_idx) {
 				int64_t cnt[NBPE] = {0};
 				for(int c = 0; c < comm_size; ++c) {
 					BitmapType row_bitmap_i = recv_bmp[word_idx + bitmap_chunk_size * c];
@@ -664,13 +665,13 @@ private:
 			}
 
 			MPI_Free_mem(recv_degree); recv_degree = NULL;
-			if(mpi.isMaster()) fprintf(IMD_OUT, "%d-th iteration finished.\n", loop);
+			if(mpi.isMaster()) print_with_prefix("%d-th iteration finished.", loop);
 		} // for(int loop = 0; loop < num_loops; ++loop) {
 
 		free(send_bmp); send_bmp = NULL;
 		free(recv_bmp); recv_bmp = NULL;
 		free(recv_row_sums); recv_row_sums = NULL;
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Finished computing global degree.\n");
+		if(mpi.isMaster()) print_with_prefix("Finished computing global degree.");
 		return degree;
 	}
 
@@ -678,7 +679,7 @@ private:
 		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
 		const int64_t row_bitmap_length = std::max<int64_t>(1, src_region_length >> LOG_NBPE);
-		const TwodVertex non_zero_rows = g.row_sums_[row_bitmap_length];
+		const int64_t non_zero_rows = g.row_sums_[row_bitmap_length];
 #if ISOLATE_FIRST_EDGE
 		g.isolated_edges_ = static_cast<TwodVertex*>(
 				cache_aligned_xmalloc(non_zero_rows*sizeof(g.isolated_edges_[0])));
@@ -687,15 +688,14 @@ private:
 		int64_t num_max_edges = g.row_starts_[non_zero_rows];
 		MPI_Allreduce(MPI_IN_PLACE, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
 		int num_loops = get_blocks<EdgeList::CHUNK_SIZE*4>(num_max_edges);
-		TwodVertex bitmap_chunk_size = get_blocks(row_bitmap_length, num_loops);
-		int lgl = g.log_local_verts();
+		int64_t bitmap_chunk_size = get_blocks(row_bitmap_length, num_loops);
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Start sorting by degree. %d iterations.\n", num_loops);
+		if(mpi.isMaster()) print_with_prefix("Start sorting by degree. %d iterations.", num_loops);
 		for(int loop = 0; loop < num_loops; ++loop) {
-			TwodVertex bmp_start = std::min<TwodVertex>(row_bitmap_length, bitmap_chunk_size * loop);
-			TwodVertex bmp_end = std::min<TwodVertex>(row_bitmap_length, bmp_start + bitmap_chunk_size);
-			TwodVertex non_zer_row_start = g.row_sums_[bmp_start];
-			TwodVertex non_zer_row_end = g.row_sums_[bmp_end];
+			int64_t bmp_start = std::min<TwodVertex>(row_bitmap_length, bitmap_chunk_size * loop);
+			int64_t bmp_end = std::min<TwodVertex>(row_bitmap_length, bmp_start + bitmap_chunk_size);
+			int64_t non_zer_row_start = g.row_sums_[bmp_start];
+			int64_t non_zer_row_end = g.row_sums_[bmp_end];
 #if DEGREE_ORDER
 			int64_t edge_start = g.row_starts_[non_zer_row_start];
 			int64_t edge_end = g.row_starts_[non_zer_row_end];
@@ -703,15 +703,15 @@ private:
 			int64_t* recv_degree = static_cast<int64_t*>(
 					cache_aligned_xmalloc(length*sizeof(int64_t)));
 			if(length > INT_MAX) {
-				fprintf(IMD_OUT, "Error: Integer overflow (%s:%d)\n", __FILE__, __LINE__);
+				print_with_prefix("Error: Integer overflow (%s:%d)", __FILE__, __LINE__);
 			}
-			MpiCol::gather(DegreeConverter(g.edge_array_ + edge_start, g.degree_, recv_degree, lgl),
+			MpiCol::gather(DegreeConverter(g.edge_array_ + edge_start, g.degree_, recv_degree, g.log_local_verts()),
 					length, mpi.comm_2dc);
 #endif
 
 			// sort edges by their degree.
 #pragma omp for
-			for(TwodVertex non_zero_idx = non_zer_row_start; non_zero_idx < non_zer_row_end; ++non_zero_idx) {
+			for(int64_t non_zero_idx = non_zer_row_start; non_zero_idx < non_zer_row_end; ++non_zero_idx) {
 				int64_t e_start = g.row_starts_[non_zero_idx];
 #if DEGREE_ORDER_ONLY_IE
 				int64_t e_end = g.row_starts_[non_zero_idx + 1];
@@ -734,7 +734,7 @@ private:
 #if ISOLATE_FIRST_EDGE
 			// compact edge array
 			// This loop cannot be parallelized.
-			for(TwodVertex non_zero_idx = non_zer_row_start; non_zero_idx < non_zer_row_end; ++non_zero_idx) {
+			for(int64_t non_zero_idx = non_zer_row_start; non_zero_idx < non_zer_row_end; ++non_zero_idx) {
 				int64_t e_start = g.row_starts_[non_zero_idx];
 				int64_t e_end = g.row_starts_[non_zero_idx + 1];
 				int64_t e_length = e_end - e_start;
@@ -746,7 +746,7 @@ private:
 			free(recv_degree); recv_degree = NULL;
 #endif
 			MPI_Barrier(mpi.comm_2d);
-			if(mpi.isMaster()) fprintf(IMD_OUT, "%d-th iteration finished.\n", loop);
+			if(mpi.isMaster()) print_with_prefix("%d-th iteration finished.", loop);
 		} // for(int loop = 0; loop < num_loops; ++loop) {
 
 #if ISOLATE_FIRST_EDGE
@@ -759,7 +759,7 @@ private:
 		}
 #endif
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Finished sorting by degree.\n");
+		if(mpi.isMaster()) print_with_prefix("Finished sorting by degree.");
 	}
 #endif
 	void constructFromWideCSR(GraphType& g) {
@@ -771,19 +771,21 @@ private:
 		const int64_t num_edge_blocks = std::max<int64_t>(1, src_region_length >> LOG_BFELL_SORT);
 		VERVOSE(const int64_t num_local_edges = wide_row_starts_[num_wide_rows]);
 
-		VERVOSE(if(mpi.isMaster()) fprintf(IMD_OUT, "num_local_verts %f M\nsrc_region_length %f M\n"
-				"num_wide_rows %f M\nrow_bitmap_length %f M\n"
-				"num_edge_blocks %f M\n",
-				to_mega(num_local_verts), to_mega(src_region_length),
-				to_mega(num_wide_rows), to_mega(row_bitmap_length), to_mega(num_edge_blocks)));
+		VERVOSE(if(mpi.isMaster()) {
+			print_with_prefix("num_local_verts %f M", to_mega(num_local_verts));
+			print_with_prefix("src_region_length %f M", to_mega(src_region_length));
+			print_with_prefix("num_wide_rows %f M", to_mega(num_wide_rows));
+			print_with_prefix("row_bitmap_length %f M", to_mega(row_bitmap_length));
+			print_with_prefix("num_edge_blocks %f M", to_mega(num_edge_blocks));
+		});
 
 		// make row bitmap
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Allocating row bitmap.\n");
+		if(mpi.isMaster()) print_with_prefix("Allocating row bitmap.");
 		g.row_bitmap_ = static_cast<BitmapType*>
 			(cache_aligned_xmalloc(row_bitmap_length*sizeof(BitmapType)));
 		memset(g.row_bitmap_, 0x00, row_bitmap_length*sizeof(BitmapType));
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Making row bitmap.\n");
+		if(mpi.isMaster()) print_with_prefix("Making row bitmap.");
 #pragma omp parallel for
 		for(int64_t part_base = 0; part_base < src_region_length; part_base += EDGE_PART_SIZE) {
 			int64_t part_idx = part_base >> LOG_EDGE_PART_SIZE;
@@ -800,18 +802,18 @@ private:
 			(cache_aligned_xmalloc((row_bitmap_length+1)*sizeof(TwodVertex)));
 		g.row_sums_[0] = 0;
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Making row sums bitmap.\n");
+		if(mpi.isMaster()) print_with_prefix("Making row sums bitmap.");
 		for(int64_t i = 0; i < row_bitmap_length; ++i) {
 			// TODO: deal with different BitmapType
 			int num_rows = __builtin_popcountl(g.row_bitmap_[i]);
 			g.row_sums_[i+1] = g.row_sums_[i] + num_rows;
 		}
 
-		const TwodVertex non_zero_rows = g.row_sums_[row_bitmap_length];
+		const int64_t non_zero_rows = g.row_sums_[row_bitmap_length];
 		int64_t* row_starts = static_cast<int64_t*>
 			(cache_aligned_xmalloc((non_zero_rows+1)*sizeof(int64_t)));
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Computing row_starts.\n");
+		if(mpi.isMaster()) print_with_prefix("Computing row_starts.");
 #pragma omp parallel for
 		for(int64_t part_base = 0; part_base < src_region_length; part_base += EDGE_PART_SIZE) {
 			int64_t part_idx = part_base >> LOG_EDGE_PART_SIZE;
@@ -870,7 +872,7 @@ private:
 		g.sorted_idx_ = static_cast<SortIdx*>
 			(cache_aligned_xmalloc(non_zero_rows*sizeof(SortIdx)));
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Constructing BFELL.\n");
+		if(mpi.isMaster()) print_with_prefix("Constructing BFELL.");
 		// compute column_length size
 		int64_t col_len_naive = 0, col_len_opt = 0;
 #pragma omp parallel
@@ -939,7 +941,7 @@ private:
 			free(tmp_buffer);
 		} // #pragma omp parallel
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Creating column length array.\n");
+		if(mpi.isMaster()) print_with_prefix("Creating column length array.");
 		g.col_len_ = static_cast<SortIdx*>
 			(cache_aligned_xmalloc(col_len_naive*sizeof(SortIdx)));
 
@@ -1007,39 +1009,39 @@ private:
 		MPI_Reduce(send_rowbmp, sum_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
 		MPI_Reduce(send_rowbmp, max_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
 		if(mpi.isMaster()) {
-			fprintf(IMD_OUT, "non zero rows. Total %f M / %f M = %f %% Avg %f M / %f M Max %f %%+\n",
+			print_with_prefix("non zero rows. Total %f M / %f M = %f %% Avg %f M / %f M Max %f %%+",
 					to_mega(sum_rowbmp[0]), to_mega(sum_rowbmp[1]), to_mega(sum_rowbmp[0]) / to_mega(sum_rowbmp[1]) * 100,
 					to_mega(sum_rowbmp[0]) / mpi.size_2d, to_mega(sum_rowbmp[1]) / mpi.size_2d,
 					diff_percent(max_rowbmp[0], send_rowbmp[0], mpi.size_2d));
-			fprintf(IMD_OUT, "distributed edges. Total %f M Avg %f M Max %f %%+\n",
+			print_with_prefix("distributed edges. Total %f M Avg %f M Max %f %%+",
 					to_mega(sum_rowbmp[2]), to_mega(sum_rowbmp[2]) / mpi.size_2d,
 					diff_percent(max_rowbmp[2], sum_rowbmp[2], mpi.size_2d));
 #if BFELL
-			fprintf(IMD_OUT, "column_length size (opt/naive). Total %f M / %f M Avg %f M / %f M Max %f %%+ / %f %%+\n",
+			print_with_prefix("column_length size (opt/naive). Total %f M / %f M Avg %f M / %f M Max %f %%+ / %f %%+",
 					to_mega(sum_rowbmp[3]), to_mega(sum_rowbmp[4]),
 					to_mega(sum_rowbmp[3]) / mpi.size_2d, to_mega(sum_rowbmp[4]) / mpi.size_2d,
 					diff_percent(max_rowbmp[3], sum_rowbmp[3], mpi.size_2d),
 					diff_percent(max_rowbmp[4], sum_rowbmp[4], mpi.size_2d));
 #endif
-			fprintf(IMD_OUT, "Type requirements:\n");
-			fprintf(IMD_OUT, "Global vertex id %s using %s\n", minimum_type(num_local_verts * mpi.size_2d), TypeName<int64_t>::value);
-			fprintf(IMD_OUT, "Local vertex id %s using %s\n", minimum_type(num_local_verts), TypeName<uint32_t>::value);
-			fprintf(IMD_OUT, "Index for local edges %s using %s\n", minimum_type(max_rowbmp[2]), TypeName<int64_t>::value);
-			fprintf(IMD_OUT, "*Index for src local region %s using %s\n", minimum_type(num_local_verts * mpi.size_2dc), TypeName<TwodVertex>::value);
-			fprintf(IMD_OUT, "*Index for dst local region %s using %s\n", minimum_type(num_local_verts * mpi.size_2dr), TypeName<TwodVertex>::value);
-			fprintf(IMD_OUT, "Index for non zero rows %s using %s\n", minimum_type(max_rowbmp[0]), TypeName<TwodVertex>::value);
-			fprintf(IMD_OUT, "*BFELL sort region size %s using %s\n", minimum_type(BFELL_SORT), TypeName<SortIdx>::value);
-			fprintf(IMD_OUT, "Memory consumption:\n");
-			fprintf(IMD_OUT, "row_bitmap %f MB\n", to_mega(row_bitmap_length*sizeof(BitmapType)));
-			fprintf(IMD_OUT, "row_sums %f MB\n", to_mega((row_bitmap_length+1)*sizeof(TwodVertex)));
-			fprintf(IMD_OUT, "edge_array %f MB\n", to_mega(max_rowbmp[2]*sizeof(TwodVertex)));
+			print_with_prefix("Type requirements:");
+			print_with_prefix("Global vertex id %s using %s", minimum_type(num_local_verts * mpi.size_2d), TypeName<int64_t>::value);
+			print_with_prefix("Local vertex id %s using %s", minimum_type(num_local_verts), TypeName<uint32_t>::value);
+			print_with_prefix("Index for local edges %s using %s", minimum_type(max_rowbmp[2]), TypeName<int64_t>::value);
+			print_with_prefix("*Index for src local region %s using %s", minimum_type(num_local_verts * mpi.size_2dc), TypeName<TwodVertex>::value);
+			print_with_prefix("*Index for dst local region %s using %s", minimum_type(num_local_verts * mpi.size_2dr), TypeName<TwodVertex>::value);
+			print_with_prefix("Index for non zero rows %s using %s", minimum_type(max_rowbmp[0]), TypeName<TwodVertex>::value);
+			print_with_prefix("*BFELL sort region size %s using %s", minimum_type(BFELL_SORT), TypeName<SortIdx>::value);
+			print_with_prefix("Memory consumption:");
+			print_with_prefix("row_bitmap %f MB", to_mega(row_bitmap_length*sizeof(BitmapType)));
+			print_with_prefix("row_sums %f MB", to_mega((row_bitmap_length+1)*sizeof(TwodVertex)));
+			print_with_prefix("edge_array %f MB", to_mega(max_rowbmp[2]*sizeof(TwodVertex)));
 #if BFELL
-			fprintf(IMD_OUT, "block_offset %f MB\n", to_mega((src_region_length/BFELL_SORT)*sizeof(TwodVertex)*2));
-			fprintf(IMD_OUT, "sorted_idx %f MB\n", to_mega(max_rowbmp[0]*sizeof(SortIdx)));
-			fprintf(IMD_OUT, "column_length(opt) %f MB\n", to_mega(max_rowbmp[3]*sizeof(SortIdx)));
-			fprintf(IMD_OUT, "column_length(naive) %f MB\n", to_mega(max_rowbmp[4]*sizeof(SortIdx)));
+			print_with_prefix("block_offset %f MB", to_mega((src_region_length/BFELL_SORT)*sizeof(TwodVertex)*2));
+			print_with_prefix("sorted_idx %f MB", to_mega(max_rowbmp[0]*sizeof(SortIdx)));
+			print_with_prefix("column_length(opt) %f MB", to_mega(max_rowbmp[3]*sizeof(SortIdx)));
+			print_with_prefix("column_length(naive) %f MB", to_mega(max_rowbmp[4]*sizeof(SortIdx)));
 #else
-			fprintf(IMD_OUT, "row_starts %f MB\n", to_mega(row_bitmap_length*sizeof(BitmapType)));
+			print_with_prefix("row_starts %f MB", to_mega(row_bitmap_length*sizeof(BitmapType)));
 #endif
 		}
 #endif // #if VERVOSE_MODE
@@ -1162,7 +1164,7 @@ private:
 
 		int num_loops = edge_list->beginRead(true);
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Begin construction. Number of iterations is %d.\n", num_loops);
+		if(mpi.isMaster()) print_with_prefix("Begin construction. Number of iterations is %d.", num_loops);
 
 		for(int loop_count = 0; loop_count < num_loops; ++loop_count) {
 			EdgeType* edge_data;
@@ -1190,24 +1192,24 @@ private:
 				writeSendEdges(edge_data, edge_data_length, offsets, edges_to_send);
 			}
 
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Scatter edges.\n");
+			if(mpi.isMaster()) print_with_prefix("Scatter edges.");
 
 			EdgeType* recv_edges = scatter.scatter(edges_to_send);
 			const int num_recv_edges = scatter.get_recv_count();
 
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Add edges.\n");
+			if(mpi.isMaster()) print_with_prefix("Add edges.");
 
 			addEdges(recv_edges, num_recv_edges, g);
 
 			scatter.free(recv_edges);
 
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Iteration %d finished.\n", loop_count);
+			if(mpi.isMaster()) print_with_prefix("Iteration %d finished.", loop_count);
 		}
 
 		edge_list->endRead();
 		MPI_Free_mem(edges_to_send);
 
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Refreshing edge offset.\n");
+		if(mpi.isMaster()) print_with_prefix("Refreshing edge offset.");
 		memmove(wide_row_starts_+1, wide_row_starts_, num_wide_rows*sizeof(wide_row_starts_[0]));
 		wide_row_starts_[0] = 0;
 
@@ -1215,7 +1217,7 @@ private:
 #pragma omp parallel for
 		for(int64_t i = 0; i <= num_wide_rows; ++i) {
 			if(row_starts_sup_[i] != wide_row_starts_[i]) {
-				fprintf(IMD_OUT, "Error: Edge Counts: i=%"PRId64",1st=%"PRId64",2nd=%"PRId64"\n", i, row_starts_sup_[i], wide_row_starts_[i]);
+				print_with_prefix("Error: Edge Counts: i=%"PRId64",1st=%"PRId64",2nd=%"PRId64"", i, row_starts_sup_[i], wide_row_starts_[i]);
 			}
 			assert(row_starts_sup_[i] == wide_row_starts_[i]);
 		}
@@ -1350,7 +1352,7 @@ private:
 
 	void sortEdges(GraphType& g) {
 		VT_TRACER("sort_edge");
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Sorting edges.\n");
+		if(mpi.isMaster()) print_with_prefix("Sorting edges.");
 
 #pragma omp parallel
 		sortEdgesInner<EdgeType>(g);
@@ -1376,7 +1378,7 @@ private:
 		 int64_t num_edge_sum[2] = {0};
 		 int64_t num_edge[2] = {old_num_edges, rowstart_new};
 		MPI_Reduce(num_edge, num_edge_sum, 2, MPI_INT64_T, MPI_SUM, 0, mpi.comm_2d);
-		if(mpi.isMaster()) fprintf(IMD_OUT, "# of edges is reduced. Total %zd -> %zd Diff %f %%\n",
+		if(mpi.isMaster()) print_with_prefix("# of edges is reduced. Total %zd -> %zd Diff %f %%",
 				num_edge_sum[0], num_edge_sum[1], (double)(num_edge_sum[0] - num_edge_sum[1])/(double)num_edge_sum[0]*100.0);
 		g.num_global_edges_ = num_edge_sum[1];
 	}
@@ -1396,7 +1398,7 @@ private:
 		}
 		MPI_Allreduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
 		VERVOSE(int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_);
-		VERVOSE(if(mpi.isMaster()) fprintf(IMD_OUT, "# of actual vertices %f G %f %%\n", to_giga(num_vertices),
+		VERVOSE(if(mpi.isMaster()) print_with_prefix("# of actual vertices %f G %f %%", to_giga(num_vertices),
 				(double)num_vertices / (double)num_virtual_vertices * 100.0));
 		g.num_global_verts_ = num_vertices;
 	}

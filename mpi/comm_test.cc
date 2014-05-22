@@ -105,6 +105,9 @@ int main(int argc, char **argv) {
 #if ENABLE_FJMPI_RDMA
 	FJMPI_Rdma_init();
 #endif
+	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
+	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
+	double start = MPI_Wtime();
 
 	int send_count = atoi(argv[1]);
 
@@ -117,13 +120,15 @@ int main(int argc, char **argv) {
 		FJMpiAlltoallCommunicator<TestBuffer> alltoall_comm_;
 		AsyncAlltoallManager comm_(&alltoall_comm_, &fiber_man_);
 		AlltoallCommParameter parm(MPI_COMM_WORLD, 0, 4, &handler);
+		if(mpi.isMaster()) printf("[%f] complete initialization\n", MPI_Wtime() - start);
 
 		MPI_Barrier(MPI_COMM_WORLD);
+		if(mpi.isMaster()) printf("[%f] after Barrier\n", MPI_Wtime() - start);
+
 		handler.fiber_ = &fiber_man_;
 		handler.pool_ = alltoall_comm_.get_allocator();
-		MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
-		MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
 		int sub_comm = alltoall_comm_.reg_comm(parm);
+		if(mpi.isMaster()) printf("[%f] after reg_comm\n", MPI_Wtime() - start);
 
 		double s1, s2, s3;
 		for(int i = 0; i < 10; ++i) {
@@ -132,15 +137,16 @@ int main(int argc, char **argv) {
 			fiber_man_.submit(&comm_, 0);
 
 			s2 = MPI_Wtime();
-			for(int i = 0; i < mpi.size_; ++i) {
+			for(int p = 0; p < mpi.size_; ++p) {
 				for(int c = 0; c < send_count; ++c) {
-					comm_.send<false>(NULL, BUF_SIZE, i);
+					comm_.send<false>(NULL, BUF_SIZE, p);
 				}
-				comm_.send_end(i);
+				comm_.send_end(p);
 			}
 			fiber_man_.enter_processing();
 			s3 = MPI_Wtime();
 			MPI_Barrier(MPI_COMM_WORLD);
+			if(mpi.isMaster()) printf("[%f] finished %d-th\n", MPI_Wtime() - start, i);
 		}
 		printf("[r:%d] finished. %f ms, %f ms\n", mpi.rank, (s2-s1)*1000, (s3-s2)*1000);
 	}

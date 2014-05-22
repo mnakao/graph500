@@ -58,7 +58,7 @@ public:
 		edge_memory_size_ = nLocalEdges * 103 / 100 + CHUNK_SIZE; // add 3%
 #if VERVOSE_MODE
 		if(mpi.isMaster()) {
-			fprintf(IMD_OUT, "Allocating edge list memory (%"PRId64" * %d bytes)\n", edge_memory_size_*sizeof(EdgeType), mpi.size_2d);
+			print_with_prefix("Allocating edge list memory (%"PRId64" * %d bytes)", edge_memory_size_*sizeof(EdgeType), mpi.size_2d);
 		}
 #endif
 		edge_memory_ = static_cast<EdgeType*>

@@ -50,7 +50,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 	LogFileFormat log = {0};
 	int root_start = read_log_file(&log, SCALE, edgefactor, bfs_times, validate_times, edge_counts);
 	if(mpi.isMaster() && root_start != 0)
-		fprintf(IMD_OUT, "Resume from %d th run\n", root_start);
+		print_with_prefix("Resume from %d th run", root_start);
 
 	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
 //	EdgeListStorage<UnweightedPackedEdge, 512*1024> edge_list(
@@ -58,18 +58,18 @@ void graph500_bfs(int SCALE, int edgefactor)
 
 	BfsOnCPU::printInformation();
 
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Graph generation\n");
+	if(mpi.isMaster()) print_with_prefix("Graph generation");
 	double generation_time = MPI_Wtime();
 	generate_graph_spec2010(&edge_list, SCALE, edgefactor);
 	generation_time = MPI_Wtime() - generation_time;
 
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Graph construction\n");
+	if(mpi.isMaster()) print_with_prefix("Graph construction");
 	BfsOnCPU* benchmark = new BfsOnCPU();
 	double construction_time = MPI_Wtime();
 	benchmark->construct(&edge_list);
 	construction_time = MPI_Wtime() - construction_time;
 
-	if(mpi.isMaster()) fprintf(IMD_OUT, "Redistributing edge list...\n");
+	if(mpi.isMaster()) print_with_prefix("Redistributing edge list...");
 	double redistribution_time = MPI_Wtime();
 	redistribute_edge_2d(&edge_list);
 	redistribution_time = MPI_Wtime() - redistribution_time;
@@ -99,13 +99,13 @@ void graph500_bfs(int SCALE, int edgefactor)
 // narashi
 		double time_left = PRE_EXEC_TIME;
         for(int c = root_start; time_left > 0.0; ++c) {
-                if(mpi.isMaster())  fprintf(IMD_OUT, "========== Pre Running BFS %d ==========\n", c);
+                if(mpi.isMaster())  print_with_prefix("========== Pre Running BFS %d ==========", c);
                 MPI_Barrier(mpi.comm_2d);
                 double bfs_time = MPI_Wtime();
                 benchmark->run_bfs(bfs_roots[c % num_bfs_roots], pred);
                 bfs_time = MPI_Wtime() - bfs_time;
                 if(mpi.isMaster()) {
-                        fprintf(IMD_OUT, "Time for BFS %d is %f\n", c, bfs_time);
+                        print_with_prefix("Time for BFS %d is %f", c, bfs_time);
                         time_left -= bfs_time;
                 }
                MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
@@ -114,7 +114,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 //	for(int i = root_start; i < num_bfs_roots; ++i) {
 	for(int i = 0; i < num_bfs_roots; ++i) {
 
-		if(mpi.isMaster())  fprintf(IMD_OUT, "========== Running BFS %d ==========\n", i);
+		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
 #if ENABLE_FUJI_PROF
 		fapp_start("bfs", i, 1);
 #endif
@@ -128,8 +128,8 @@ void graph500_bfs(int SCALE, int edgefactor)
 #endif
 		PROF(profiling::g_pis.printResult());
 		if(mpi.isMaster()) {
-			fprintf(IMD_OUT, "Time for BFS %d is %f\n", i, bfs_times[i]);
-			fprintf(IMD_OUT, "Validating BFS %d\n", i);
+			print_with_prefix("Time for BFS %d is %f", i, bfs_times[i]);
+			print_with_prefix("Validating BFS %d", i);
 		}
 
 		benchmark->get_pred(pred);
@@ -155,9 +155,9 @@ void graph500_bfs(int SCALE, int edgefactor)
 		edge_counts[i] = (double)edge_visit_count;
 
 		if(mpi.isMaster()) {
-			fprintf(IMD_OUT, "Validate time for BFS %d is %f\n", i, validate_times[i]);
-			fprintf(IMD_OUT, "Number of traversed edges is %"PRId64"\n", edge_visit_count);
-			fprintf(IMD_OUT, "TEPS for BFS %d is %g\n", i, edge_visit_count / bfs_times[i]);
+			print_with_prefix("Validate time for BFS %d is %f", i, validate_times[i]);
+			print_with_prefix("Number of traversed edges is %"PRId64"", edge_visit_count);
+			print_with_prefix("TEPS for BFS %d is %g", i, edge_visit_count / bfs_times[i]);
 		}
 
 		if(result_ok == false) {
@@ -203,7 +203,7 @@ void test02(int SCALE, int edgefactor)
 	construction_time = MPI_Wtime() - construction_time;
 
 	if(mpi.isMaster()) {
-		fprintf(IMD_OUT, "TEST02\n");
+		print_with_prefix("TEST02");
 		fprintf(stdout, "SCALE:                          %d\n", SCALE);
 		fprintf(stdout, "edgefactor:                     %d\n", edgefactor);
 		fprintf(stdout, "graph_generation:               %g\n", generation_time);

@@ -267,5 +267,4 @@ void stop_collection(const char *);
 }
 #endif
 
-
 #endif /* UTILS_HPP_ */
