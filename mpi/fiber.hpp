@@ -12,6 +12,7 @@
 
 #include <deque>
 
+#define debug(...) debug_print(FIBMN, __VA_ARGS__)
 class Runnable
 {
 public:
@@ -202,7 +203,9 @@ public:
 	}
 	void do_in_parallel(Runnable* main, Runnable* sub, bool inverse) {
 		if(!inverse) {
+			debug("before submit");
 			submit(sub, 0);
+			debug("after submit");
 			main->run();
 		}
 		else {
@@ -220,6 +223,6 @@ private:
 		return NULL;
 	}
 };
-
+#undef debug
 
 #endif /* FIBER_HPP_ */

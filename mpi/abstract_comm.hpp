@@ -12,6 +12,7 @@
 #include "utils.hpp"
 #include "fiber.hpp"
 
+#define debug(...) debug_print(ABSCO, __VA_ARGS__)
 class CommunicationBuffer {
 public:
 	virtual ~CommunicationBuffer() { }
@@ -108,8 +109,10 @@ public:
 		d_->command_active_ = false;
 	}
 
-	void prepare(AlltoallSubCommunicator sub_comm) {
+	void prepare(AlltoallSubCommunicator sub_comm, memory::SpinBarrier* sync) {
 		MY_TRACE;
+		debug("prepare idx=%d", sub_comm);
+		caller_sync_ = sync;
 		buffer_provider_ = comm_->begin(sub_comm);
 		comm_size_ = comm_->get_comm_size();
 		if(node_list_length_ < comm_size_) {
@@ -196,6 +199,7 @@ public:
 			node.cur_buf = get_send_buffer<false>();
 		}
 
+		debug("send end");
 		node.reserved_size_ = node.filled_size_ = 0;
 		send_submit(target);
 		assert(node.cur_buf == NULL);
@@ -263,6 +267,7 @@ public:
 			}
 			if(alltoall_finished_ && async_comm_handlers_.size() == 0) {
 				// finished
+				debug("finished");
 				break;
 			}
 
@@ -274,8 +279,12 @@ public:
 				MY_TRACE;
 				async_comm_handlers_[i]->probe();
 			}
+
+			// for debug
+			//timespec req = { 0, 1000000 }; nanosleep(&req, 0);
 		} // while(true)
 
+		caller_sync_->barrier();
 	}
 #if PROFILING_MODE
 	void submit_prof_info(int number) {
@@ -318,6 +327,7 @@ private:
 	AlltoallCommunicator* comm_;
 	std::vector<AsyncCommHandler*> async_comm_handlers_;
 	AlltoallBufferHandler* buffer_provider_;
+	memory::SpinBarrier* caller_sync_;
 	int buffer_size_;
 	bool alltoall_finished_;
 	int comm_size_;
@@ -382,6 +392,7 @@ private:
 		node.cur_buf = NULL;
 	}
 };
+#undef debug
 
 #endif /* ABSTRACT_COMM_HPP_ */
 

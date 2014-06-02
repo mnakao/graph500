@@ -85,12 +85,12 @@ public:
 
 	~EdgeListStorage()
 	{
-		free(edge_memory_); edge_memory_ = NULL;
+		if(edge_memory_ != NULL) { free(edge_memory_); edge_memory_ = NULL; }
 		if(data_in_file_ == false) {
 		}
 		else {
 			MPI_File_close(&edge_file_); edge_file_ = NULL;
-			free(read_buffer_); read_buffer_ = NULL;
+			if(read_buffer_ != NULL) { free(read_buffer_); read_buffer_ = NULL; }
 		}
 	}
 
@@ -102,7 +102,7 @@ public:
 		read_block_index_ = 0;
 		if(data_in_file_) {
 			if(release_buffer) {
-				free(edge_memory_); edge_memory_ = NULL;
+				if(edge_memory_ != NULL) { free(edge_memory_); edge_memory_ = NULL; }
 			}
 			if(edge_memory_ == NULL) {
 				read_buffer_ = static_cast<EdgeType*>(cache_aligned_xmalloc(CHUNK_SIZE*2*sizeof(EdgeType)));
@@ -162,14 +162,14 @@ public:
 				// break reading loop
 				MPI_Wait(&read_request_, MPI_STATUS_IGNORE);
 			}
-			free(read_buffer_); read_buffer_ = NULL;
+			if(read_buffer_ != NULL) { free(read_buffer_); read_buffer_ = NULL; }
 		}
 
 		if(write_buffer_filled_size_ > 0) {
 			while(write_buffer_filled_size_ > 0) {
 				reduceWriteBuffer();
 			}
-			free(write_buffer_); write_buffer_ = NULL;
+			if(write_buffer_ != NULL) { free(write_buffer_); write_buffer_ = NULL; }
 			write_buffer_size_ = 0;
 			if(write_enabled_ == false) {
 				edge_filled_size_ = write_offset_;
@@ -215,9 +215,11 @@ public:
 					}
 					write_buffer_ = static_cast<EdgeType*>
 						(cache_aligned_xmalloc(write_buffer_size_*sizeof(EdgeType)));
-					memcpy(write_buffer_, swap_buffer,
-							write_buffer_filled_size_*sizeof(EdgeType));
-					free(swap_buffer);
+					if(swap_buffer != NULL) {
+						memcpy(write_buffer_, swap_buffer,
+								write_buffer_filled_size_*sizeof(EdgeType));
+						free(swap_buffer);
+					}
 				}
 				memcpy(write_buffer_ + write_buffer_filled_size_,
 						edge_data, count*sizeof(EdgeType));

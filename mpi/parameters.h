@@ -10,9 +10,10 @@
 
 // for the systems that contains NUMA nodes
 #define NUMA_BIND 0
+#define SHARED_MEMORY 0
+
 #define CPU_BIND_CHECK 0
 #define PRINT_BINDING 0
-#define SHARED_MEMORY 0
 
 // Switching the task assignment for the main thread and the sub thread
 // 0: MPI is single mode: Main -> MPI, Sub: OpenMP
@@ -23,10 +24,20 @@
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
-#define DEBUG_PRINT 0
 #define REPORT_GEN_RPGRESS 1
 #define ENABLE_FUJI_PROF 1
 #define ENABLE_FJMPI_RDMA 1
+
+// root switch to on/off debug print
+#define DEBUG_PRINT 0
+
+// switches to control debug print for each module
+// 0: disabled, 1: enabled, 2: enabled but the only root process prints
+#define DEBUG_PRINT_FIBMN 2
+#define DEBUG_PRINT_BFSMN 2
+#define DEBUG_PRINT_ABSCO 2
+#define DEBUG_PRINT_MPICO 0
+#define DEBUG_PRINT_FJA2A 2
 
 #define BFELL 0
 
@@ -51,7 +62,7 @@
 #define VERTEX_SORTING 0 // do not support backward search
 #define LOW_LEVEL_FUNCTION 1
 
-#define BACKTRACE_ON_SIGNAL 1
+#define BACKTRACE_ON_SIGNAL 0
 #define PRINT_BT_SIGNAL SIGTRAP
 
 // org = 1000
@@ -78,7 +89,7 @@
 #define DISABLE_CUDA_CONCCURENT 0
 #define NETWORK_PROBLEM_AYALISYS 0
 
-#define SGI_OMPLACE_BUG 1
+#define SGI_OMPLACE_BUG 0
 
 #ifdef __FUJITSU
 

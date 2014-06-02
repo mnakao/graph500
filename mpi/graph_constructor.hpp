@@ -25,6 +25,7 @@ public:
 	Graph2DCSR()
 	: row_bitmap_(NULL)
 	, row_sums_(NULL)
+	, has_edge_bitmap_(NULL)
 #if BFELL
 	, blk_off(NULL)
 	, sorted_idx_(NULL)
@@ -50,6 +51,7 @@ public:
 	{
 		free(row_bitmap_); row_bitmap_ = NULL;
 		free(row_sums_); row_sums_ = NULL;
+		free(has_edge_bitmap_); has_edge_bitmap_ = NULL;
 		free(edge_array_); edge_array_ = NULL;
 #if BFELL
 		free(sorted_idx_); sorted_idx_ = NULL;
@@ -57,6 +59,9 @@ public:
 		free(blk_off); blk_off = NULL;
 #else
 		free(row_starts_); row_starts_ = NULL;
+#if ISOLATE_FIRST_EDGE
+		free(isolated_edges_); isolated_edges_ = NULL;
+#endif // #if ISOLATE_FIRST_EDGE
 #endif
 	}
 

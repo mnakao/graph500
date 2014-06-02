@@ -24,6 +24,7 @@
 
 #include "low_level_func.h"
 
+#define debug(...) debug_print(BFSMN, __VA_ARGS__)
 class BfsBase
 {
 	typedef BfsBase ThisType;
@@ -83,6 +84,7 @@ public:
 		, compute_thread_()
 		, alltoall_comm_(new AlltoallCommType())
 		, comm_(alltoall_comm_, &fiber_man_)
+		, comm_sync_(2)
 		, top_down_comm_(this)
 		, bottom_up_comm_(this)
 		, denom_to_bottom_up_(DENOM_TOPDOWN_TO_BOTTOMUP)
@@ -92,7 +94,9 @@ public:
 	}
 
 	virtual ~BfsBase()
-	{ }
+	{
+		delete alltoall_comm_; alltoall_comm_ = NULL;
+	}
 
 	template <typename EdgeList>
 	void construct(EdgeList* edge_list)
@@ -937,6 +941,7 @@ public:
 		VT_TRACER("td_par_sec");
 		struct { volatile int count; } fin; fin.count = 0;
 
+		debug("begin parallel");
 #pragma omp parallel
 		{
 			SET_OMP_AFFINITY;
@@ -1034,7 +1039,8 @@ public:
 			// process remaining recv tasks
 			fiber_man_.enter_processing();
 		} // #pragma omp parallel reduction(+:num_edge_relax)
-		compute_finished_ = true;
+		debug("finished parallel");
+		comm_sync_.barrier();
 	}
 
 	struct TopDownParallelSection : public Runnable {
@@ -1047,14 +1053,13 @@ public:
 		VT_TRACER("td");
 		PROF(profiling::TimeKeeper tk_all);
 
-		comm_.prepare(top_down_comm_idx_);
-		compute_finished_ = false;
+		comm_.prepare(top_down_comm_idx_, &comm_sync_);
 		TopDownParallelSection par_sec(this);
 
+		debug("do_in_parallel");
 		// If mpi thread level is single, we have to call mpi function from the main thread.
 		compute_thread_.do_in_parallel(&par_sec, &comm_,
 				(mpi.thread_level == MPI_THREAD_SINGLE));
-		while(compute_finished_ == false) ;
 
 		PROF(parallel_reg_time_ += tk_all);
 		// flush NQ buffer and count NQ total
@@ -2217,7 +2222,7 @@ public:
 			// send the end packet and wait for the communication completion
 			bottom_up_finalize();
 		} // #pragma omp parallel
-		compute_finished_ = true;
+		comm_sync_.barrier();
 	}
 
 	struct BottomUpBitmapParallelSection : public Runnable {
@@ -2234,14 +2239,12 @@ public:
 		int visited_count[comm_size*max_threads];
 		for(int i = 0; i < comm_size*max_threads; ++i) visited_count[i] = 0;
 
-		comm_.prepare(bottom_up_comm_idx_);
-		compute_finished_ = false;
+		comm_.prepare(bottom_up_comm_idx_, &comm_sync_);
 		BottomUpBitmapParallelSection par_sec(this, visited_count);
 
 		// If mpi thread level is single, we have to call mpi function from the main thread.
 		compute_thread_.do_in_parallel(&par_sec, &comm_,
 				(mpi.thread_level == MPI_THREAD_SINGLE));
-		while(compute_finished_ == false) ;
 
 		// gather visited_count
 		for(int tid = 1; tid < max_threads; ++tid)
@@ -2315,7 +2318,7 @@ public:
 
 			bottom_up_finalize();
 		} // #pragma omp parallel
-		compute_finished_ = true;
+		comm_sync_.barrier();
 	}
 
 	struct BottomUpListParallelSection : public Runnable {
@@ -2341,14 +2344,12 @@ public:
 		int visited_count[comm_size];
 		for(int i = 0; i < comm_size; ++i) visited_count[i] = 0;
 
-		comm_.prepare(bottom_up_comm_idx_);
-		compute_finished_ = false;
+		comm_.prepare(bottom_up_comm_idx_, &comm_sync_);
 		BottomUpListParallelSection par_sec(this, visited_count, vertex_enabled);
 
 		// If mpi thread level is single, we have to call mpi function from the main thread.
 		compute_thread_.do_in_parallel(&par_sec, &comm_,
 				(mpi.thread_level == MPI_THREAD_SINGLE));
-		while(compute_finished_ == false) ;
 
 		bottom_up_gather_nq_size(visited_count);
 		VERVOSE(botto_up_print_stt(par_sec.num_blocks, par_sec.num_vertexes, visited_count));
@@ -2565,8 +2566,9 @@ public:
 		PRINT_VAL("%d", VERTEX_SORTING);
 		PRINT_VAL("%d", LOW_LEVEL_FUNCTION);
 		PRINT_VAL("%d", BACKTRACE_ON_SIGNAL);
+#if BACKTRACE_ON_SIGNAL
 		PRINT_VAL("%d", PRINT_BT_SIGNAL);
-
+#endif
 		PRINT_VAL("%d", PACKET_LENGTH);
 		PRINT_VAL("%d", COMM_BUFFER_SIZE);
 		PRINT_VAL("%d", SEND_BUFFER_LIMIT);
@@ -2605,6 +2607,7 @@ public:
 	BackgroundThread compute_thread_;
 	AlltoallCommType* alltoall_comm_;
 	AsyncAlltoallManager comm_;
+	memory::SpinBarrier comm_sync_;
 	TopDownCommHandler top_down_comm_;
 	BottomUpCommHandler bottom_up_comm_;
 	AlltoallSubCommunicator top_down_comm_idx_;
@@ -2653,7 +2656,6 @@ public:
 	int current_level_;
 	bool forward_or_backward_;
 	bool bitmap_or_list_;
-	volatile bool compute_finished_;
 	memory::SpinBarrier thread_sync_;
 
 	VERVOSE(int64_t num_edge_top_down_);
@@ -2823,6 +2825,8 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 				) { // switch to backward
 				next_forward_or_backward = false;
 				next_bitmap_or_list = true;
+				// do not use top_down_switch_expand with list since it is very slow!!
+				expand_bitmap_or_list = true;
 			}
 		}
 		int bitmap_width = get_bitmap_size_local();
@@ -2855,10 +2859,10 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 			print_with_prefix("Fold Time: %f ms", cur_fold_time * 1000.0);
 			print_with_prefix("Level Total Time: %f ms", time_of_level * 1000.0);
 
-			print_with_prefix("NQ %"PRId64", 1/ %f, %f %% of global, 1/ %f, %f %% of Unvisited"
-							"Unvisited %"PRId64", 1/ %f, %f %% of global",
-						global_nq_size_, 1/nq_rate, nq_rate*100, 1/nq_unvis_rate, nq_unvis_rate*100,
-						global_unvisited_vertices, 1/unvis_rate, unvis_rate*100);
+			print_with_prefix("NQ %"PRId64", 1/ %f, %f %% of global, 1/ %f, %f %% of Unvisited",
+						global_nq_size_, 1/nq_rate, nq_rate*100, 1/nq_unvis_rate, nq_unvis_rate*100);
+			print_with_prefix("Unvisited %"PRId64", 1/ %f, %f %% of global",
+					global_unvisited_vertices, 1/unvis_rate, unvis_rate*100);
 
 			int64_t edge_relaxed = forward_or_backward_ ? num_edge_top_down_ : num_edge_bottom_up_;
 			print_with_prefix("Edge relax: %"PRId64", %f %%, %f M/s (Level), %f M/s (Fold)",
@@ -2948,5 +2952,6 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	}
 #endif
 }
+#undef debug
 
 #endif /* BFS_HPP_ */

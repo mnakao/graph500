@@ -10,6 +10,7 @@
 
 #include "abstract_comm.hpp"
 
+#define debug(...) debug_print(MPICO, __VA_ARGS__)
 class MpiAlltoallCommunicatorBase : public AlltoallCommunicator {
 	struct CommTarget {
 		CommTarget()
@@ -23,21 +24,25 @@ class MpiAlltoallCommunicatorBase : public AlltoallCommunicator {
 	};
 public:
 	MpiAlltoallCommunicatorBase() {
+		MY_TRACE;
 		node_list_length_ = 0;
 		node_ = NULL;
 		mpi_reqs_ = NULL;
 		num_pending_send = 0;
 	}
 	virtual ~MpiAlltoallCommunicatorBase() {
+		MY_TRACE;
 		delete [] node_;
 		delete [] mpi_reqs_;
 	}
 	virtual void send(CommunicationBuffer* data, int target) {
+		MY_TRACE;
 		node_[target].send_queue.push_back(data);
 		++num_pending_send;
 		set_send_buffer(target);
 	}
 	virtual AlltoallSubCommunicator reg_comm(AlltoallCommParameter parm) {
+		MY_TRACE;
 		int idx = handlers_.size();
 		handlers_.push_back(parm);
 		int comm_size;
@@ -46,6 +51,7 @@ public:
 		return idx;
 	}
 	virtual AlltoallBufferHandler* begin(AlltoallSubCommunicator sub_comm) {
+		MY_TRACE;
 		AlltoallCommParameter active = handlers_[sub_comm];
 		comm_ = active.base_communicator;
 		tag_ = active.tag;
@@ -64,15 +70,21 @@ public:
 			}
 		}
 
+		PROF(num_send_count = 0);
+
+		debug("begin idx=%d", sub_comm);
 		return handler_;
 	}
 	//! @return finished
 	virtual bool probe() {
+		MY_TRACE;
 		if(initialized_ == false) {
+			MY_TRACE;
 			initialized_ = true;
 
 			num_recv_active = num_send_active = comm_size_;
 			for(int i = 0; i < comm_size_; ++i) {
+				MY_TRACE;
 				CommTarget& node = node_[i];
 				assert (node.recv_buf == NULL);
 				node.recv_buf = handler_->alloc_buffer();
@@ -82,7 +94,9 @@ public:
 		}
 
 		if(num_recv_active == 0 && num_send_active == 0) {
+			MY_TRACE;
 			// finished
+			debug("finished");
 			handler_->finished();
 			return true;
 		}
@@ -93,6 +107,7 @@ public:
 		MPI_Testany(comm_size_ * (int)REQ_TOTAL, mpi_reqs_, &index, &flag, &status);
 
 		if(flag != 0 && index != MPI_UNDEFINED) {
+			MY_TRACE;
 			const int src_c = index/REQ_TOTAL;
 			const MPI_REQ_INDEX req_kind = (MPI_REQ_INDEX)(index%REQ_TOTAL);
 			const bool b_send = (req_kind == REQ_SEND);
@@ -120,6 +135,7 @@ public:
 				handler_->free_buffer(buf);
 				if(completion_message) {
 					// sent fold completion
+					debug("send complete to=%d (finished)", src_c);
 					--num_send_active;
 				}
 				else {
@@ -130,6 +146,7 @@ public:
 				// recv buffer
 				if(completion_message) {
 					// received fold completion
+					debug("recv complete from=%d (finished)", src_c);
 					--num_recv_active;
 					handler_->free_buffer(buf);
 				}
@@ -143,6 +160,7 @@ public:
 
 			// process recv starves
 			while(recv_stv.size() > 0) {
+				MY_TRACE;
 				int target = recv_stv.front();
 				CommTarget& node = node_[target];
 				assert (node.recv_buf == NULL);
@@ -161,6 +179,8 @@ public:
 #ifndef NDEBUG
 	bool check_num_send_buffer() { return (num_pending_send == 0); }
 #endif
+protected:
+	PROF(int num_send_count);
 
 private:
 
@@ -188,6 +208,7 @@ private:
 	int num_pending_send;
 
 	void set_send_buffer(int target) {
+		MY_TRACE;
 		CommTarget& node = node_[target];
 		if(node.send_buf) {
 			// already sending
@@ -206,6 +227,7 @@ private:
 	}
 
 	void set_recv_buffer(CommunicationBuffer* buf, int target, MPI_Request* req) {
+		MY_TRACE;
 		MPI_Irecv(buf->pointer(), handler_->buffer_length(), data_type_,
 				target, tag_, comm_, req);
 	}
@@ -222,6 +244,7 @@ public:
 #if PROFILING_MODE
 	void submit_prof_info(int number) {
 		profiling::g_pis.submitCounter(pool_.num_extra_buffer_, "num_extra_buffer_", number);
+		profiling::g_pis.submitCounter(num_send_count, "num_send_count", number);
 	}
 #endif
 private:
@@ -244,5 +267,6 @@ private:
 
 	CommBufferPool pool_;
 };
+#undef debug
 
 #endif /* MPI_COMM_HPP_ */

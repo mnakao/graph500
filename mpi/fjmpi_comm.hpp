@@ -12,6 +12,7 @@
 #include "abstract_comm.hpp"
 #include "utils.hpp"
 
+#define debug(...) debug_print(FJA2A, __VA_ARGS__)
 class FJMpiAlltoallCommunicatorBase : public AlltoallCommunicator {
 public:
 	enum {
@@ -83,6 +84,8 @@ private:
 		unsigned int recv_count; //   "
 		unsigned int recv_complete_count;
 
+		PROF(unsigned int start_send_count);
+
 		CommTarget() {
 			proc_index = put_flag = 0;
 			remote_buffer_state = 0;
@@ -147,7 +150,7 @@ public:
 	virtual void send(CommunicationBuffer* data, int target) {
 		MY_TRACE;
 		c_->proc_info[target].send_queue.push_back(data);
-		debug("FJA2A send data queued to=%d, length=%d", pid_from_rank(target), data->length_);
+		debug("send data queued to=%d, length=%d", pid_from_rank(target), data->length_);
 		c_->num_pending_send++;
 		set_send_buffer(target);
 	}
@@ -242,14 +245,20 @@ public:
 
 		delete [] state_offset; state_offset = NULL;
 
-		debug("FJA2A reg_comm idx=%d finished", idx);
+		debug("reg_comm idx=%d finished", idx);
 		return idx;
 	}
 	virtual AlltoallBufferHandler* begin(AlltoallSubCommunicator sub_comm) {
 		MY_TRACE;
 		c_ = &internal_communicators_[sub_comm];
 		c_->num_recv_active = c_->num_send_active = c_->size;
-		debug("FJA2A begin idx=%d", sub_comm);
+#if PROFILING_MODE
+		for(int i = 0; i < c_->size; ++i) {
+			CommTarget& target = c_->proc_info[i];
+			target.start_send_count = target.send_count;
+		}
+#endif
+		debug("begin idx=%d", sub_comm);
 		return c_->handler;
 	}
 	//! @return finished
@@ -257,7 +266,7 @@ public:
 		MY_TRACE;
 		if(c_->num_recv_active == 0 && c_->num_send_active == 0) {
 			// finished
-			debug("FJA2A finished");
+			debug("finished");
 			c_->handler->finished();
 			return true;
 		}
@@ -284,7 +293,7 @@ public:
 				if(ret == FJMPI_RDMA_NOTICE) {
 					if(cq.tag == SYSTEM_TAG) {
 						// nothing to do
-						debug("FJA2A SYSTEM_TAG completion");
+						debug("SYSTEM_TAG completion");
 					}
 					else if(cq.tag >= FIRST_DATA_TAG && cq.tag < FIRST_DATA_TAG + MAX_FLYING_REQ){
 						RankMap::iterator it = c_->rank_map.lower_bound(cq.pid);
@@ -294,7 +303,7 @@ public:
 						CommunicationBuffer*& comm_buf = c_->proc_info[rank].send_buf[buf_idx];
 						bool completion_message = (comm_buf->length_ == 0);
 						c_->handler->free_buffer(comm_buf);
-						debug("FJA2A send complete to=%d, buf_idx=%d, length=%d%s", pid_from_rank(rank), buf_idx, comm_buf->length_,
+						debug("send complete to=%d, buf_idx=%d, length=%d%s", pid_from_rank(rank), buf_idx, comm_buf->length_,
 								completion_message ? " (finished)" : "");
 						comm_buf = NULL;
 						if(completion_message) {
@@ -303,26 +312,26 @@ public:
 					}
 					else {
 						// impossible
-			//			debug("FJA2A impossible");
+			//			debug("impossible");
 					}
 				}
 				else if(ret == FJMPI_RDMA_HALFWAY_NOTICE) {
 					// impossible because we do not use notify flag at all
-		//			debug("FJA2A impossible because we do not use notify flag at all");
+		//			debug("impossible because we do not use notify flag at all");
 				}
 				else if(ret == 0) {
 					// no completion
-				//	debug("FJA2A break"); usleep(200*1000);
+				//	debug("break"); usleep(200*1000);
 					break;
 				}
 				else {
 					// ????
-		//			debug("FJA2A ???????");
+		//			debug("???????");
 				}
 			}
 		}
 
-	//	debug("FJA2A probe finished"); usleep(200*1000);
+	//	debug("probe finished"); usleep(200*1000);
 		return false;
 	}
 	virtual int get_comm_size() {
@@ -335,6 +344,12 @@ public:
 	void submit_prof_info(int number) {
 		int num_rdma_buffers = MAX_RDMA_BUFFER - num_free_memory_;
 		profiling::g_pis.submitCounter(num_rdma_buffers, "num_rdma_buffers", number);
+		int num_send_count = 0;
+		for(int i = 0; i < c_->size; ++i) {
+			CommTarget& target = c_->proc_info[i];
+			num_send_count += target.send_count - target.start_send_count;
+		}
+		profiling::g_pis.submitCounter(num_send_count, "num_send_count", number);
 	}
 #endif
 
@@ -377,7 +392,7 @@ protected:
 		MY_TRACE;
 		if(fix_system_memory_ == false) {
 			fix_system_memory_ = true;
-			debug("FJA2A fix system memory system_rdma_mem_size=%d", system_rdma_mem_size_);
+			debug("fix system memory system_rdma_mem_size=%d", system_rdma_mem_size_);
 			*data_mem_size = RDMA_BUF_SIZE - system_rdma_mem_size_;
 			return get_pointer<void>(
 					rdma_buffer_pointers_[0], system_rdma_mem_size_);
@@ -427,7 +442,7 @@ private:
 	void initialize_rdma_buffer() {
 		MY_TRACE;
 		if(rdma_buffer_pointers_[0] == NULL) {
-			debug("FJA2A initialize_rdma_buffer");
+			debug("initialize_rdma_buffer");
 			allocate_rdma_buffer(0);
 			num_free_memory_ = MAX_RDMA_BUFFER-1;
 			for(int i = 0; i < num_free_memory_; ++i) {
@@ -446,7 +461,7 @@ private:
 		if(dma_address == FJMPI_RDMA_ERROR) {
 			throw_exception("error on FJMPI_Rdma_reg_mem");
 		}
-		debug("FJA2A allocate_rdma_buffer mem_id=%d, memory=0x%x, size=0x%x", memory_id, pointer, RDMA_BUF_SIZE);
+		debug("allocate_rdma_buffer mem_id=%d, memory=0x%x, size=0x%x", memory_id, pointer, RDMA_BUF_SIZE);
 		local_address_table_[memory_id] = dma_address;
 	}
 
@@ -477,7 +492,7 @@ private:
 			if(address == FJMPI_RDMA_ERROR) {
 				throw_exception("buffer is not registered on the remote host");
 			}
-			debug("FJA2A FJMPI_Rdma_get_remote_addr rank=%d, mem_id=%d, address=0x%"PRIx64, proc_info_[proc_index], memory_id, address);
+			debug("FJMPI_Rdma_get_remote_addr rank=%d, mem_id=%d, address=0x%"PRIx64, proc_info_[proc_index], memory_id, address);
 		}
 		return address + offset;
 	}
@@ -501,7 +516,7 @@ private:
 			}
 			free(remote_address_table_); remote_address_table_ = NULL;
 		}
-		debug("FJA2A grow_remote_address_table");
+		debug("grow_remote_address_table");
 		remote_address_table_ = new_table;
 		num_procs_ = num_procs;
 		num_address_per_proc_ = num_address_per_proc;
@@ -514,15 +529,17 @@ private:
 			int buf_idx = node.send_count % MAX_FLYING_REQ;
 			CommunicationBuffer*& comm_buf = node.send_buf[buf_idx];
 			if(comm_buf != NULL || c_->send_buffer_state(target, buf_idx).state != READY) {
-				debug("FJA2A not ready to=%d, idx=%d(%d), state=%d, offset=%d", pid_from_rank(target),
+				debug("not ready to=%d, idx=%d(%d), state=%d, offset=%d", pid_from_rank(target),
 						node.send_count, buf_idx, c_->send_buffer_state(target, buf_idx).state,
 						offset_from_pointer(&c_->send_buffer_state(target, buf_idx), 0));
 				break;
 			}
+			// To force loading state before loading other information
+			__sync_synchronize();
 			comm_buf = node.send_queue.front();
 			node.send_queue.pop_front();
 			volatile BufferState& buf_state = c_->send_buffer_state(target, buf_idx);
-			debug("FJA2A set_send_buffer to=%d, memory_id=%d, idx=%d(%d), length=%d",
+			debug("set_send_buffer to=%d, memory_id=%d, idx=%d(%d), length=%d",
 					pid_from_rank(target), buf_state.memory_id, node.send_count, buf_idx, comm_buf->length_);
 			int pid = proc_info_[node.proc_index];
 			{
@@ -575,7 +592,7 @@ private:
 			uint64_t raddr = node.remote_buffer_state +
 					sizeof(BufferState) * offset_of_send_buffer_state(c_->rank, buf_idx);
 			uint64_t laddr = local_address_from_pointer(&buf_state, 0);
-			debug("FJA2A set_recv_buffer to=%d, memory_id=%d, idx=%d(%d), state_address=0x%x",
+			debug("set_recv_buffer to=%d, memory_id=%d, idx=%d(%d), state_address=0x%x",
 					pid_from_rank(target), memory_id, node.recv_count, buf_idx, raddr);
 			FJMPI_Rdma_put(pid, tag, raddr, laddr, sizeof(BufferState), node.put_flag);
 			// increment counter
@@ -593,10 +610,12 @@ private:
 			if(comm_buf == NULL || buf_state.state != COMPLETE) {
 				break;
 			}
+			// To force loading state before loading length
+			__sync_synchronize();
 			// receive completed
 			if(buf_state.length == 0) {
 				// received fold completion
-				debug("FJA2A recv complete rank=%d, memory_id=%d, idx=%d(%d), length=0 (finished)",
+				debug("recv complete rank=%d, memory_id=%d, idx=%d(%d), length=0 (finished)",
 						pid_from_rank(target), memory_id_of(comm_buf), node.recv_complete_count, buf_idx);
 				c_->num_recv_active--;
 				c_->handler->free_buffer(comm_buf);
@@ -604,7 +623,7 @@ private:
 			else {
 				// set new buffer for the next receiving
 				comm_buf->length_ = buf_state.length;
-				debug("FJA2A recv complete rank=%d, memory_id=%d, idx=%d(%d), length=%d",
+				debug("recv complete rank=%d, memory_id=%d, idx=%d(%d), length=%d",
 						pid_from_rank(target), memory_id_of(comm_buf), node.recv_complete_count, buf_idx, comm_buf->length_);
 				c_->handler->received(comm_buf, target);
 			}
@@ -642,18 +661,41 @@ public:
 private:
 	virtual T* allocate_new() {
 		MY_TRACE;
-		assert (sizeof(MemoryBlock) <= RDMA_BUF_SIZE);
-		int64_t data_mem_size;
-		void* ptr = this->fix_system_memory(&data_mem_size);
-		if(ptr != NULL) {
-			T* ret = add_memory_blocks(ptr, data_mem_size, 0);
-			if(ret != NULL) {
-				return ret;
+		bool ok = false;
+		pthread_mutex_lock(&this->thread_sync_);
+		// maybe, someone already allocated new buffer
+		if(this->free_list_.size() > 0) {
+			ok = true;
+		}
+		if(ok == false) {
+			// fix system memory and add rest region to the buffers
+			assert (sizeof(MemoryBlock) <= RDMA_BUF_SIZE);
+			int64_t data_mem_size;
+			void* ptr = this->fix_system_memory(&data_mem_size);
+			// is there an empty region ?
+			if(ptr != NULL) {
+				add_memory_blocks(ptr, data_mem_size, 0);
+				if(this->free_list_.size() > 0) {
+					ok = true;
+				}
 			}
 		}
-		int memory_id;
-		ptr = this->allocate_new_rdma_buffer(&memory_id);
-		return add_memory_blocks(ptr, RDMA_BUF_SIZE, memory_id);
+		if(ok == false) {
+			// allocate new memory and add them to the buffers
+			int memory_id;
+			void* ptr = this->allocate_new_rdma_buffer(&memory_id);
+			add_memory_blocks(ptr, RDMA_BUF_SIZE, memory_id);
+			if(this->free_list_.size() > 0) {
+				ok = true;
+			}
+		}
+		T* ret = NULL;
+		if(ok) {
+			ret = this->free_list_.back();
+			this->free_list_.pop_back();
+		}
+		pthread_mutex_unlock(&this->thread_sync_);
+		return ret;
 	}
 	virtual void clear() {
 		clear_pool();
@@ -667,7 +709,7 @@ private:
 		MemoryBlock(int memory_id__) : memory_id(memory_id__) { }
 	};
 
-	T* add_memory_blocks(void* ptr, int64_t mem_size, int memory_id) {
+	void add_memory_blocks(void* ptr, int64_t mem_size, int memory_id) {
 		MY_TRACE;
 		MemoryBlock* buf = (MemoryBlock*)ptr;
 		int64_t num_blocks = mem_size / sizeof(MemoryBlock);
@@ -676,18 +718,12 @@ private:
 			new (&buf[i]) MemoryBlock(memory_id);
 		}
 		// add to free list
-		pthread_mutex_lock(&this->thread_sync_);
-		for(int64_t i = 1; i < num_blocks; ++i) {
+		for(int64_t i = 0; i < num_blocks; ++i) {
 			this->free_list_.push_back(&buf[i]);
 		}
-		pthread_mutex_unlock(&this->thread_sync_);
-		// return the first block
-		if(num_blocks > 0) {
-			return &buf[0];
-		}
-		return NULL;
 	}
 };
+#undef debug
 
 #endif // #ifdef ENABLE_FJMPI_RDMA
 #endif /* FJMPI_COMM_HPP_ */

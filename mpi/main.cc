@@ -64,6 +64,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 	generation_time = MPI_Wtime() - generation_time;
 
 	if(mpi.isMaster()) print_with_prefix("Graph construction");
+	// Create BFS instance and the *COMMUNICATION THREAD*.
 	BfsOnCPU* benchmark = new BfsOnCPU();
 	double construction_time = MPI_Wtime();
 	benchmark->construct(&edge_list);

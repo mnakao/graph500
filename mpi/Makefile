@@ -7,7 +7,7 @@ NVCCFLAGS := -Drestrict=__restrict__ -Xcompiler -fopenmp,-ffast-math,-Wall -arch
 
 GCC_BASE := -fopenmp -g -Wall -Drestrict=__restrict__ -ffast-math -msse4.2 # -pg
 #GCC_BASE := -g -Wall -Drestrict=__restrict__ -ffast-math -msse4.2 # -pg
-FCC_BASE := -Kopenmp -Xg -Drestrict=__restrict__ -g -Nquickdbg=heapchk # -Koptmsg=2
+FCC_BASE := -Kopenmp -Xg -Drestrict=__restrict__ -g #-Nquickdbg=heapchk # -Koptmsg=2
 #FCC_BASE := -Xg -g -Drestrict=__restrict__
 
 MPICC := mpicc

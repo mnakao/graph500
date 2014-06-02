@@ -14,8 +14,8 @@
 // for affinity setting //
 #include <unistd.h>
 
-#if NUMA_BIND
 #include <sched.h>
+#if NUMA_BIND
 #include <numa.h>
 #endif
 
@@ -86,6 +86,20 @@ struct ScopedRegion {
 #define PROF(s) s
 #else
 #define PROF(s)
+#endif
+
+void print_with_prefix(const char* format, ...);
+
+#if DEBUG_PRINT
+#define DEBUG_PRINT_SWITCH_0(...)
+#define DEBUG_PRINT_SWITCH_1(...) print_with_prefix(__VA_ARGS__)
+#define DEBUG_PRINT_SWITCH_2(...) do{if(mpi.isMaster())print_with_prefix(__VA_ARGS__);}while(0)
+#define MAKE_DEBUG_PRINT_SWITCH(val) MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val)
+#define MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val) DEBUG_PRINT_SWITCH_ ## val
+#define debug_print(prefix, ...) MAKE_DEBUG_PRINT_SWITCH\
+	(DEBUG_PRINT_ ## prefix)(#prefix " " __VA_ARGS__)
+#else
+#define debug_print(prefix, ...)
 #endif
 
 #if BACKTRACE_ON_SIGNAL
@@ -175,8 +189,8 @@ int64_t get_time_in_microsecond()
 struct GLOBAL_CLOCK {
 	int64_t clock_start;
 	void init() {
+		MPI_Barrier(MPI_COMM_WORLD);
 		clock_start = get_time_in_microsecond();
-		MPI_Bcast(&clock_start, 1, MpiTypeOf<int64_t>::type, 0, MPI_COMM_WORLD);
 	}
 	int64_t get() {
 		return get_time_in_microsecond() - clock_start;
@@ -441,6 +455,11 @@ int g_GpuIndex = -1;
 
 namespace numa {
 
+int num_omp_threads = 2;
+int num_bfs_threads = 1;
+int next_base_thread_id = 0;
+int next_thread_id = 1;
+
 __thread int thread_id = -1;
 
 void cpu_set_to_string(cpu_set_t *set, std::string& str, int num_procs) {
@@ -474,23 +493,16 @@ void print_current_binding(const char* message) {
 	print_with_prefix("th:%d %s -> [%s]", thread_id, message, str_affinity.c_str());
 }
 
-#if NUMA_BIND
-
-typedef struct cpuid_register_t {
-	unsigned long eax;
-	unsigned long ebx;
-	unsigned long ecx;
-	unsigned long edx;
-} cpuid_register_t;
-
-void cpuid(unsigned long eax, unsigned long ecx, cpuid_register_t *r)
-{
-    __asm__ volatile (
-        "cpuid"
-        :"=a"(r->eax), "=b"(r->ebx), "=c"(r->ecx), "=d"(r->edx)
-        :"a"(eax), "c"(ecx)
-    );
-    return;
+void initialize_num_threads() {
+	num_omp_threads = omp_get_max_threads();
+	const char* bfs_num_threads_str = getenv("BFS_NTHREADS");
+	num_bfs_threads = num_omp_threads - 1;
+	if(bfs_num_threads_str != NULL) {
+		num_bfs_threads = atoi(bfs_num_threads_str);
+	}
+	if(num_bfs_threads == 0) {
+		print_with_prefix("BFS_NTHREADS must be greater than 0");
+	}
 }
 
 class CoreBinding {
@@ -504,6 +516,20 @@ public:
 	virtual int num_logical_CPUs() = 0;
 
 	int num_procs;
+};
+
+class SimpleCoreBinding : public CoreBinding {
+public:
+	SimpleCoreBinding()
+		: CoreBinding()
+	{ }
+
+	virtual int cpu(int tid) {
+		return (tid % num_procs);
+	}
+	virtual int num_logical_CPUs() {
+		return num_procs;
+	}
 };
 
 class ManualCoreBinding : public CoreBinding {
@@ -523,6 +549,24 @@ public:
 
 	std::vector<int> avail_procs;
 };
+
+#if defined(__i386__) || defined(__x86_64__)
+typedef struct cpuid_register_t {
+	unsigned long eax;
+	unsigned long ebx;
+	unsigned long ecx;
+	unsigned long edx;
+} cpuid_register_t;
+
+void cpuid(unsigned long eax, unsigned long ecx, cpuid_register_t *r)
+{
+    __asm__ volatile (
+        "cpuid"
+        :"=a"(r->eax), "=b"(r->ebx), "=c"(r->ecx), "=d"(r->edx)
+        :"a"(eax), "c"(ecx)
+    );
+    return;
+}
 
 class AutoDetectCoreBinding : public CoreBinding {
 public:
@@ -729,26 +773,51 @@ private:
 	int idx_within_numa_node;
 	int num_cores_assgined;
 };
+#endif // #if defined(__i386__) || defined(__x86_64__)
 
 enum AffinityMode {
+	SIMPLE_AFFINITY = 0,
 	AUTO_DETECT = 1,
 	MAPPING_FILE = 2, // Not supported
 	USE_EXISTING_AFFINITY = 3,
 };
 
 CoreBinding *core_binding = NULL;
+#if defined(__i386__) || defined(__x86_64__)
 AffinityMode affinity_mode = AUTO_DETECT;
-bool core_affinity_enabled = false;
-int num_omp_threads = 1;
-int next_base_thread_id = 0;
-int next_thread_id = 0;
-
 __thread int my_apic_id = -1;
+
+inline int get_apic_id() {
+	cpuid_register_t reg;
+	cpuid(0xB, 0, &reg);
+	return reg.edx;
+}
+
+void initialize_core_id() {
+	my_apic_id = get_apic_id();
+}
+
+bool ensure_my_apic_id() {
+	int cur_id = get_apic_id();
+	if(my_apic_id != cur_id) {
+		throw_exception("Fatal error: Affinity is changed unexpectedly!!!(%d -> %d)\n", my_apic_id, cur_id);
+	}
+	return false;
+}
+#else
+AffinityMode affinity_mode = USE_EXISTING_AFFINITY;
+void initialize_core_id() { }
+#endif // #if defined(__i386__) || defined(__x86_64__)
+bool core_affinity_enabled = false;
+
 __thread cpu_set_t initial_affinity;
 
 void print_bind_mode() {
 	const char* mode_str = "Auto";
 	switch(affinity_mode) {
+	case SIMPLE_AFFINITY:
+		mode_str = "Simple Non-NUMA affinity";
+		break;
 	case USE_EXISTING_AFFINITY:
 		mode_str = "Use existing affinity";
 		break;
@@ -757,22 +826,6 @@ void print_bind_mode() {
 		break;
 	}
 	print_with_prefix("Core bind mode: %s", mode_str);
-}
-
-inline int get_apic_id() {
-	cpuid_register_t reg;
-	cpuid(0xB, 0, &reg);
-	return reg.edx;
-}
-
-bool ensure_my_apic_id() {
-#if CPU_BIND_CHECK
-	int cur_id = get_apic_id();
-	if(my_apic_id != cur_id) {
-		throw_exception("Fatal error: Affinity is changed unexpectedly!!!(%d -> %d)\n", my_apic_id, cur_id);
-	}
-#endif
-	return false;
 }
 
 void check_affinity_setting() {
@@ -797,21 +850,13 @@ void internal_set_core_affinity(int cpu) {
 	CPU_SET(cpu, &initial_affinity);
 	sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
 	sleep(0);
-	my_apic_id = get_apic_id();
+	initialize_core_id();
 #if PRINT_BINDING
 	std::string str_affinity;
 	cpu_set_to_string(&initial_affinity, str_affinity, sysconf(_SC_NPROCESSORS_CONF));
 	print_with_prefix("th:%d thread started [%s](%d)", thread_id, str_affinity.c_str(), cpu);
-#endif
+#endif // #if PRINT_BINDING
 	check_affinity_setting();
-}
-
-void set_omp_default_threads() {
-	const char* internal_num_threads_str = getenv("BFS_NTHREADS");
-	if(internal_num_threads_str != NULL) {
-		num_omp_threads = atoi(internal_num_threads_str);
-		omp_set_num_threads(num_omp_threads);
-	}
 }
 
 void* empty_function(void*) { return NULL; }
@@ -829,23 +874,22 @@ void launch_dummy_thread(int num_dummy_threads) {
  * and returns the cpu set the threads are bound to.
  */
 bool get_core_affinity(std::vector<int>& cpu_set) {
-	const char* num_threads_str = getenv("OMP_NUM_THREADS");
-	if(num_threads_str == NULL) {
-		print_with_prefix("USE_EXISTING_AFFINITY needs OMP_NUM_THREADS");
+	if(num_bfs_threads > num_omp_threads) {
+		print_with_prefix("BFS_NTHREADS must be equal or less than OMP_NUM_THREADS");
 		return false;
 	}
-	int num_threads = atoi(num_threads_str);
-	cpu_set.resize(num_threads, 0);
+	int total_threads = std::max(num_omp_threads, num_bfs_threads+1);
+	cpu_set.resize(total_threads, 0);
 	bool core_affinity = false, process_affinity = false;
+	int num_procs = sysconf(_SC_NPROCESSORS_CONF);
 
 #if SGI_OMPLACE_BUG
 	launch_dummy_thread(1);
-#endif
+#endif // #if SGI_OMPLACE_BUG
 
-#pragma omp parallel num_threads(num_threads), reduction(|:core_affinity, process_affinity)
+#pragma omp parallel num_threads(num_omp_threads) reduction(|:core_affinity, process_affinity)
 	{
 		thread_id = omp_get_thread_num();
-		int num_procs = sysconf(_SC_NPROCESSORS_CONF);
 		cpu_set_t set;
 		sched_getaffinity(0, sizeof(set), &set);
 		int cnt = 0;
@@ -863,12 +907,12 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 			for(int i = 0; i < num_procs; i++) {
 				if(CPU_ISSET(i, &set)) {
 					cpu_set[thread_id] = i;
-					internal_set_core_affinity(i);
+					initialize_core_id();
 					break;
 				}
 			}
 		}
-		else if(cnt >= num_threads) {
+		else if(cnt >= total_threads) {
 			// Process affinity is set.
 			process_affinity = true;
 #if PRINT_BINDING
@@ -879,7 +923,7 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 				for(int i = 0; i < num_procs; i++) {
 					if(CPU_ISSET(i, &set)) {
 						cpu_set[cpu_idx++] = i;
-						if(cpu_idx == num_threads) {
+						if(cpu_idx == total_threads) {
 							break;
 						}
 					}
@@ -900,17 +944,16 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 	}
 	if(process_affinity) {
 		if(mpi.isRmaster()) print_with_prefix("Detect process affinity");
-#pragma omp parallel num_threads(num_threads)
+#pragma omp parallel num_threads(num_omp_threads)
 		internal_set_core_affinity(cpu_set[thread_id]);
 	}
 	else {
+		// add remaining cores
+		if(total_threads > num_omp_threads) {
+			cpu_set[num_omp_threads] = num_omp_threads;
+		}
 		if(mpi.isRmaster()) print_with_prefix("Detect core affinity");
 	}
-
-	next_base_thread_id = 1;
-	next_thread_id = num_threads;
-	set_omp_default_threads();
-
 	return true;
 }
 
@@ -919,73 +962,79 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
  */
 void set_core_affinity() {
 	if(thread_id == -1) {
-		// This code assumes that there are no nested openmp parallel sections.
-		if(core_binding->num_logical_CPUs() <= num_omp_threads) {
-			print_with_prefix("th:%d Too many threads.", thread_id);
+		thread_id = __sync_fetch_and_add(&next_base_thread_id, 1);
+		if(core_binding != NULL) {
+			// This code assumes that there are no nested openmp parallel sections.
+			if(core_binding->num_logical_CPUs() <= num_omp_threads) {
+				print_with_prefix("th:%d Too many threads.", thread_id);
+			}
+			int core_id = (thread_id % core_binding->num_logical_CPUs());
+			if(core_affinity_enabled) {
+				int cpu = core_binding->cpu(thread_id);
+				internal_set_core_affinity(cpu);
+			}
 		}
-		int core_id;
-		do {
-			thread_id = __sync_fetch_and_add(&next_base_thread_id, 1);
-			core_id = (thread_id % core_binding->num_logical_CPUs());
-		} while(thread_id != 0 && core_id < num_omp_threads);
-		if(core_affinity_enabled) {
-			int cpu = core_binding->cpu(thread_id);
-			internal_set_core_affinity(cpu);
+		else {
+#if PRINT_BINDING
+			print_current_binding("started");
+#endif
 		}
-		set_omp_default_threads();
+		if((mpi.thread_level == MPI_THREAD_SINGLE) || thread_id == 0) {
+			omp_set_num_threads(num_bfs_threads);
+		}
 	}
+#if CPU_BIND_CHECK
 	else if(core_affinity_enabled) {
 		ensure_my_apic_id();
 	}
+#endif
 }
 
 void set_omp_core_affinity() {
 	if(thread_id == -1) {
-		// This code assumes that there are no nested openmp parallel sections.
-		int core_id;
-		do {
+		if(core_binding != NULL) {
+			// This code assumes that there are no nested openmp parallel sections.
+			int core_id;
+			do {
+				thread_id = __sync_fetch_and_add(&next_thread_id, 1);
+				core_id = (thread_id % core_binding->num_logical_CPUs());
+			} while(thread_id == 0 || core_id >= num_bfs_threads);
+			if(core_affinity_enabled) {
+				int cpu = core_binding->cpu(thread_id);
+				internal_set_core_affinity(cpu);
+			}
+		}
+		else {
 			thread_id = __sync_fetch_and_add(&next_thread_id, 1);
-			core_id = (thread_id % core_binding->num_logical_CPUs());
-		} while(thread_id == 0 || core_id >= num_omp_threads);
-		if(core_affinity_enabled) {
-			int cpu = core_binding->cpu(thread_id);
-			internal_set_core_affinity(cpu);
+#if PRINT_BINDING
+			print_current_binding("started");
+#endif
 		}
 	}
+#if CPU_BIND_CHECK
 	else if(core_affinity_enabled) {
 		ensure_my_apic_id();
 	}
+#endif
 }
+
 #define SET_AFFINITY numa::set_core_affinity()
 #define SET_OMP_AFFINITY numa::set_omp_core_affinity()
-#else
-int next_thread_id = 0;
-
-void check_thread_started() {
-#if PRINT_BINDING
-	if(thread_id == -1) {
-		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
-		print_current_binding("started");
-	}
-#endif
-}
-
-#define SET_AFFINITY numa::check_thread_started()
-#define SET_OMP_AFFINITY numa::check_thread_started()
-#endif
 
 void set_affinity()
 {
 	const char* num_node_str = getenv("MPI_NUM_NODE");
-	if(num_node_str == NULL) {
-		if(mpi.rank == mpi.size_ - 1) {
-			print_with_prefix("Error: failed to get # of node. Please set MPI_NUM_NODE=<# of node>");
+	int num_node;
+	if(num_node_str != NULL) {
+		num_node = atoi(num_node_str);
+	}
+	else {
+		num_node = mpi.size_;
+		if(mpi.isRmaster()) {
+			print_with_prefix("Warning: failed to get # of node (MPI_NUM_NODE=<# of node>). We assume 1 process per node");
 		}
-		return ;
 	}
 	const char* dist_round_robin = getenv("MPI_ROUND_ROBIN");
-	int num_node = atoi(num_node_str);
-
 	int max_procs_per_node = (mpi.size_ + num_node - 1) / num_node;
 	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
 	g_GpuIndex = proc_rank;
@@ -1019,7 +1068,6 @@ void set_affinity()
 		}
 	}
 #endif
-#if NUMA_BIND
 	num_omp_threads = omp_get_max_threads();
 	const char* core_bind = getenv("CORE_BIND");
 	if(core_bind != NULL) {
@@ -1029,7 +1077,7 @@ void set_affinity()
 	if(affinity_mode == USE_EXISTING_AFFINITY) {
 		std::vector<int> cpu_set;
 		if(get_core_affinity(cpu_set) == false) {
-			core_affinity_enabled = false;
+			affinity_mode = SIMPLE_AFFINITY;
 		}
 		else {
 			core_affinity_enabled = true;
@@ -1037,6 +1085,11 @@ void set_affinity()
 			if(mpi.isRmaster()) print_with_prefix("Core affinity is enabled (using existing affinigy)");
 		}
 	}
+	if(affinity_mode == SIMPLE_AFFINITY) {
+		core_affinity_enabled = true;
+		core_binding = new SimpleCoreBinding();
+	}
+#if NUMA_BIND
 	if(core_binding == NULL) {
 		AutoDetectCoreBinding* topology = new AutoDetectCoreBinding(max_procs_per_node, proc_rank);
 		if(max_procs_per_node > 1) {
@@ -1112,6 +1165,10 @@ void set_affinity()
 	if(mpi.isMaster()) {
 		  print_with_prefix("Y dimension is %s", mpi.isYdimAvailable() ? "Enabled" : "Disabled");
 	}
+	// set main thread's affinity
+	set_core_affinity();
+	next_base_thread_id = num_omp_threads;
+	next_thread_id = 1;
 }
 
 } // namespace numa
@@ -1287,9 +1344,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	mpi.rank_y = mpi.rank_2dr;
 	mpi.rank_z = 0;
 
-	// enables nested
-	omp_set_nested(0);
-
 	// change default error handler
 	MPI_File_set_errhandler(MPI_FILE_NULL, MPI_ERRORS_ARE_FATAL);
 
@@ -1335,6 +1389,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	}
 
 	// set affinity
+	numa::initialize_num_threads();
 	if(getenv("NO_AFFINITY") == NULL) {
 		numa::set_affinity();
 	}
@@ -2887,9 +2942,8 @@ private:
 
 namespace backtrace {
 
-#define SPIN_LOCK(lock) while(__sync_bool_compare_and_swap(&(lock), 0, 1) == false)
-// this CAS will never be failed. We use __sync function to enable memory barrier here.
-#define SPIN_UNLOCK(lock) __sync_bool_compare_and_swap(&(lock), 1, 0)
+#define SPIN_LOCK(lock) pthread_mutex_lock(&(lock))
+#define SPIN_UNLOCK(lock) pthread_mutex_unlock(&(lock))
 
 struct StackFrame {
 	PROF(int64_t enter_clock;)
@@ -2897,22 +2951,49 @@ struct StackFrame {
 	int line;
 };
 
+struct PrintBuffer {
+	char* buffer;
+	int length;
+	int capacity;
+
+	PrintBuffer() {
+		length = 0;
+		capacity = 16*1024*1024;
+		buffer = (char*)malloc(capacity);
+		buffer[0] = '\0';
+	}
+
+	~PrintBuffer() {
+		free(buffer); buffer = NULL;
+	}
+
+	void clear() {
+		length = 0;
+		buffer[0] = '\0';
+	}
+
+	void add(const char* fmt, va_list arg) {
+	}
+};
+
 struct ThreadStack {
 	int tid;
-	volatile int* lock;
-	const std::vector<StackFrame>* frames;
+	pthread_mutex_t* lock;
+	std::vector<StackFrame>* frames;
+	PrintBuffer* pbuf;
 };
 
 std::vector<ThreadStack>* thread_stacks = NULL;
-volatile int thread_stack_lock = 0;
+pthread_mutex_t thread_stack_lock = PTHREAD_MUTEX_INITIALIZER;
 volatile int next_thread_id = 0;
 volatile bool finish_backtrace_thread = false;
 pthread_t backtrace_thread;
 
 __thread bool disable_trace = false;
 __thread int thread_id = -1;
-__thread volatile int stack_frame_lock = 0;
+__thread pthread_mutex_t stack_frame_lock = PTHREAD_MUTEX_INITIALIZER;
 __thread std::vector<StackFrame>* stack_frames = NULL;
+__thread PrintBuffer* pbuf;
 
 void* backtrace_thread_routine(void* p) {
 	char filename[300];
@@ -2922,6 +3003,7 @@ void* backtrace_thread_routine(void* p) {
 	if(fp == NULL) {
 		throw_exception("failed to open the file %s", filename);
 	}
+	fprintf(fp, "===== Backtrace File Rank=%d =====\n", mpi.rank);
 
 	sigset_t set;
 	sigemptyset(&set);
@@ -2968,6 +3050,22 @@ void* backtrace_thread_routine(void* p) {
 	return NULL;
 }
 
+void buffered_print(const char* format, ...) {
+	char buf[300];
+	SPIN_LOCK(stack_frame_lock);
+	va_list arg;
+	va_start(arg, format);
+    vsnprintf(buf, sizeof(buf), format, arg);
+    va_end(arg);
+	if(pbuf->length + sizeof(buf) + 1 >= pbuf->capacity) {
+		pbuf->capacity *= 2;
+		pbuf->buffer = (char*)realloc(pbuf->buffer, pbuf->capacity);
+	}
+	pbuf->length += snprintf(pbuf->buffer + pbuf->length, sizeof(buf),
+			"[r:%d,%f] %s\n", mpi.rank, global_clock.get() / 1000000.0, buf);
+	SPIN_UNLOCK(stack_frame_lock);
+}
+
 void start_thread() {
 	pthread_create(&backtrace_thread, NULL, backtrace_thread_routine, NULL);
 }
@@ -2994,11 +3092,13 @@ extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *
 		// initialize thread local storage
 		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
 		stack_frames = new std::vector<StackFrame>();
+		pbuf = new PrintBuffer();
 		// add thread info to thread_stacks
 		ThreadStack th;
 		th.tid = thread_id;
 		th.lock = &stack_frame_lock;
 		th.frames = stack_frames;
+		th.pbuf = pbuf;
 
 		SPIN_LOCK(thread_stack_lock);
 		if(finish_backtrace_thread == false) {
@@ -3014,6 +3114,7 @@ extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *
 	if(finish_backtrace_thread) {
 		if(stack_frames != NULL) {
 			delete stack_frames; stack_frames = NULL;
+			delete pbuf; pbuf = NULL;
 		}
 	}
 	else {
