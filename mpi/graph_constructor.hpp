@@ -500,7 +500,7 @@ private:
 			if(mpi.isMaster()) print_with_prefix("MPI_Allreduce...");
 #endif
 
-			MPI_Allreduce(MPI_IN_PLACE, &max_vertex, 1, MpiTypeOf<uint64_t>::type, MPI_BOR, mpi.comm_2d);
+			MPI_Allreduce(MPI_IN_PLACE, &max_vertex, 1, MpiTypeOf<uint64_t>::type, MPI_BOR, MPI_COMM_WORLD);
 
 #if NETWORK_PROBLEM_AYALISYS
 			if(mpi.isMaster()) print_with_prefix("OK! ");
@@ -693,7 +693,7 @@ private:
 		int64_t num_max_edges = g.row_starts_[non_zero_rows];
 		MPI_Allreduce(MPI_IN_PLACE, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
 		int num_loops = get_blocks<EdgeList::CHUNK_SIZE*4>(num_max_edges);
-		int64_t bitmap_chunk_size = get_blocks(row_bitmap_length, num_loops);
+		int64_t bitmap_chunk_size = (num_loops == 0) ? 0 : get_blocks(row_bitmap_length, num_loops);
 
 		if(mpi.isMaster()) print_with_prefix("Start sorting by degree. %d iterations.", num_loops);
 		for(int loop = 0; loop < num_loops; ++loop) {
@@ -759,7 +759,7 @@ private:
 		g.row_starts_[non_zero_rows] -= non_zero_rows;
 		g.edge_array_ = static_cast<TwodVertex*>(realloc(g.edge_array_,
 				g.row_starts_[non_zero_rows] * sizeof(TwodVertex)));
-		if(g.edge_array_ == NULL) {
+		if(g.row_starts_[non_zero_rows] != 0 && g.edge_array_ == NULL) {
 			throw_exception("Out of memory trying to re-allocate edge array");
 		}
 #endif
@@ -1337,15 +1337,17 @@ private:
 			sort2(src_vertexes_ + edge_offset, g.edge_array_ + edge_offset, edge_count, SortEdgeCompair());
 
 			int64_t idx = edge_offset;
-			uint64_t prev_v = (uint64_t(src_vertexes_[idx]) << 48) | g.edge_array_[idx]; ++idx;
-			for(int64_t c = edge_offset+1; c < edge_offset + edge_count; ++c) {
-				const uint64_t sort_v = (uint64_t(src_vertexes_[c]) << 48) | g.edge_array_[c];
-				if(prev_v != sort_v) {
-					assert (prev_v < sort_v);
-					g.edge_array_[idx] = g.edge_array_[c];
-					src_vertexes_[idx] = src_vertexes_[c];
-					prev_v = sort_v;
-					++idx;
+			if(edge_count > 0) {
+				uint64_t prev_v = (uint64_t(src_vertexes_[idx]) << 48) | g.edge_array_[idx]; ++idx;
+				for(int64_t c = edge_offset+1; c < edge_offset + edge_count; ++c) {
+					const uint64_t sort_v = (uint64_t(src_vertexes_[c]) << 48) | g.edge_array_[c];
+					if(prev_v != sort_v) {
+						assert (prev_v < sort_v);
+						g.edge_array_[idx] = g.edge_array_[c];
+						src_vertexes_[idx] = src_vertexes_[c];
+						prev_v = sort_v;
+						++idx;
+					}
 				}
 			}
 			row_starts_sup_[i] = idx - edge_offset;
@@ -1382,7 +1384,7 @@ private:
 
 		 int64_t num_edge_sum[2] = {0};
 		 int64_t num_edge[2] = {old_num_edges, rowstart_new};
-		MPI_Reduce(num_edge, num_edge_sum, 2, MPI_INT64_T, MPI_SUM, 0, mpi.comm_2d);
+		MPI_Reduce(num_edge, num_edge_sum, 2, MPI_INT64_T, MPI_SUM, 0, MPI_COMM_WORLD);
 		if(mpi.isMaster()) print_with_prefix("# of edges is reduced. Total %zd -> %zd Diff %f %%",
 				num_edge_sum[0], num_edge_sum[1], (double)(num_edge_sum[0] - num_edge_sum[1])/(double)num_edge_sum[0]*100.0);
 		g.num_global_edges_ = num_edge_sum[1];
@@ -1395,13 +1397,14 @@ private:
 		for(int i = 0; i < mpi.size_2dc; ++i) recvcounts[i] = local_bitmap_width;
 
 		g.has_edge_bitmap_ = (BitmapType*)cache_aligned_xmalloc(local_bitmap_width*sizeof(BitmapType));
-		MPI_Reduce_scatter(g.row_bitmap_, g.has_edge_bitmap_, recvcounts, MpiTypeOf<BitmapType>::type, MPI_BOR, mpi.comm_2dr);
+		if(!mpi.isPadding2D)
+			MPI_Reduce_scatter(g.row_bitmap_, g.has_edge_bitmap_, recvcounts, MpiTypeOf<BitmapType>::type, MPI_BOR, mpi.comm_2dr);
 		int64_t num_vertices = 0;
 #pragma omp parallel for reduction(+:num_vertices)
 		for(int i = 0; i < local_bitmap_width; ++i) {
 			num_vertices += __builtin_popcountl(g.has_edge_bitmap_[i]);
 		}
-		MPI_Allreduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
+		MPI_Allreduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, MPI_COMM_WORLD);
 		VERVOSE(int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_);
 		VERVOSE(if(mpi.isMaster()) print_with_prefix("# of actual vertices %f G %f %%", to_giga(num_vertices),
 				(double)num_vertices / (double)num_virtual_vertices * 100.0));

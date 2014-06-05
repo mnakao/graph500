@@ -239,6 +239,11 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 {
 	VT_TRACER("generation");
 	typedef typename EdgeList::edge_type EdgeType;
+	if(mpi.isPadding2D) {
+		edge_list->beginWrite();
+		edge_list->endWrite();
+		return ;
+	}
 	EdgeType* edge_buffer = static_cast<EdgeType*>
 						(cache_aligned_xmalloc(EdgeList::CHUNK_SIZE*sizeof(EdgeType)));
 	edge_list->beginWrite();
@@ -329,6 +334,11 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 {
 	VT_TRACER("redistribution");
 	typedef typename EdgeList::edge_type EdgeType;
+	if(mpi.isPadding2D)  {
+		edge_list->beginWrite();
+		edge_list->endWrite();
+		return ;
+	}
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
 			xMPI_Alloc_mem(EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
@@ -393,6 +403,11 @@ template <typename EdgeList>
 void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::no_weight dummy = 0)
 {
 	typedef typename EdgeList::edge_type EdgeType;
+	if(mpi.isPadding2D)  {
+		edge_list->beginWrite();
+		edge_list->endWrite();
+		return ;
+	}
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
 			xMPI_Alloc_mem(EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
@@ -512,7 +527,7 @@ void find_roots(GraphType& g, int64_t* bfs_roots, int& num_bfs_roots)
 			}
 			if (is_duplicate) continue; /* Everyone takes the same path here */
 			int root_ok = (int)g.has_edge(root);
-			MPI_Allreduce(MPI_IN_PLACE, &root_ok, 1, MPI_INT, MPI_LOR, mpi.comm_2d);
+			MPI_Allreduce(MPI_IN_PLACE, &root_ok, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
 			if (root_ok) break;
 		}
 		bfs_roots[bfs_root_idx] = root;
@@ -524,18 +539,20 @@ template <typename GraphType>
 int64_t find_max_used_vertex(GraphType& g)
 {
 	int64_t max_used_vertex = 0;
-	const int64_t nlocal = int64_t(1) << g.log_actual_local_verts();
-	for (int64_t i = nlocal; (i > 0) && (max_used_vertex == 0); --i) {
-		int64_t local = i - 1;
-		for(int64_t j = mpi.size_2dr; (j > 0) && (max_used_vertex == 0); --j) {
-			int64_t r = j - 1;
-			int64_t v0 = local * mpi.size_2d + mpi.rank_2dc * mpi.size_2dr + r;
-			if (g.has_edge(v0)) {
-				max_used_vertex = v0;
+	if(!mpi.isPadding2D) {
+		const int64_t nlocal = int64_t(1) << g.log_actual_local_verts();
+		for (int64_t i = nlocal; (i > 0) && (max_used_vertex == 0); --i) {
+			int64_t local = i - 1;
+			for(int64_t j = mpi.size_2dr; (j > 0) && (max_used_vertex == 0); --j) {
+				int64_t r = j - 1;
+				int64_t v0 = local * mpi.size_2d + mpi.rank_2dc * mpi.size_2dr + r;
+				if (g.has_edge(v0)) {
+					max_used_vertex = v0;
+				}
 			}
 		}
 	}
-	MPI_Allreduce(MPI_IN_PLACE, &max_used_vertex, 1, MPI_INT64_T, MPI_MAX, mpi.comm_2d);
+	MPI_Allreduce(MPI_IN_PLACE, &max_used_vertex, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
 	return max_used_vertex;
 }
 

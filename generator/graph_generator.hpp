@@ -240,7 +240,7 @@ public:
 		}
 		int64_t written_size = write_offset_ + write_buffer_filled_size_;
 		MPI_Allreduce(&written_size, &max_edge_size_among_all_procs_,
-				1, MPI_INT64_T, MPI_MAX, mpi.comm_2d);
+				1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
 	}
 
 	int64_t num_local_edges() { return num_local_edges_; }

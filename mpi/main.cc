@@ -101,7 +101,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 		double time_left = PRE_EXEC_TIME;
         for(int c = root_start; time_left > 0.0; ++c) {
                 if(mpi.isMaster())  print_with_prefix("========== Pre Running BFS %d ==========", c);
-                MPI_Barrier(mpi.comm_2d);
+                MPI_Barrier(MPI_COMM_WORLD);
                 double bfs_time = MPI_Wtime();
                 benchmark->run_bfs(bfs_roots[c % num_bfs_roots], pred);
                 bfs_time = MPI_Wtime() - bfs_time;
@@ -109,7 +109,7 @@ void graph500_bfs(int SCALE, int edgefactor)
                         print_with_prefix("Time for BFS %d is %f", c, bfs_time);
                         time_left -= bfs_time;
                 }
-               MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
+               MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         }
 /////////////////////
 //	for(int i = root_start; i < num_bfs_roots; ++i) {
@@ -119,7 +119,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 #if ENABLE_FUJI_PROF
 		fapp_start("bfs", i, 1);
 #endif
-		MPI_Barrier(mpi.comm_2d);
+		MPI_Barrier(MPI_COMM_WORLD);
 		PROF(profiling::g_pis.reset());
 		bfs_times[i] = MPI_Wtime();
 		benchmark->run_bfs(bfs_roots[i], pred);
@@ -232,12 +232,7 @@ int main(int argc, char** argv)
 
 	setup_globals(argc, argv, SCALE, edgefactor);
 
-	if(mpi.isPadding2D == false) {
-		graph500_bfs(SCALE, edgefactor);
-	}
-	//	test02(SCALE, edgefactor);
-
-	MPI_Barrier(MPI_COMM_WORLD);
+	graph500_bfs(SCALE, edgefactor);
 
 	cleanup_globals();
 	return 0;

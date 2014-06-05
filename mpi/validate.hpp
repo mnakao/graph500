@@ -507,22 +507,26 @@ public:
  * vertex; this is based on the predecessor map if the user didn't provide it.
  * */
 template <typename EdgeList>
-int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64_t* const edge_visit_count_ptr)
+bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64_t* const edge_visit_count_ptr)
 {
-#if PRINT_VALIDATION_TIME_DETAIL
-	double validate_start = MPI_Wtime();
-#endif
   assert (pred);
   *edge_visit_count_ptr = 0; /* Ensure it is a valid pointer */
   int64_t error_counts = 0;
+
+  if(mpi.isPadding2D) {
+	  for(int i = 0; i < 4; ++i) {
+		  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+		  if (error_counts) return false; /* Fail */
+	  }
+	  return true;
+  }
+
   error_counts += check_value_ranges(nglobalverts, nlocalverts, pred);
   if (root < 0 || root >= nglobalverts) {
 	print_with_prefix("Validation error: root vertex %" PRId64 " is invalid.", root);
   }
-  if (error_counts) return 0; /* Fail */
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
-#endif
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #1
+  if (error_counts) return false; /* Fail */
   assert (pred);
 
   int root_owner = vertex_owner(root);
@@ -541,12 +545,9 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 	  ++error_counts;
 	}
   }
-  if (error_counts) return 0; /* Fail */
+  if (error_counts) return false; /* Fail */
 
   assert (pred);
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
-#endif
 
   /* Check that nothing else is its own parent. */
   {
@@ -577,12 +578,10 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 	free(pred_owner);
 	free(pred_local);
   }
-  if (error_counts) return 0; /* Fail */
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #2
+  if (error_counts) return false; /* Fail */
 
   assert (pred);
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
-#endif
 
   if (true) { // TODO:
 	  error_counts += check_bfs_depth_map_using_predecessors(root, pred);
@@ -590,10 +589,8 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 	/* Create a vertex depth map to use for later validation. */
 	  error_counts += build_bfs_depth_map(root, pred);
   }
-  if (error_counts) return 0; /* Fail */
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
-#endif
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #3
+  if (error_counts) return false; /* Fail */
 
   {
 	/* Check that all edges connect vertices whose depths differ by at most
@@ -604,11 +601,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 	ScatterContext scatter_c(mpi.comm_2dc);
 	unsigned char* restrict pred_valid = (unsigned char*)cache_aligned_xmalloc(nlocalverts * sizeof(unsigned char));
 	memset(pred_valid, 0, nlocalverts * sizeof(unsigned char));
-#if PRINT_VALIDATION_TIME_DETAIL
-	int64_t n_send_pred = 0;
-	double main_loop_start = MPI_Wtime();
-	double inner_computation_time[12] = {0.0};
-#endif
 	int64_t edge_visit_count = 0;
 
 	const int rmask = ((1 << get_msb_index(mpi.size_2dr)) - 1);
@@ -623,19 +615,12 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 	for(int loop_count = 0; loop_count < num_loops && error_counts == 0; ++loop_count) {
 		EdgeType* edge_data;
 		const int bufsize = edge_list->read(&edge_data);
-#if PRINT_VALIDATION_TIME_DETAIL
-		double prev_time = MPI_Wtime();
-		double time;
-#endif
 		assert (bufsize <= chunksize_);
 		//begin_gather(pred_win);
 		int* restrict local_indices_r = (int*)cache_aligned_xmalloc(chunksize_ * sizeof(int));
 		int* restrict remote_indices_r = (int*)page_aligned_xmalloc(chunksize_ * sizeof(int));
 		int* restrict local_indices_c = (int*)cache_aligned_xmalloc(chunksize_ * sizeof(int));
 		int* restrict remote_indices_c = (int*)page_aligned_xmalloc(chunksize_ * sizeof(int));
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[0] += time - prev_time; prev_time = time;
-#endif
 #pragma omp parallel
 		{
 			int *count_r = scatter_r.get_counts();
@@ -661,9 +646,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 				scatter_c.sum();
 				assert (scatter_r.get_send_count() == bufsize);
 				assert (scatter_c.get_send_count() == bufsize);
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[1] += time - prev_time; prev_time = time;
-#endif
 			} // #pragma omp master
 #pragma omp barrier
 			;
@@ -683,9 +665,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 			  //add_gather_request(pred_win, i * 2 + 1, edge_owner[i * 2 + 1], edge_local[i * 2 + 1], i * 2 + 1);
 			}
 		} // #pragma omp parallel
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[2] += time - prev_time; prev_time = time;
-#endif
 		int* restrict reply_indices_r = scatter_r.scatter(remote_indices_r);
 		int recv_count_r = scatter_r.get_recv_count();
 		int* restrict reply_indices_c = scatter_c.scatter(remote_indices_c);
@@ -695,9 +674,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 		int64_t* restrict reply_data_r = (int64_t*)page_aligned_xmalloc(recv_count_r * sizeof(int64_t));
 		int64_t* restrict reply_data_c = (int64_t*)page_aligned_xmalloc(recv_count_c * sizeof(int64_t));
 
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[3] += time - prev_time; prev_time = time;
-#endif
 #pragma omp parallel for
 		for (int i = 0; i < recv_count_r; ++i) {
 			reply_data_r[i] = pred[reply_indices_r[i]];
@@ -706,10 +682,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 		for (int i = 0; i < recv_count_c; ++i) {
 			reply_data_c[i] = pred[reply_indices_c[i]];
 		}
-#if PRINT_VALIDATION_TIME_DETAIL
-		n_send_pred += (ptrdiff_t)recv_offsets[size];
-		time = MPI_Wtime(); inner_computation_time[4] += time - prev_time; prev_time = time;
-#endif
 
 		scatter_r.free(reply_indices_r); reply_indices_r = NULL;
 		scatter_c.free(reply_indices_c); reply_indices_c = NULL;
@@ -719,9 +691,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 		int64_t* restrict recv_pred_c = scatter_c.gather(reply_data_c);
 		free(reply_data_r); reply_data_r = NULL;
 		free(reply_data_c); reply_data_c = NULL;
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[5] += time - prev_time; prev_time = time;
-#endif
 
 		int64_t* restrict edge_preds = (int64_t*)cache_aligned_xmalloc(2 * chunksize_ * sizeof(int64_t));
 
@@ -741,9 +710,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 		//begin_scatter_constant(pred_valid_win);
 		MPI_Aint* restrict remote_valid_indices_r = (MPI_Aint*)page_aligned_xmalloc(chunksize_ * sizeof(MPI_Aint));
 		MPI_Aint* restrict remote_valid_indices_c = (MPI_Aint*)page_aligned_xmalloc(chunksize_ * sizeof(MPI_Aint));
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[6] += time - prev_time; prev_time = time;
-#endif
 
 #pragma omp parallel
 		{
@@ -785,9 +751,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 			{
 				scatter_r.sum();
 				scatter_c.sum();
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[7] += time - prev_time; prev_time = time;
-#endif
 			} // #pragma omp master
 #pragma omp barrier
 			;
@@ -805,9 +768,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 			  }
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[8] += time - prev_time; prev_time = time;
-#endif
 
 		MPI_Aint* restrict recv_valid_indices_r = scatter_r.scatter(remote_valid_indices_r);
 		recv_count_r = scatter_r.get_recv_count();
@@ -815,9 +775,6 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 		recv_count_c = scatter_c.get_recv_count();
 		free(remote_valid_indices_r); remote_valid_indices_r = NULL;
 		free(remote_valid_indices_c); remote_valid_indices_c = NULL;
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[9] += time - prev_time; prev_time = time;
-#endif
 
 #pragma omp parallel for
 		for (int i = 0; i < recv_count_r; ++i) {
@@ -830,22 +787,13 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 
 		MPI_Free_mem(recv_valid_indices_r);
 		MPI_Free_mem(recv_valid_indices_c);
-#if PRINT_VALIDATION_TIME_DETAIL
-		time = MPI_Wtime(); inner_computation_time[10] += time - prev_time; prev_time = time;
-#endif
 		free(edge_preds); edge_preds = NULL;
 		//end_scatter_constant(pred_valid_win);
 	}
 	edge_list->endRead();
-#if PRINT_VALIDATION_TIME_DETAIL
-	double main_loop_time = MPI_Wtime() - main_loop_start;
-#endif
 	//destroy_gather(pred_win);
 
 	//destroy_scatter_constant(pred_valid_win);
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
-#endif
 	ptrdiff_t i;
 #pragma omp parallel for
 	for (i = 0; i < (ptrdiff_t)nlocalverts; ++i) {
@@ -863,29 +811,10 @@ int validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int64
 
 	MPI_Allreduce(MPI_IN_PLACE, &edge_visit_count, 1, MPI_INT64_T, MPI_SUM, mpi.comm_2d);
 	*edge_visit_count_ptr = edge_visit_count;
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0){
-		const int num_times = 11;
-		print_with_prefix("main loop total:%f", main_loop_time);
-		double inner_total = 0.0;
-		for(i = 0; i < num_times; ++i){
-			inner_total += inner_computation_time[i];
-			print_with_prefix("#%d:%f", (int)i, inner_computation_time[i]);
-		}
-		print_with_prefix("inner loop total:%f", inner_total);
-	}
-  //  print_with_prefix("R:%d,n_send_pred=%"PRId64"", mpi.rank_2d, n_send_pred);
-#endif
   }
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
-#endif
 
   /* Collect the global validation result. */
-  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, mpi.comm_2d);
-#if PRINT_VALIDATION_TIME_DETAIL
-	if(rank == 0) print_with_prefix("L:%d,time:%f", __LINE__, MPI_Wtime() - validate_start);
-#endif
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #4
   return error_counts == 0;
 }
 
@@ -930,7 +859,6 @@ int64_t check_value_ranges(const int64_t nglobalverts, const int64_t nlocalverts
         }
       }
     }
-  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_LOR, mpi.comm_2d);
   return error_counts;
 }
 

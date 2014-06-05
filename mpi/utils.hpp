@@ -141,6 +141,10 @@ struct MPI_GLOBALS {
 	int rank_z2;
 	int size_Z1;
 	int size_Z2;
+	int size_w2dr;
+	int size_w2dc;
+	MPI_Comm comm_w2dr;
+	MPI_Comm comm_w2dc;
 
 	// utility method
 	bool isMaster() const { return rank == 0; }
@@ -1219,6 +1223,10 @@ static void setup_2dcomm(bool row_major)
 	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
+	mpi.comm_w2dr = mpi.comm_2dr; mpi.size_w2dr = mpi.size_2dr;
+	mpi.comm_w2dc = mpi.comm_2dc; mpi.size_w2dc = mpi.size_2dc;
+	mpi.size_Z1 = 1; mpi.rank_z1 = 0;
+	mpi.size_Z2 = 1; mpi.rank_z2 = 0;
 	mpi.isRowMajor = row_major;
 }
 
@@ -1229,17 +1237,18 @@ static void setup_2dcomm_on_3d()
 
 	const char* treed_map_str = getenv("TREED_MAP");
 	if(treed_map_str) {
-		int X, Y, Z1, Z2, A, B;
+		int X, Y, Z1, Z2;
 		sscanf(treed_map_str, "%dx%dx%dx%d", &X, &Y, &Z1, &Z2);
-		A = X * Z1;
-		B = Y * Z2;
-		mpi.size_2dr = 1 << get_msb_index(A);
-		mpi.size_2dc = 1 << get_msb_index(B);
+		mpi.size_w2dr = X * Z1;
+		mpi.size_w2dc = Y * Z2;
+		mpi.size_2dr = 1 << get_msb_index(mpi.size_w2dr);
+		mpi.size_2dc = 1 << get_msb_index(mpi.size_w2dc);
 		mpi.size_Z1 = Z1;
 		mpi.size_Z2 = Z2;
 
-		if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%dx%dx%d) -> (%dx%d) -> (%dx%d)", X, Y, Z1, Z2, A, B, mpi.size_2dr, mpi.size_2dc);
-		if(mpi.size_ < A*B) {
+		if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%dx%dx%d) -> (%dx%d) -> (%dx%d)",
+				X, Y, Z1, Z2, mpi.size_w2dr, mpi.size_w2dc, mpi.size_2dr, mpi.size_2dc);
+		if(mpi.size_ < mpi.size_w2dr*mpi.size_w2dc) {
 			if(mpi.isMaster()) print_with_prefix("Error: There are not enough processes.");
 		}
 
@@ -1254,10 +1263,30 @@ static void setup_2dcomm_on_3d()
 		mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
 		mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
 		mpi.isPadding2D = (mpi.rank_2dr >= mpi.size_2dr || mpi.rank_2dc >= mpi.size_2dc) ? true : false;
+
 		MPI_Comm_split(MPI_COMM_WORLD, mpi.isPadding2D ? 1 : 0, mpi.rank_2d, &mpi.comm_2d);
 		if(mpi.isPadding2D == false) {
 			MPI_Comm_split(mpi.comm_2d, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
 			MPI_Comm_split(mpi.comm_2d, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
+		}
+		else {
+			mpi.comm_2dc = MPI_COMM_NULL;
+			mpi.comm_2dr = MPI_COMM_NULL;
+		}
+
+		if(mpi.size_w2dr != mpi.size_2dr) {
+			int color = mpi.rank_2dc < mpi.size_2dc ? mpi.rank_2dc : MPI_UNDEFINED;
+			MPI_Comm_split(MPI_COMM_WORLD, color, mpi.rank_2dr, &mpi.comm_w2dc);
+		}
+		else {
+			mpi.comm_w2dc = mpi.comm_2dc;
+		}
+		if(mpi.size_w2dc != mpi.size_2dc) {
+			int color = mpi.rank_2dr < mpi.size_2dr ? mpi.rank_2dr : MPI_UNDEFINED;
+			MPI_Comm_split(MPI_COMM_WORLD, color, mpi.rank_2dc, &mpi.comm_w2dr);
+		}
+		else {
+			mpi.comm_w2dr = mpi.comm_2dr;
 		}
 	}
 	else if((1 << log_size) != mpi.size_) {
@@ -1269,6 +1298,8 @@ static void setup_2dcomm_on_3d()
 void cleanup_2dcomm()
 {
 	MPI_Comm_free(&mpi.comm_2d);
+	if(mpi.comm_2dr != mpi.comm_w2dr) MPI_Comm_free(&mpi.comm_w2dr);
+	if(mpi.comm_2dc != mpi.comm_w2dc) MPI_Comm_free(&mpi.comm_w2dc);
 	if(mpi.isPadding2D == false) {
 		MPI_Comm_free(&mpi.comm_2dr);
 		MPI_Comm_free(&mpi.comm_2dc);
@@ -1342,9 +1373,9 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	}
 
 	// Initialize comm_[yz]
-	mpi.comm_y = mpi.comm_2dc;
+	mpi.comm_y = mpi.comm_w2dc;
 	mpi.comm_z = MPI_COMM_SELF;
-	mpi.size_y = mpi.size_2dr;
+	mpi.size_y = mpi.size_w2dr;
 	mpi.size_z = 1;
 	mpi.rank_y = mpi.rank_2dr;
 	mpi.rank_z = 0;
