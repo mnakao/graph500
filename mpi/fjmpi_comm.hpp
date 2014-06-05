@@ -13,6 +13,25 @@
 #include "utils.hpp"
 
 #define debug(...) debug_print(FJA2A, __VA_ARGS__)
+struct FJMPI_CQ : FJMPI_Rdma_cq {
+	int nic;
+	FJMPI_CQ(FJMPI_Rdma_cq& base__, int nic__) : FJMPI_Rdma_cq(base__), nic(nic__) { }
+};
+
+static int FJMPI_Local_nic[] = {
+	FJMPI_RDMA_LOCAL_NIC0,
+	FJMPI_RDMA_LOCAL_NIC1,
+	FJMPI_RDMA_LOCAL_NIC2,
+	FJMPI_RDMA_LOCAL_NIC3
+};
+
+static int FJMPI_Remote_nic[] = {
+	FJMPI_RDMA_REMOTE_NIC0,
+	FJMPI_RDMA_REMOTE_NIC1,
+	FJMPI_RDMA_REMOTE_NIC2,
+	FJMPI_RDMA_REMOTE_NIC3
+};
+
 class FJMpiAlltoallCommunicatorBase : public AlltoallCommunicator {
 public:
 	enum {
@@ -27,10 +46,20 @@ private:
 		INITIAL_RADDR_TABLE_SIZE = 4,
 		SYSTEM_TAG = 0,
 		FIRST_DATA_TAG = 1,
+		FIRST_USER_TAG = FIRST_DATA_TAG + MAX_FLYING_REQ,
 
 		INVALIDATED = 0,
 		READY = 1,
 		COMPLETE = 2,
+	};
+
+	struct BufferState {
+		uint16_t state; // current state of the buffer
+		uint16_t memory_id; // memory id of the RDMA buffer
+		union {
+			uint64_t offset; // offset to the buffer starting address
+			uint64_t length; // length of the received data in bytes
+		};
 	};
 
 	class RankMap {
@@ -58,15 +87,6 @@ private:
 
 	private:
 		std::vector<ElementType> vec;
-	};
-
-	struct BufferState {
-		uint16_t state; // current state of the buffer
-		uint16_t memory_id; // memory id of the RDMA buffer
-		union {
-			uint64_t offset; // offset to the buffer starting address
-			uint64_t length; // length of the received data in bytes
-		};
 	};
 
 	struct CommTarget {
@@ -115,8 +135,8 @@ private:
 			return local_buffer_state[offset_of_send_buffer_state(rank, idx)];
 		}
 
-		volatile BufferState& get_recv_buffer_state(int rank, int idx) {
-			return local_buffer_state[get_recv_buffer_state_offset(rank, idx)];
+		volatile BufferState& recv_buffer_state(int rank, int idx) {
+			return local_buffer_state[offset_of_recv_buffer_state(rank, idx)];
 		}
 	};
 
@@ -174,13 +194,8 @@ public:
 		if(c.num_nics_to_use > 4) {
 			c.num_nics_to_use = 4;
 		}
+
 		int remote_nic = c.rank % c.num_nics_to_use;
-		int local_nic[4] = {
-			FJMPI_RDMA_LOCAL_NIC0,
-			FJMPI_RDMA_LOCAL_NIC1,
-			FJMPI_RDMA_LOCAL_NIC2,
-			FJMPI_RDMA_LOCAL_NIC3
-		};
 		MPI_Group comm_group;
 		MPI_Comm_group(c.base_communicator, &comm_group);
 		int* ranks1 = new int[c.size];
@@ -205,8 +220,8 @@ public:
 
 			c.rank_map.add(c.rank_map.lower_bound(pid), pid, i);
 			c.proc_info[i].proc_index = proc_idx;
-			c.proc_info[i].put_flag = local_nic[i % c.num_nics_to_use] |
-					remote_nic | FJMPI_RDMA_IMMEDIATE_RETURN | FJMPI_RDMA_PATH0;
+			c.proc_info[i].put_flag = FJMPI_Local_nic[i % c.num_nics_to_use] |
+					FJMPI_Remote_nic[remote_nic] | FJMPI_RDMA_IMMEDIATE_RETURN | FJMPI_RDMA_PATH0;
 		}
 
 		delete [] ranks1; ranks1 = NULL;
@@ -252,6 +267,7 @@ public:
 		MY_TRACE;
 		c_ = &internal_communicators_[sub_comm];
 		c_->num_recv_active = c_->num_send_active = c_->size;
+		paused = false;
 #if PROFILING_MODE
 		for(int i = 0; i < c_->size; ++i) {
 			CommTarget& target = c_->proc_info[i];
@@ -262,13 +278,14 @@ public:
 		return c_->handler;
 	}
 	//! @return finished
-	virtual bool probe() {
+	virtual void* probe() {
 		MY_TRACE;
+
+		user_cq.clear();
+
 		if(c_->num_recv_active == 0 && c_->num_send_active == 0) {
-			// finished
-			debug("finished");
-			c_->handler->finished();
-			return true;
+			// already finished
+			return &user_cq;
 		}
 
 		// process receive completion
@@ -295,7 +312,7 @@ public:
 						// nothing to do
 						debug("SYSTEM_TAG completion");
 					}
-					else if(cq.tag >= FIRST_DATA_TAG && cq.tag < FIRST_DATA_TAG + MAX_FLYING_REQ){
+					else if(cq.tag < FIRST_USER_TAG){
 						RankMap::iterator it = c_->rank_map.lower_bound(cq.pid);
 						assert(c_->rank_map.match(it, cq.pid));
 						int rank = it->second;
@@ -311,8 +328,8 @@ public:
 						}
 					}
 					else {
-						// impossible
-			//			debug("impossible");
+						// user tag
+						user_cq.push_back(FJMPI_CQ(cq, nic));
 					}
 				}
 				else if(ret == FJMPI_RDMA_HALFWAY_NOTICE) {
@@ -331,11 +348,29 @@ public:
 			}
 		}
 
+		if(c_->num_recv_active == 0 && c_->num_send_active == 0) {
+			// finished
+			debug("finished");
+			c_->handler->finished();
+		}
+
 	//	debug("probe finished"); usleep(200*1000);
-		return false;
+		return &user_cq;
+	}
+	virtual bool is_finished() {
+		return (c_->num_recv_active == 0 && c_->num_send_active == 0);
 	}
 	virtual int get_comm_size() {
 		return c_->size;
+	}
+	virtual void pause() {
+		paused = true;
+	}
+	virtual void restart() {
+		paused = false;
+		for(int i = 0; i < c_->size; ++i) {
+			set_send_buffer(i);
+		}
 	}
 #ifndef NDEBUG
 	bool check_num_send_buffer() { return (c_->num_pending_send == 0); }
@@ -373,7 +408,7 @@ public:
 		return rank * MAX_FLYING_REQ * 2 + idx;
 	}
 
-	static int get_recv_buffer_state_offset(int rank, int idx) {
+	static int offset_of_recv_buffer_state(int rank, int idx) {
 		return rank * MAX_FLYING_REQ * 2 + MAX_FLYING_REQ + idx;
 	}
 
@@ -434,6 +469,9 @@ private:
 
 	bool fix_system_memory_;
 	int system_rdma_mem_size_;
+	bool paused;
+
+	std::vector<FJMPI_CQ> user_cq;
 
 	int pid_from_rank(int rank) {
 		return proc_info_[c_->proc_info[rank].proc_index];
@@ -524,6 +562,8 @@ private:
 
 	void set_send_buffer(int target) {
 		MY_TRACE;
+		// do not send when paused
+		if(paused) return ;
 		CommTarget& node = c_->proc_info[target];
 		while(node.send_queue.size() > 0) {
 			int buf_idx = node.send_count % MAX_FLYING_REQ;
@@ -559,7 +599,7 @@ private:
 				buf_state.length = comm_buf->length_;
 				int tag = SYSTEM_TAG;
 				uint64_t raddr = node.remote_buffer_state +
-						sizeof(BufferState) * get_recv_buffer_state_offset(c_->rank, buf_idx);
+						sizeof(BufferState) * offset_of_recv_buffer_state(c_->rank, buf_idx);
 				uint64_t laddr = local_address_from_pointer(&buf_state, 0);
 				FJMPI_Rdma_put(pid, tag, raddr, laddr, sizeof(BufferState), node.put_flag);
 			}
@@ -579,10 +619,10 @@ private:
 				break;
 			}
 			// set new receive buffer
-			assert (c_->get_recv_buffer_state(target, buf_idx).state != READY);
+			assert (c_->recv_buffer_state(target, buf_idx).state != READY);
 			comm_buf = c_->handler->alloc_buffer();
 			int memory_id = memory_id_of(comm_buf);
-			volatile BufferState& buf_state = c_->get_recv_buffer_state(target, buf_idx);
+			volatile BufferState& buf_state = c_->recv_buffer_state(target, buf_idx);
 			buf_state.state = READY;
 			buf_state.memory_id = memory_id;
 			buf_state.offset = offset_from_pointer(comm_buf->pointer(), memory_id);
@@ -606,7 +646,7 @@ private:
 		while(true) {
 			int buf_idx = node.recv_complete_count % MAX_FLYING_REQ;
 			CommunicationBuffer*& comm_buf = node.recv_buf[buf_idx];
-			volatile BufferState& buf_state = c_->get_recv_buffer_state(target, buf_idx);
+			volatile BufferState& buf_state = c_->recv_buffer_state(target, buf_idx);
 			if(comm_buf == NULL || buf_state.state != COMPLETE) {
 				break;
 			}

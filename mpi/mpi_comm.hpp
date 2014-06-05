@@ -59,6 +59,8 @@ public:
 		data_type_ = handler_->data_type();
 		MPI_Comm_size(comm_, &comm_size_);
 		initialized_ = false;
+		num_recv_active = num_send_active = comm_size_;
+		paused = false;
 
 		if(node_ == NULL) {
 			node_ = new CommTarget[node_list_length_]();
@@ -76,13 +78,15 @@ public:
 		return handler_;
 	}
 	//! @return finished
-	virtual bool probe() {
+	virtual void* probe() {
 		MY_TRACE;
+		if(num_recv_active == 0 && num_send_active == 0) {
+			return NULL;
+		}
+
 		if(initialized_ == false) {
 			MY_TRACE;
 			initialized_ = true;
-
-			num_recv_active = num_send_active = comm_size_;
 			for(int i = 0; i < comm_size_; ++i) {
 				MY_TRACE;
 				CommTarget& node = node_[i];
@@ -91,14 +95,6 @@ public:
 				assert (node.recv_buf != NULL);
 				set_recv_buffer(node.recv_buf, i, &mpi_reqs_[REQ_TOTAL*i + REQ_RECV]);
 			}
-		}
-
-		if(num_recv_active == 0 && num_send_active == 0) {
-			MY_TRACE;
-			// finished
-			debug("finished");
-			handler_->finished();
-			return true;
 		}
 
 		int index;
@@ -171,10 +167,29 @@ public:
 			}
 		}
 
-		return false;
+		if(num_recv_active == 0 && num_send_active == 0) {
+			MY_TRACE;
+			// finished
+			debug("finished");
+			handler_->finished();
+		}
+
+		return NULL;
+	}
+	virtual bool is_finished() {
+		return (num_recv_active == 0 && num_send_active == 0);
 	}
 	virtual int get_comm_size() {
 		return comm_size_;
+	}
+	virtual void pause() {
+		paused = true;
+	}
+	virtual void restart() {
+		paused = false;
+		for(int i = 0; i < comm_size_; ++i) {
+			set_send_buffer(i);
+		}
 	}
 #ifndef NDEBUG
 	bool check_num_send_buffer() { return (num_pending_send == 0); }
@@ -206,9 +221,12 @@ private:
 	int num_recv_active;
 	int num_send_active;
 	int num_pending_send;
+	bool paused;
 
 	void set_send_buffer(int target) {
 		MY_TRACE;
+		// do not send when this is paused
+		if(paused) return;
 		CommTarget& node = node_[target];
 		if(node.send_buf) {
 			// already sending
@@ -268,5 +286,162 @@ private:
 	CommBufferPool pool_;
 };
 #undef debug
+
+#if 0
+#define debug(...) debug_print(MPIBU, __VA_ARGS__)
+template <int NBUF>
+class MpiBottomUpSubstepComm :  public AsyncCommHandler {
+public:
+	MpiBottomUpSubstepComm(MPI_Comm mpi_comm__) {
+		mpi_comm = mpi_comm__;
+		int size, rank;
+		MPI_Comm_size(mpi_comm__, &size);
+		MPI_Comm_rank(mpi_comm__, &rank);
+		int size_cmask = size - 1;
+		send_to = (rank - 1) & size_cmask;
+		recv_from = (rank + 1) & size_cmask;
+		total_phase = size*2;
+		for(int i = 0; i < DNBUF+4; ++i) {
+			req[i] = MPI_REQUEST_NULL;
+		}
+	}
+	virtual ~MpiBottomUpSubstepComm() {
+	}
+	void register_memory(void* memory, int64_t size) {
+	}
+	template <typename T>
+	void begin(T** buffers__, T** last_data, int buffer_width__, int recv_start) {
+		type = MpiTypeOf<T>::type;
+		buffer_width = buffer_width__;
+		for(int i = 0; i < NBUF; ++i) {
+			buffers[i] = buffers__[i];
+		}
+		for(int i = 0; i < 2; ++i) {
+			buffers[NBUF+i] = last_data[i];
+		}
+		recv_offset = recv_start;
+		next_recv = 0;
+		proc_cnt = 0;
+		finished = false;
+		next_send = 0;
+		send_complete = 0;
+		initialized = false;
+		debug("begin");
+	}
+	int advance(int send_size) {
+		VT_TRACER("bu_comm_adv");
+		debug("advance begin <- %d", send_size);
+		data_size[proc_cnt & BUFMASK] = send_size;
+		__sync_synchronize();
+		++proc_cnt;
+		__sync_synchronize();
+		while(next_recv + 1 < proc_cnt) sched_yield();
+		__sync_synchronize();
+		int recv_buf_idx = (proc_cnt + recv_offset - 2) & BUFMASK;
+		debug("advance finished -> %d", data_size[recv_buf_idx]);
+		return data_size[recv_buf_idx];
+	}
+	void finish(int* last_recv_size) {
+		VT_TRACER("bu_comm_fin_wait");
+		while(!finished) sched_yield();
+		__sync_synchronize();
+		if(last_recv_size) {
+			last_recv_size[0] = data_size[NBUF+0];
+			last_recv_size[1] = data_size[NBUF+1];
+		}
+	}
+	virtual void probe(void* comm_data) {
+		if(finished) return;
+
+		if(initialized == false) {
+			initialized = true;
+			int n = std::min<int>(NBUF, recv_offset+total_phase-2);
+			for(int i = recv_offset; i < n; ++i) {
+				MPI_Request* req_ptr = this->req + i * 2 + 1;
+				MPI_Irecv(buffers[i], buffer_width, type, this->recv_from, 0, this->mpi_comm, req_ptr);
+			}
+			// for the last data
+			for(int i = 0; i < 2; ++i) {
+				MPI_Request* req_ptr = this->req + DNBUF + i * 2 + 1;
+				MPI_Irecv(buffers[NBUF+i], buffer_width, type, this->recv_from, 1, this->mpi_comm, req_ptr);
+			}
+			debug("initialized");
+		}
+
+		while(next_send < proc_cnt) {
+			assert (next_send < total_phase);
+			int buf_idx = next_send & BUFMASK;
+			MPI_Request* req_ptr = this->req + buf_idx * 2;
+			int tag = (next_send < total_phase-2) ? 0 : 1; // last data?
+			MPI_Isend(buffers[buf_idx], data_size[buf_idx], type, this->send_to, tag, this->mpi_comm, req_ptr);
+			VERVOSE(g_bu_list_comm += data_size[buf_idx] * sizeof(BitmapType));
+			debug("send %d", data_size[buf_idx]);
+			++next_send;
+		}
+
+		if(send_complete < next_send) { // is there any sending data?
+			int buf_idx = send_complete & BUFMASK;
+			MPI_Request* req_ptr = req + buf_idx * 2;
+			int flag; MPI_Status status;
+			MPI_Test(req_ptr, &flag, &status);
+			if(flag) {
+				// complete -> set recv buffer
+				if(send_complete + NBUF < recv_offset+total_phase-2) {
+					MPI_Irecv(buffers[buf_idx], buffer_width, type, this->recv_from, 0, this->mpi_comm, req_ptr+1);
+				}
+				debug("send complete");
+				++send_complete;
+			}
+		}
+
+		if(recv_offset+next_recv < send_complete + NBUF) {
+			if(next_recv < total_phase) {
+				int buf_idx;
+				MPI_Request* req_ptr;
+				int flag; MPI_Status status;
+				if(next_recv < total_phase-2) {
+					buf_idx = (next_recv + recv_offset) & BUFMASK;
+				}
+				else {
+					// last data
+					buf_idx = NBUF + next_recv - (total_phase-2);
+				}
+				req_ptr = req + buf_idx * 2 + 1;
+				MPI_Test(req_ptr, &flag, &status);
+				if(flag) {
+					MPI_Get_count(&status, type, (int*)&data_size[buf_idx]);
+					debug("recv complete %d", data_size[buf_idx]);
+					++next_recv;
+				}
+			}
+		}
+
+		if(send_complete == total_phase && next_recv == total_phase) {
+			debug("finished");
+			finished = true;
+		}
+	}
+
+protected:
+	enum { DNBUF = NBUF*2, BUFMASK = NBUF-1 };
+	MPI_Comm mpi_comm;
+	int send_to, recv_from;
+	int total_phase;
+	void* buffers[NBUF+2];
+	MPI_Request req[DNBUF+4];
+
+	MPI_Datatype type;
+	int recv_offset;
+	int buffer_width;
+	bool initialized;
+	volatile int data_size[NBUF+2];
+	volatile int next_recv;
+	volatile int proc_cnt;
+	volatile bool finished;
+	int next_send;
+	int send_complete;
+};
+#undef debug
+#endif
 
 #endif /* MPI_COMM_HPP_ */

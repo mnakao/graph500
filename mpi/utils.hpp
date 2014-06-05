@@ -119,20 +119,28 @@ struct MPI_GLOBALS {
 	int rank_2d;
 	int rank_2dr;
 	int rank_2dc;
-	int rank_y;
-	int rank_z;
 	int size_2d;
 	int size_2dc; // = comm_2dr.size()
 	int size_2dr; // = comm_2dc.size()
-	int size_y; // = comm_y.size()
-	int size_z; // = comm_z.size()
 	MPI_Comm comm_2d;
 	MPI_Comm comm_2dr; // = comm_x
 	MPI_Comm comm_2dc;
-	MPI_Comm comm_y;
-	MPI_Comm comm_z;
 	bool isPadding2D;
 	bool isRowMajor;
+
+	// for shared memory
+	int rank_y;
+	int rank_z;
+	int size_y; // = comm_y.size()
+	int size_z; // = comm_z.size()
+	MPI_Comm comm_y;
+	MPI_Comm comm_z;
+
+	// for 3D mapping
+	int rank_z1;
+	int rank_z2;
+	int size_Z1;
+	int size_Z2;
 
 	// utility method
 	bool isMaster() const { return rank == 0; }
@@ -367,7 +375,7 @@ void test_shared_memory() {
 }
 #else // #if SHARED_MEMORY
 void* shared_malloc(size_t size) {
-	return cache_aligned_xcalloc(size);
+	return page_aligned_xcalloc(size);
 }
 void shared_free(void* shm) {
 	free(shm);
@@ -747,10 +755,6 @@ public:
 		return apicid_to_cpu[my_cpu_id(numa_rank, core_rank, smt_rank)];
 	}
 
-	int numa_id(int tid) {
-		return numa_node_of_cpu(cpu(tid));
-	}
-
 	int num_bits(uint32_t count) {
 		if(count <= 1) return 0;
 		return get_msb_index(count - 1) + 1;
@@ -970,7 +974,7 @@ void set_core_affinity() {
 			}
 			int core_id = (thread_id % core_binding->num_logical_CPUs());
 			if(core_affinity_enabled) {
-				int cpu = core_binding->cpu(thread_id);
+				int cpu = core_binding->cpu(core_id);
 				internal_set_core_affinity(cpu);
 			}
 		}
@@ -1000,7 +1004,7 @@ void set_omp_core_affinity() {
 				core_id = (thread_id % core_binding->num_logical_CPUs());
 			} while(thread_id == 0 || core_id >= num_bfs_threads);
 			if(core_affinity_enabled) {
-				int cpu = core_binding->cpu(thread_id);
+				int cpu = core_binding->cpu(core_id);
 				internal_set_core_affinity(cpu);
 			}
 		}
@@ -1068,7 +1072,6 @@ void set_affinity()
 		}
 	}
 #endif
-	num_omp_threads = omp_get_max_threads();
 	const char* core_bind = getenv("CORE_BIND");
 	if(core_bind != NULL) {
 		affinity_mode = (AffinityMode)atoi(core_bind);
@@ -1232,19 +1235,21 @@ static void setup_2dcomm_on_3d()
 		B = Y * Z2;
 		mpi.size_2dr = 1 << get_msb_index(A);
 		mpi.size_2dc = 1 << get_msb_index(B);
+		mpi.size_Z1 = Z1;
+		mpi.size_Z2 = Z2;
 
 		if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%dx%dx%d) -> (%dx%d) -> (%dx%d)", X, Y, Z1, Z2, A, B, mpi.size_2dr, mpi.size_2dc);
 		if(mpi.size_ < A*B) {
 			if(mpi.isMaster()) print_with_prefix("Error: There are not enough processes.");
 		}
 
-		int x, y, z1, z2;
+		int x, y;
 		x = mpi.rank % X;
 		y = (mpi.rank / X) % Y;
-		z1 = (mpi.rank / (X*Y)) % Z1;
-		z2 = mpi.rank / (X*Y*Z1);
-		mpi.rank_2dr = z1 * X + x;
-		mpi.rank_2dc = z2 * Y + y;
+		mpi.rank_z1 = (mpi.rank / (X*Y)) % Z1;
+		mpi.rank_z2 = mpi.rank / (X*Y*Z1);
+		mpi.rank_2dr = mpi.rank_z1 * X + x;
+		mpi.rank_2dc = mpi.rank_z2 * Y + y;
 
 		mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
 		mpi.size_2d = mpi.size_2dr * mpi.size_2dc;

@@ -21,11 +21,15 @@
 // Since communication and computation is overlapped, we cannot have main thread do both tasks.
 #define MPI_FUNNELED 1
 
+// Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
+// Note: To conform to the specification, you must set 2
+#define VALIDATION_LEVEL 1
+
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define REPORT_GEN_RPGRESS 1
-#define ENABLE_FUJI_PROF 1
+#define ENABLE_FUJI_PROF 0
 #define ENABLE_FJMPI_RDMA 1
 
 // root switch to on/off debug print
@@ -33,11 +37,13 @@
 
 // switches to control debug print for each module
 // 0: disabled, 1: enabled, 2: enabled but the only root process prints
-#define DEBUG_PRINT_FIBMN 2
-#define DEBUG_PRINT_BFSMN 2
-#define DEBUG_PRINT_ABSCO 2
+#define DEBUG_PRINT_FIBMN 0
+#define DEBUG_PRINT_BFSMN 0
+#define DEBUG_PRINT_ABSCO 0
 #define DEBUG_PRINT_MPICO 0
-#define DEBUG_PRINT_FJA2A 2
+#define DEBUG_PRINT_MPIBU 0
+#define DEBUG_PRINT_FJA2A 0
+#define DEBUG_PRINT_BUCOM 0
 
 #define BFELL 0
 
@@ -60,18 +66,15 @@
 #define PRE_EXEC_TIME 5 // 300 seconds
 
 #define VERTEX_SORTING 0 // do not support backward search
-#define LOW_LEVEL_FUNCTION 1
+#define LOW_LEVEL_FUNCTION 2
 
 #define BACKTRACE_ON_SIGNAL 0
 #define PRINT_BT_SIGNAL SIGTRAP
 
 // org = 1000
 #define DENOM_TOPDOWN_TO_BOTTOMUP 2000.0
+#define DEMON_BOTTOMUP_TO_TOPDOWN 200.0
 #define DENOM_BITMAP_TO_LIST 2.0
-
-// Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
-// Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 1
 
 #define CUDA_ENABLED 0
 #define CUDA_COMPUTE_EXCLUSIVE_THREAD_MODE 1
@@ -113,8 +116,8 @@
 #endif
 
 #define CACHE_LINE 128
-//#define PAGE_SIZE 8192
-#define PAGE_SIZE 16
+#define PAGE_SIZE 8192
+//#define PAGE_SIZE 16
 
 #define IMD_OUT stderr
 
@@ -140,7 +143,7 @@ enum {
 	PRE_ALLOCATE_COMM_BUFFER = 14,
 	SEND_BUFFER_LIMIT = 6,
 
-	BOTTOM_UP_BUFFER = 8,
+	BOTTOM_UP_BUFFER = 16,
 
 	PREFETCH_DIST = 16,
 

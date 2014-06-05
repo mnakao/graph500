@@ -65,15 +65,18 @@ public:
 	virtual void send(CommunicationBuffer* data, int target) = 0;
 	virtual AlltoallSubCommunicator reg_comm(AlltoallCommParameter parm) = 0;
 	virtual AlltoallBufferHandler* begin(AlltoallSubCommunicator sub_comm) = 0;
-	//! @return finished
-	virtual bool probe() = 0;
+	//! @return comm_data
+	virtual void* probe() = 0;
+	virtual bool is_finished() = 0;
 	virtual int get_comm_size() = 0;
+	virtual void pause() = 0;
+	virtual void restart() = 0;
 };
 
 class AsyncCommHandler {
 public:
 	virtual ~AsyncCommHandler() { }
-	virtual void probe() = 0;
+	virtual void probe(void* comm_data) = 0;
 };
 
 class AsyncAlltoallManager : public Runnable {
@@ -124,7 +127,6 @@ public:
 		for(int i = 0; i < comm_size_; ++i) {
 			node_[i].reserved_size_ = node_[i].filled_size_ = buffer_size_;
 		}
-		alltoall_finished_ = false;
 	}
 
 	/**
@@ -229,6 +231,20 @@ public:
 		put_command(cmd);
 	}
 
+	void pause() {
+		MY_TRACE;
+		InternalCommand cmd;
+		cmd.kind = PAUSE;
+		put_command(cmd);
+	}
+
+	void restart() {
+		MY_TRACE;
+		InternalCommand cmd;
+		cmd.kind = RESTART;
+		put_command(cmd);
+	}
+
 	virtual void run() {
 		VT_TRACER("comm_routine");
 
@@ -260,28 +276,30 @@ public:
 							}
 						}
 						break;
+					case PAUSE:
+						comm_->pause();
+						break;
+					case RESTART:
+						comm_->restart();
+						break;
 					}
 					pthread_mutex_lock(&d_->thread_sync_);
 				}
 				pthread_mutex_unlock(&d_->thread_sync_);
 			}
-			if(alltoall_finished_ && async_comm_handlers_.size() == 0) {
+			if(comm_->is_finished() && async_comm_handlers_.size() == 0) {
 				// finished
 				debug("finished");
 				break;
 			}
 
-			if(alltoall_finished_ == false) {
-				alltoall_finished_ = comm_->probe();
-			}
+			void* comm_data = comm_->probe();
 
 			for(int i = 0; i < (int)async_comm_handlers_.size(); ++i) {
 				MY_TRACE;
-				async_comm_handlers_[i]->probe();
+				async_comm_handlers_[i]->probe(comm_data);
 			}
 
-			// for debug
-			//timespec req = { 0, 1000000 }; nanosleep(&req, 0);
 		} // while(true)
 
 		caller_sync_->barrier();
@@ -298,6 +316,8 @@ private:
 		MANUAL_CMD,
 		ADD_HANDLER,
 		REMOVE_HANDLER,
+		PAUSE,
+		RESTART,
 	};
 
 	struct InternalCommand {
@@ -329,7 +349,6 @@ private:
 	AlltoallBufferHandler* buffer_provider_;
 	memory::SpinBarrier* caller_sync_;
 	int buffer_size_;
-	bool alltoall_finished_;
 	int comm_size_;
 	int send_queue_limit_;
 
