@@ -301,11 +301,11 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 #pragma omp barrier
 
 	}
-	edge_list->endWrite();
 #if REPORT_GEN_RPGRESS
 	report->end_progress();
 	delete report; report = NULL;
 #endif
+	edge_list->endWrite();
 	free(edge_buffer);
 	if(mpi.isMaster()) print_with_prefix("Finished generating.");
 }

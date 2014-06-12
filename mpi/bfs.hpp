@@ -203,7 +203,7 @@ public:
 		work_buf_size_ = std::max<int64_t>(
 				bitmap_width * sizeof(BitmapType) * mpi.size_w2dr / mpi.size_z, // space to receive NQ
 				bitmap_width * NBUF * sizeof(BitmapType)); // space for working buffer
-		int shared_offset_length = (max_threads * mpi.size_z * 2 + 1);
+		int shared_offset_length = (max_threads * mpi.size_z * BU_SUBSTEP + 1);
 		int64_t total_size_of_shared_memory =
 				bitmap_width * 3 * sizeof(BitmapType) * mpi.size_z + // new and old visited and buffer
 				work_buf_size_ * mpi.size_z + // work_buf_
@@ -714,7 +714,7 @@ public:
 				int max_threads = omp_get_num_threads(); // Place here because this region may be executed sequential.
 				int tid = omp_get_thread_num();
 				TwodVertex shifted_rc_plus = shifted_rc | (TwodVertex(i) << (graph_.lgl_ - 2));
-				TwodVertex* dst = outbuf + part_offset[rank_z*2+i];
+				TwodVertex* dst = outbuf + part_offset[rank_z*BU_SUBSTEP+i];
 				TwodVertex *new_vis = new_vis_p[i], *old_vis = old_vis_p[i];
 				int start, end, old_size = old_visited_list_size_[i], new_size = new_visited_list_size_[i];
 				get_partition(old_size, max_threads, tid, start, end);
@@ -2008,7 +2008,9 @@ public:
 		bottom_up_substep_->begin(bitmap_buffer + BU_SUBSTEP, buffer_count - BU_SUBSTEP,
 				step_bitmap_width, comm_size*BU_SUBSTEP);
 		comm_.register_handler(bottom_up_substep_);
+#if !OVERLAP_WAVE_AND_PRED
 		comm_.pause(); // pause AlltoAll communication to avoid network congestion
+#endif
 
 		BottomUpSubstepData data;
 		int total_steps = (comm_size+1)*BU_SUBSTEP;
@@ -2068,7 +2070,9 @@ public:
 				bottom_up_substep_->finish();
 				comm_.remove_handler(bottom_up_substep_);
 				PROF(comm_wait_time_ += tk_all);
+#if !OVERLAP_WAVE_AND_PRED
 				comm_.restart();
+#endif
 			}
 			thread_sync_.barrier();
 

@@ -111,6 +111,9 @@ public:
 		pthread_mutex_init(&d_->thread_sync_, NULL);
 		d_->command_active_ = false;
 	}
+	virtual ~AsyncAlltoallManager() {
+		delete [] node_; node_ = NULL;
+	}
 
 	void prepare(AlltoallSubCommunicator sub_comm, memory::SpinBarrier* sync) {
 		MY_TRACE;

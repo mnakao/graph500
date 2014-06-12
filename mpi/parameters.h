@@ -9,8 +9,8 @@
 #define PARAMETERS_H_
 
 // for the systems that contains NUMA nodes
-#define NUMA_BIND 0
-#define SHARED_MEMORY 0
+#define NUMA_BIND 1
+#define SHARED_MEMORY 1
 
 #define CPU_BIND_CHECK 0
 #define PRINT_BINDING 0
@@ -23,14 +23,15 @@
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 1
+#define VALIDATION_LEVEL 2
 
 #define PRINT_WITH_TIME 1
-#define VERVOSE_MODE 1
-#define PROFILING_MODE 1
-#define REPORT_GEN_RPGRESS 1
+#define VERVOSE_MODE 0
+#define PROFILING_MODE 0
+#define REPORT_GEN_RPGRESS 0
 #define ENABLE_FUJI_PROF 0
-#define ENABLE_FJMPI_RDMA 1
+#define ENABLE_FJMPI_RDMA 0
+#define OVERLAP_WAVE_AND_PRED 1
 
 // root switch to on/off debug print
 #define DEBUG_PRINT 0
@@ -63,10 +64,10 @@
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
-#define PRE_EXEC_TIME 5 // 300 seconds
+#define PRE_EXEC_TIME 300 // 300 seconds
 
 #define VERTEX_SORTING 0 // do not support backward search
-#define LOW_LEVEL_FUNCTION 2
+#define LOW_LEVEL_FUNCTION 1
 
 #define BACKTRACE_ON_SIGNAL 0
 #define PRINT_BT_SIGNAL SIGTRAP
@@ -116,7 +117,7 @@
 #endif
 
 #define CACHE_LINE 128
-#define PAGE_SIZE 8192
+#define PAGE_SIZE 4096
 //#define PAGE_SIZE 16
 
 #define IMD_OUT stderr
@@ -132,7 +133,7 @@ namespace PRM { //
 #define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
-	NUM_BFS_ROOTS = 32, // spec: 64
+	NUM_BFS_ROOTS = 64, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,

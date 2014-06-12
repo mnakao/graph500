@@ -199,10 +199,12 @@ int64_t get_time_in_microsecond()
 
 #if PRINT_WITH_TIME
 struct GLOBAL_CLOCK {
+	struct timeval l;
 	int64_t clock_start;
 	void init() {
 		MPI_Barrier(MPI_COMM_WORLD);
-		clock_start = get_time_in_microsecond();
+		gettimeofday(&l, NULL);
+		clock_start = ((int64_t)l.tv_sec*1000000 + l.tv_usec);
 	}
 	int64_t get() {
 		return get_time_in_microsecond() - clock_start;
@@ -1006,7 +1008,7 @@ void set_omp_core_affinity() {
 			do {
 				thread_id = __sync_fetch_and_add(&next_thread_id, 1);
 				core_id = (thread_id % core_binding->num_logical_CPUs());
-			} while(thread_id == 0 || core_id >= num_bfs_threads);
+			} while(core_id == 0 || core_id >= num_bfs_threads);
 			if(core_affinity_enabled) {
 				int cpu = core_binding->cpu(core_id);
 				internal_set_core_affinity(cpu);
@@ -1174,7 +1176,7 @@ void set_affinity()
 	}
 	// set main thread's affinity
 	set_core_affinity();
-	next_base_thread_id = num_omp_threads;
+	next_base_thread_id = num_bfs_threads;
 	next_thread_id = 1;
 }
 
@@ -1359,6 +1361,11 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		print_with_prefix("Running Binary: %s", argv[0]);
 		print_with_prefix("Provided MPI thread mode: %s", prov_str);
 		print_with_prefix("Pre running time will be %d seconds", PRE_EXEC_TIME);
+#if PRINT_WITH_TIME
+		char buf[200];
+		strftime(buf, sizeof(buf), "%Y/%m/%d %A %H:%M:%S %Z", localtime(&global_clock.l.tv_sec));
+		print_with_prefix("Clock started at %s\n", buf);
+#endif
 	}
 
 #if BACKTRACE_ON_SIGNAL
