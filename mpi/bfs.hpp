@@ -2692,11 +2692,11 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		fold_time += cur_fold_time; prev_time = tmp;
 		total_edge_top_down += num_edge_top_down_;
 		total_edge_bottom_up += num_edge_bottom_up_;
-		int64_t red_num_edges[] = { num_edge_top_down_, num_edge_bottom_up_ };
+		int64_t send_num_edges[] = { num_edge_top_down_, num_edge_bottom_up_ };
+		int64_t recv_num_edges[2];
 		if(!mpi.isPadding2D) {
-				MPI_Reduce(mpi.rank_2d == 0 ? MPI_IN_PLACE : red_num_edges, red_num_edges, 2,
-					MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
-			num_edge_top_down_ = red_num_edges[0]; num_edge_bottom_up_ = red_num_edges[1];
+				MPI_Reduce(send_num_edges, recv_num_edges, 2, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
+			num_edge_top_down_ = recv_num_edges[0]; num_edge_bottom_up_ = recv_num_edges[1];
 #if PROFILING_MODE
 			if(forward_or_backward_) {
 				extract_edge_time_.submit("forward edge", current_level_);

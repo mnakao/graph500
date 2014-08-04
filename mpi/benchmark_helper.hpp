@@ -527,7 +527,8 @@ void find_roots(GraphType& g, int64_t* bfs_roots, int& num_bfs_roots)
 			}
 			if (is_duplicate) continue; /* Everyone takes the same path here */
 			int root_ok = (int)g.has_edge(root);
-			MPI_Allreduce(MPI_IN_PLACE, &root_ok, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
+			int send_root_ok = root_ok;
+			MPI_Allreduce(&send_root_ok, &root_ok, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
 			if (root_ok) break;
 		}
 		bfs_roots[bfs_root_idx] = root;
@@ -552,7 +553,8 @@ int64_t find_max_used_vertex(GraphType& g)
 			}
 		}
 	}
-	MPI_Allreduce(MPI_IN_PLACE, &max_used_vertex, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
+	int64_t send_max_used_vertex = max_used_vertex;
+	MPI_Allreduce(&send_max_used_vertex, &max_used_vertex, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
 	return max_used_vertex;
 }
 

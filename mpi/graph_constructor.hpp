@@ -245,7 +245,7 @@ class GraphConstructor2DCSR
 {
 	enum {
 		LOG_EDGE_PART_SIZE = 16,
-	//	LOG_EDGE_PART_SIZE = 14,
+	//	LOG_EDGE_PART_SIZE = 12,
 		EDGE_PART_SIZE = 1 << LOG_EDGE_PART_SIZE, // == UINT64_MAX + 1
 		EDGE_PART_SIZE_MASK = EDGE_PART_SIZE - 1,
 
@@ -500,7 +500,8 @@ private:
 			if(mpi.isMaster()) print_with_prefix("MPI_Allreduce...");
 #endif
 
-			MPI_Allreduce(MPI_IN_PLACE, &max_vertex, 1, MpiTypeOf<uint64_t>::type, MPI_BOR, MPI_COMM_WORLD);
+			uint64_t tmp_send = max_vertex;
+			MPI_Allreduce(&tmp_send, &max_vertex, 1, MpiTypeOf<uint64_t>::type, MPI_BOR, MPI_COMM_WORLD);
 
 #if NETWORK_PROBLEM_AYALISYS
 			if(mpi.isMaster()) print_with_prefix("OK! ");
@@ -691,7 +692,8 @@ private:
 #endif
 		//const int comm_size = mpi.size_2dc;
 		int64_t num_max_edges = g.row_starts_[non_zero_rows];
-		MPI_Allreduce(MPI_IN_PLACE, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
+		int64_t tmp_send_num_max_edges = num_max_edges;
+		MPI_Allreduce(&tmp_send_num_max_edges, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
 		int num_loops = get_blocks<EdgeList::CHUNK_SIZE*4>(num_max_edges);
 		int64_t bitmap_chunk_size = (num_loops == 0) ? 0 : get_blocks(row_bitmap_length, num_loops);
 
@@ -1404,7 +1406,8 @@ private:
 		for(int i = 0; i < local_bitmap_width; ++i) {
 			num_vertices += __builtin_popcountl(g.has_edge_bitmap_[i]);
 		}
-		MPI_Allreduce(MPI_IN_PLACE, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, MPI_COMM_WORLD);
+		int64_t tmp_send_num_vertices = num_vertices;
+		MPI_Allreduce(&tmp_send_num_vertices, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, MPI_COMM_WORLD);
 		VERVOSE(int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_);
 		VERVOSE(if(mpi.isMaster()) print_with_prefix("# of actual vertices %f G %f %%", to_giga(num_vertices),
 				(double)num_vertices / (double)num_virtual_vertices * 100.0));

@@ -265,7 +265,7 @@ public:
 		debug("initialized");
 	}
 	virtual void probe_comm(void* comm_data) {
-		int index; int flag; MPI_Status status;
+		int index; int flag; MPI_Status status = {0};
 		MPI_Testany(sizeof(req)/sizeof(req[0]), req, &index, &flag, &status);
 		if(flag != 0 && index != MPI_UNDEFINED) {
 			int target; int buf_idx; bool b_send;

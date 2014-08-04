@@ -302,7 +302,9 @@ public:
 				MY_TRACE;
 				async_comm_handlers_[i]->probe(comm_data);
 			}
-
+#if WITH_VALGRIND
+			sched_yield();
+#endif
 		} // while(true)
 
 		caller_sync_->barrier();

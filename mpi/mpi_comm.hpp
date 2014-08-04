@@ -99,7 +99,7 @@ public:
 
 		int index;
 		int flag;
-		MPI_Status status;
+		MPI_Status status = {0};
 		MPI_Testany(comm_size_ * (int)REQ_TOTAL, mpi_reqs_, &index, &flag, &status);
 
 		if(flag != 0 && index != MPI_UNDEFINED) {

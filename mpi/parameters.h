@@ -23,11 +23,11 @@
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 2
+#define VALIDATION_LEVEL 1
 
 #define PRINT_WITH_TIME 1
-#define VERVOSE_MODE 0
-#define PROFILING_MODE 0
+#define VERVOSE_MODE 1
+#define PROFILING_MODE 1
 #define REPORT_GEN_RPGRESS 0
 #define ENABLE_FUJI_PROF 0
 #define ENABLE_FJMPI_RDMA 0
@@ -64,7 +64,7 @@
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
-#define PRE_EXEC_TIME 300 // 300 seconds
+#define PRE_EXEC_TIME 5 // 300 seconds
 
 #define VERTEX_SORTING 0 // do not support backward search
 #define LOW_LEVEL_FUNCTION 1
@@ -91,7 +91,8 @@
 #define KD_PRINT 0
 
 #define DISABLE_CUDA_CONCCURENT 0
-#define NETWORK_PROBLEM_AYALISYS 0
+#define NETWORK_PROBLEM_AYALISYS 1
+#define WITH_VALGRIND 0
 
 #define SGI_OMPLACE_BUG 0
 
@@ -133,7 +134,7 @@ namespace PRM { //
 #define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
-	NUM_BFS_ROOTS = 64, // spec: 64
+	NUM_BFS_ROOTS = 16, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,
