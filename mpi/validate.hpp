@@ -57,7 +57,7 @@ gather* init_gather(void* input, size_t input_count, size_t elt_size, void* outp
   g->nrequests_max = nrequests_max;
   g->datatype = dt;
   g->valid = 0;
-  MPI_Comm_dup(mpi.comm_2d, &g->comm);
+  MPI_Comm_dup(MPI_COMM_WORLD, &g->comm);
   g->local_indices = (size_t*)page_aligned_xmalloc(nrequests_max * sizeof(size_t));
   g->remote_ranks = (int*)page_aligned_xmalloc(nrequests_max * sizeof(int));
   g->remote_indices = (MPI_Aint*)page_aligned_xmalloc(nrequests_max * sizeof(MPI_Aint));
@@ -228,7 +228,7 @@ scatter_constant* init_scatter_constant(void* array, size_t array_count, size_t 
   sc->constant = constant;
   sc->nrequests_max = nrequests_max;
   sc->valid = 0;
-  MPI_Comm_dup(mpi.comm_2d, &sc->comm);
+  MPI_Comm_dup(MPI_COMM_WORLD, &sc->comm);
   sc->remote_ranks = (int*)cache_aligned_xmalloc(nrequests_max * sizeof(int));
   sc->remote_indices = (MPI_Aint*)page_aligned_xmalloc(nrequests_max * sizeof(MPI_Aint));
   MPI_Comm_size(sc->comm, &sc->comm_size);
@@ -365,7 +365,7 @@ scatter* init_scatter(void* array, size_t array_count, size_t elt_size, size_t n
   sc->nrequests_max = nrequests_max;
   sc->datatype = dt;
   sc->valid = 0;
-  MPI_Comm_dup(mpi.comm_2d, &sc->comm);
+  MPI_Comm_dup(MPI_COMM_WORLD, &sc->comm);
   sc->remote_ranks = (int*)cache_aligned_xmalloc(nrequests_max * sizeof(int));
   sc->remote_indices = (MPI_Aint*)page_aligned_xmalloc(nrequests_max * sizeof(MPI_Aint));
   MPI_Comm_size(sc->comm, &sc->comm_size);
@@ -492,13 +492,10 @@ public:
 	BfsValidation(int64_t nglobalverts__, int64_t nlocalverts__, int64_t chunksize)
 	: nglobalverts(nglobalverts__)
 	, nlocalverts(nlocalverts__)
-	, log_size_(get_msb_index(mpi.size_2d))
-	, rmask_((1 << get_msb_index(mpi.size_2dr)) - 1)
-	, cmask_((1 << get_msb_index(mpi.size_2d)) - 1 - rmask_)
 	, chunksize_(chunksize)
 	{
 		uint64_t maxlocalverts_ui = nlocalverts;
-		MPI_Allreduce(MPI_IN_PLACE, &maxlocalverts_ui, 1, MPI_UINT64_T, MPI_MAX, mpi.comm_2d);
+		MPI_Allreduce(MPI_IN_PLACE, &maxlocalverts_ui, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
 		maxlocalverts = maxlocalverts_ui;
 	}
 
@@ -512,14 +509,6 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
   assert (pred);
   *edge_visit_count_ptr = 0; /* Ensure it is a valid pointer */
   int64_t error_counts = 0;
-
-  if(mpi.isPadding2D) {
-	  for(int i = 0; i < 4; ++i) {
-		  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-		  if (error_counts) return false; /* Fail */
-	  }
-	  return true;
-  }
 
   error_counts += check_value_ranges(nglobalverts, nlocalverts, pred);
   if (root < 0 || root >= nglobalverts) {
@@ -603,12 +592,6 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 	memset(pred_valid, 0, nlocalverts * sizeof(unsigned char));
 	int64_t edge_visit_count = 0;
 
-	const int rmask = ((1 << get_msb_index(mpi.size_2dr)) - 1);
-	const int cmask = ((1 << get_msb_index(mpi.size_2d)) - 1 - rmask);
-	const int log_size_r = get_msb_index(mpi.size_2dr);
-#define VERTEX_OWNER_R(v) ((v) & rmask)
-#define VERTEX_OWNER_C(v) (((v) & cmask) >> log_size_r)
-
 	typedef typename EdgeList::edge_type EdgeType;
 	int num_loops = edge_list->beginRead(false);
 
@@ -631,10 +614,10 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 			for (int i = 0; i < bufsize; ++i) {
 				int64_t v0 = edge_data[i].v0();
 				int64_t v1 = edge_data[i].v1();
-				(count_c[VERTEX_OWNER_R(v0)])++;
-				assert (VERTEX_OWNER_C(v0) == mpi.rank_2dc);
-				(count_r[VERTEX_OWNER_C(v1)])++;
-				assert (VERTEX_OWNER_R(v1) == mpi.rank_2dr);
+				(count_r[vertex_owner_c(v0)])++;
+				assert (vertex_owner_r(v0) == mpi.rank_2dr);
+				(count_c[vertex_owner_r(v1)])++;
+				assert (vertex_owner_c(v1) == mpi.rank_2dc);
 			} // #pragma omp for (there is implicit barrier on exit)
 #if defined(__INTEL_COMPILER)
 #pragma omp barrier
@@ -655,12 +638,12 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 			for (int i = 0; i < bufsize; ++i) {
 				int64_t v0 = edge_data[i].v0();
 				int64_t v1 = edge_data[i].v1();
-				int v0_pos = offsets_c[VERTEX_OWNER_R(v0)]++;
-				local_indices_c[i] = v0_pos;
-				remote_indices_c[v0_pos] = vertex_local(v0);
-				int v1_pos = offsets_r[VERTEX_OWNER_C(v1)]++;
-				local_indices_r[i] = v1_pos;
-				remote_indices_r[v1_pos] = vertex_local(v1);
+				int v0_pos = offsets_r[vertex_owner_c(v0)]++;
+				local_indices_r[i] = v0_pos;
+				remote_indices_r[v0_pos] = vertex_local(v0);
+				int v1_pos = offsets_c[vertex_owner_r(v1)]++;
+				local_indices_c[i] = v1_pos;
+				remote_indices_c[v1_pos] = vertex_local(v1);
 			  //add_gather_request(pred_win, i * 2 + 0, edge_owner[i * 2 + 0], edge_local[i * 2 + 0], i * 2 + 0);
 			  //add_gather_request(pred_win, i * 2 + 1, edge_owner[i * 2 + 1], edge_local[i * 2 + 1], i * 2 + 1);
 			}
@@ -696,10 +679,10 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 
 #pragma omp parallel for
 		for (int i = 0; i < bufsize; ++i) {
-			assert (local_indices_c[i] < bufsize);
 			assert (local_indices_r[i] < bufsize);
-			edge_preds[2*i+0] = recv_pred_c[local_indices_c[i]];
-			edge_preds[2*i+1] = recv_pred_r[local_indices_r[i]];
+			assert (local_indices_c[i] < bufsize);
+			edge_preds[2*i+0] = recv_pred_r[local_indices_r[i]];
+			edge_preds[2*i+1] = recv_pred_c[local_indices_c[i]];
 		}
 		//end_gather(pred_win);
 		free(local_indices_r); local_indices_r = NULL;
@@ -737,10 +720,10 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 				++edge_visit_count;
 			  }
 			  if (get_pred_from_pred_entry(edge_preds[i * 2 + 0]) == tgt) {
-				(count_c[VERTEX_OWNER_R(src)])++;
+				(count_r[vertex_owner_c(src)])++;
 			  }
 			  if (get_pred_from_pred_entry(edge_preds[i * 2 + 1]) == src) {
-				(count_r[VERTEX_OWNER_C(tgt)])++;
+				(count_c[vertex_owner_r(tgt)])++;
 			  }
 			} // #pragma omp for (there is implicit barrier on exit)
 #if defined(__INTEL_COMPILER)
@@ -761,10 +744,10 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 			  int64_t src = edge_data[i].v0();
 			  int64_t tgt = edge_data[i].v1();
 			  if (get_pred_from_pred_entry(edge_preds[i * 2 + 0]) == tgt) {
-				  remote_valid_indices_c[offsets_c[VERTEX_OWNER_R(src)]++] = vertex_local(src);
+				  remote_valid_indices_r[offsets_r[vertex_owner_c(src)]++] = vertex_local(src);
 			  }
 			  if (get_pred_from_pred_entry(edge_preds[i * 2 + 1]) == src) {
-				  remote_valid_indices_r[offsets_r[VERTEX_OWNER_C(tgt)]++] = vertex_local(tgt);
+				  remote_valid_indices_c[offsets_c[vertex_owner_r(tgt)]++] = vertex_local(tgt);
 			  }
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
@@ -809,7 +792,7 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 	}
 	free(pred_valid);
 
-	MPI_Allreduce(MPI_IN_PLACE, &edge_visit_count, 1, MPI_INT64_T, MPI_SUM, mpi.comm_2d);
+	MPI_Allreduce(MPI_IN_PLACE, &edge_visit_count, 1, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
 	*edge_visit_count_ptr = edge_visit_count;
   }
 
@@ -819,13 +802,6 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 }
 
 private:
-	int edge_owner(int64_t v0, int64_t v1) const { return (v0 & cmask_) | (v1 & rmask_); }
-	int vertex_owner(int64_t v) const { return v & (mpi.size_2d - 1); }
-#ifndef NDEBUG
-	int vertex_owner_r(int64_t v) const { return v & (mpi.size_2dr - 1); }
-	int vertex_owner_c(int64_t v) const { return vertex_owner(v) >> get_msb_index(mpi.size_2dr); }
-#endif
-	int64_t vertex_local(int64_t v) { return v >> log_size_; }
 
 /* This code assumes signed shifts are arithmetic, which they are on
  * practically all modern systems but is not guaranteed by C. */
@@ -928,7 +904,7 @@ int64_t build_bfs_depth_map(const int64_t root, int64_t* const pred)
           }
         }
       }
-      MPI_Allreduce(MPI_IN_PLACE, &any_changes, 1, MPI_INT, MPI_LOR, mpi.comm_2d);
+      MPI_Allreduce(MPI_IN_PLACE, &any_changes, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
       if (!any_changes) break;
     }
   }
@@ -1021,9 +997,6 @@ int64_t check_bfs_depth_map_using_predecessors(const int64_t root, const int64_t
 const int64_t nglobalverts;
 const int64_t nlocalverts;
 int64_t maxlocalverts;
-const int log_size_;
-const int rmask_;
-const int cmask_;
 int64_t chunksize_;
 
 }; // class BfsValidation

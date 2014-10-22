@@ -33,7 +33,7 @@ public:
 			FJMPI_Rdma_reg_mem(0, g_progress_, sizeof(int)*mpi.size_2d);
 		}
 		local_send_address_ = FJMPI_Rdma_reg_mem(1, &my_progress_, sizeof(int));
-		MPI_Barrier(mpi.comm_2d);
+		MPI_Barrier(MPI_COMM_WORLD);
 		remote_write_address_ = FJMPI_Rdma_get_remote_addr(0, 0) + sizeof(int)*mpi.rank_2d;
 	}
 	~ProgressReport() {
@@ -59,7 +59,7 @@ public:
 		if(mpi.isMaster()) {
 			pthread_join(thread_, NULL);
 		}
-		MPI_Barrier(mpi.comm_2d);
+		MPI_Barrier(MPI_COMM_WORLD);
 		while(FJMPI_Rdma_poll_cq(FJMPI_RDMA_LOCAL_NIC0, NULL)) ;
 	}
 
@@ -150,7 +150,7 @@ public:
 	}
 	void advace() {
 		pthread_mutex_lock(&thread_sync_);
-		MPI_Isend(&send_buf_[my_progress_], 1, MPI_INT, 0, 0, mpi.comm_2d, &send_req_[my_progress_]);
+		MPI_Isend(&send_buf_[my_progress_], 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &send_req_[my_progress_]);
 		int index, flag;
 		MPI_Testany(max_progress_, send_req_, &index, &flag, MPI_STATUS_IGNORE);
 		pthread_mutex_unlock(&thread_sync_);
@@ -173,7 +173,7 @@ private:
 		for(int i = 0; i < mpi.size_2d; ++i) {
 			g_progress_[i] = 0;
 			recv_buf_[i] = 0; // ?????
-			MPI_Irecv(&recv_buf_[i], 1, MPI_INT, i, 0, mpi.comm_2d, &recv_req_[i]);
+			MPI_Irecv(&recv_buf_[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD, &recv_req_[i]);
 		}
 		int* tmp_progress = new int[mpi.size_2d];
 		int* node_list = new int[mpi.size_2d];
@@ -213,7 +213,7 @@ private:
 				}
 				g_progress_[index] = recv_buf_[index];
 				if(g_progress_[index] < max_progress_) {
-					MPI_Irecv(&recv_buf_[index], 1, MPI_INT, index, 0, mpi.comm_2d, &recv_req_[index]);
+					MPI_Irecv(&recv_buf_[index], 1, MPI_INT, index, 0, MPI_COMM_WORLD, &recv_req_[index]);
 				}
 			}
 			pthread_mutex_unlock(&thread_sync_);
@@ -239,11 +239,6 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 {
 	VT_TRACER("generation");
 	typedef typename EdgeList::edge_type EdgeType;
-	if(mpi.isPadding2D) {
-		edge_list->beginWrite();
-		edge_list->endWrite();
-		return ;
-	}
 	EdgeType* edge_buffer = static_cast<EdgeType*>
 						(cache_aligned_xmalloc(EdgeList::CHUNK_SIZE*sizeof(EdgeType)));
 	edge_list->beginWrite();
@@ -326,7 +321,6 @@ void generate_graph_spec2012(EdgeList* edge_list, int scale, int edge_factor, in
 	generate_graph(edge_list, &generator);
 }
 
-
 // using SFINAE
 // function #1
 template <typename EdgeList>
@@ -334,22 +328,13 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 {
 	VT_TRACER("redistribution");
 	typedef typename EdgeList::edge_type EdgeType;
-	if(mpi.isPadding2D)  {
-		edge_list->beginWrite();
-		edge_list->endWrite();
-		return ;
-	}
-	ScatterContext scatter(mpi.comm_2d);
+	ScatterContext scatter(MPI_COMM_WORLD);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
 			xMPI_Alloc_mem(EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
 	int num_loops = edge_list->beginRead(true);
 	edge_list->beginWrite();
 
 	if(mpi.isMaster()) print_with_prefix("%d iterations.", num_loops);
-
-	const int rmask = ((1 << get_msb_index(mpi.size_2dr)) - 1);
-	const int cmask = ((1 << get_msb_index(mpi.size_2d)) - 1 - rmask);
-#define EDGE_OWNER(v0, v1) (((v0) & cmask) | ((v1) & rmask))
 
 	for(int loop_count = 0; loop_count < num_loops; ++loop_count) {
 		EdgeType* edge_data;
@@ -364,7 +349,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 			for(int i = 0; i < edge_data_length; ++i) {
 				const int64_t v0 = edge_data[i].v0();
 				const int64_t v1 = edge_data[i].v1();
-				(counts[EDGE_OWNER(v0,v1)])++;
+				(counts[edge_owner(v0,v1)])++;
 			} // #pragma omp for schedule(static)
 
 #pragma omp master
@@ -379,7 +364,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has
 				const int64_t v1 = edge_data[i].v1();
 				const int weight = edge_data[i].weight_;
 				//assert (offsets[edge_owner(v0,v1)] < 2 * FILE_CHUNKSIZE);
-				edges_to_send[(offsets[EDGE_OWNER(v0,v1)])++].set(v0,v1,weight);
+				edges_to_send[(offsets[edge_owner(v0,v1)])++].set(v0,v1,weight);
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
 
@@ -403,25 +388,11 @@ template <typename EdgeList>
 void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::no_weight dummy = 0)
 {
 	typedef typename EdgeList::edge_type EdgeType;
-	if(mpi.isPadding2D)  {
-		edge_list->beginWrite();
-		edge_list->endWrite();
-		return ;
-	}
-	ScatterContext scatter(mpi.comm_2d);
+	ScatterContext scatter(MPI_COMM_WORLD);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
 			xMPI_Alloc_mem(EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
 	int num_loops = edge_list->beginRead(true);
 	edge_list->beginWrite();
-
-	const int rmask = ((1 << get_msb_index(mpi.size_2dr)) - 1);
-	const int cmask = ((1 << get_msb_index(mpi.size_2d)) - 1 - rmask);
-#define EDGE_OWNER(v0, v1) (((v0) & cmask) | ((v1) & rmask))
-#ifndef NDEBUG
-	const int log_size_r = get_msb_index(mpi.size_2dr);
-#define VERTEX_OWNER_R(v) ((v) & rmask)
-#define VERTEX_OWNER_C(v) (((v) & cmask) >> log_size_r)
-#endif
 
 	for(int loop_count = 0; loop_count < num_loops; ++loop_count) {
 		EdgeType* edge_data;
@@ -435,7 +406,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::no_
 			for(int i = 0; i < edge_data_length; ++i) {
 				const int64_t v0 = edge_data[i].v0();
 				const int64_t v1 = edge_data[i].v1();
-				(counts[EDGE_OWNER(v0,v1)])++;
+				(counts[edge_owner(v0,v1)])++;
 			} // #pragma omp for schedule(static)
 
 #pragma omp master
@@ -449,7 +420,7 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::no_
 				const int64_t v0 = edge_data[i].v0();
 				const int64_t v1 = edge_data[i].v1();
 				//assert (offsets[edge_owner(v0,v1)] < 2 * FILE_CHUNKSIZE);
-				edges_to_send[(offsets[EDGE_OWNER(v0,v1)])++].set(v0,v1);
+				edges_to_send[(offsets[edge_owner(v0,v1)])++].set(v0,v1);
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
 
@@ -459,8 +430,8 @@ void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::no_
 		for(int64_t i = 0; i < num_recv_edges; ++i) {
 			const int64_t v0 = recv_edges[i].v0();
 			const int64_t v1 = recv_edges[i].v1();
-			assert (VERTEX_OWNER_C(v0) == mpi.rank_2dc);
-			assert (VERTEX_OWNER_R(v1) == mpi.rank_2dr);
+			assert (vertex_owner_r(v0) == mpi.rank_2dr);
+			assert (vertex_owner_c(v1) == mpi.rank_2dc);
 		}
 #undef VERTEX_OWNER_R
 #undef VERTEX_OWNER_C
@@ -540,16 +511,14 @@ template <typename GraphType>
 int64_t find_max_used_vertex(GraphType& g)
 {
 	int64_t max_used_vertex = 0;
-	if(!mpi.isPadding2D) {
-		const int64_t nlocal = int64_t(1) << g.log_actual_local_verts();
-		for (int64_t i = nlocal; (i > 0) && (max_used_vertex == 0); --i) {
-			int64_t local = i - 1;
-			for(int64_t j = mpi.size_2dr; (j > 0) && (max_used_vertex == 0); --j) {
-				int64_t r = j - 1;
-				int64_t v0 = local * mpi.size_2d + mpi.rank_2dc * mpi.size_2dr + r;
-				if (g.has_edge(v0)) {
-					max_used_vertex = v0;
-				}
+	const int64_t nlocal = g.num_local_verts_;
+	for (int64_t i = nlocal; (i > 0) && (max_used_vertex == 0); --i) {
+		int64_t local = i - 1;
+		for(int64_t j = mpi.size_2dr; (j > 0) && (max_used_vertex == 0); --j) {
+			int64_t r = j - 1;
+			int64_t v0 = local * mpi.size_2d + mpi.rank_2dc * mpi.size_2dr + r;
+			if (g.has_edge(v0)) {
+				max_used_vertex = v0;
 			}
 		}
 	}
@@ -595,9 +564,9 @@ int read_log_file(LogFileFormat* log, int SCALE, int edgefactor, double* bfs_tim
 				fclose(fp);
 			}
 		}
-		MPI_Bcast(&resume_root_idx, 1, MPI_INT, 0, mpi.comm_2d);
+		MPI_Bcast(&resume_root_idx, 1, MPI_INT, 0, MPI_COMM_WORLD);
 		if(resume_root_idx == -2) {
-			MPI_Abort(mpi.comm_2d, 1);
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
 	}
 	return resume_root_idx;

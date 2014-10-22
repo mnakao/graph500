@@ -23,11 +23,11 @@
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 1
+#define VALIDATION_LEVEL 2
 
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
-#define PROFILING_MODE 1
+#define PROFILING_MODE 0
 #define REPORT_GEN_RPGRESS 0
 #define ENABLE_FUJI_PROF 0
 #define ENABLE_FJMPI_RDMA 0
@@ -64,7 +64,7 @@
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
-#define PRE_EXEC_TIME 5 // 300 seconds
+#define PRE_EXEC_TIME 0 // 300 seconds
 
 #define VERTEX_SORTING 0 // do not support backward search
 #define LOW_LEVEL_FUNCTION 1
@@ -78,7 +78,7 @@
 #define DENOM_BITMAP_TO_LIST 2.0
 
 #define CUDA_ENABLED 0
-#define CUDA_COMPUTE_EXCLUSIVE_THREAD_MODE 1
+#define CUDA_COMPUTE_EXCLUSIVE_THREAD_MODE 0
 #define CUDA_CHECK_PRINT_RANK
 
 // atomic level of scanning Shared Visited
@@ -91,7 +91,7 @@
 #define KD_PRINT 0
 
 #define DISABLE_CUDA_CONCCURENT 0
-#define NETWORK_PROBLEM_AYALISYS 1
+#define NETWORK_PROBLEM_AYALISYS 0
 #define WITH_VALGRIND 0
 
 #define SGI_OMPLACE_BUG 0
@@ -125,7 +125,7 @@
 
 typedef uint8_t SortIdx;
 typedef uint64_t BitmapType;
-typedef uint32_t TwodVertex;
+typedef uint64_t TwodVertex; // TODO:
 
 #ifdef __cplusplus
 namespace PRM { //
@@ -152,6 +152,8 @@ enum {
 	LOG_BIT_SCAN_TABLE = 11,
 	LOG_NBPE = 6,
 	LOG_BFELL_SORT = 8,
+
+	NUM_BOTTOM_UP_STREAMS = 4,
 
 	// non-parameters
 	NBPE = 1 << LOG_NBPE, // <= sizeof(BitmapType)*8

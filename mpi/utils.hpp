@@ -112,20 +112,18 @@ void thread_join();
 
 struct MPI_GLOBALS {
 	int rank;
-	int size_;
+	int size;
 	int thread_level;
 
 	// 2D
 	int rank_2d;
 	int rank_2dr;
 	int rank_2dc;
-	int size_2d;
+	int size_2d; // = size
 	int size_2dc; // = comm_2dr.size()
 	int size_2dr; // = comm_2dc.size()
-	MPI_Comm comm_2d;
 	MPI_Comm comm_2dr; // = comm_x
 	MPI_Comm comm_2dc;
-	bool isPadding2D;
 	bool isRowMajor;
 
 	// for shared memory
@@ -136,19 +134,9 @@ struct MPI_GLOBALS {
 	MPI_Comm comm_y;
 	MPI_Comm comm_z;
 
-	// for 3D mapping
-	int rank_z1;
-	int rank_z2;
-	int size_Z1;
-	int size_Z2;
-	int size_w2dr;
-	int size_w2dc;
-	MPI_Comm comm_w2dr;
-	MPI_Comm comm_w2dc;
-
 	// utility method
 	bool isMaster() const { return rank == 0; }
-	bool isRmaster() const { return rank == size_-1; }
+	bool isRmaster() const { return rank == size-1; }
 	bool isYdimAvailable() const { return comm_y != comm_2dc; }
 };
 
@@ -373,10 +361,10 @@ void test_shared_memory() {
 	MPI_Bcast(&ref_val, 1, MpiTypeOf<int>::type, 0, mpi.comm_z);
 	int result = (*mem == ref_val), global_result;
 	shared_free(mem);
-	MPI_Allreduce(&result, &global_result, 1, MpiTypeOf<int>::type, MPI_LOR, mpi.comm_2d);
+	MPI_Allreduce(&result, &global_result, 1, MpiTypeOf<int>::type, MPI_LOR, MPI_COMM_WORLD);
 	if(global_result == false) {
 		if(mpi.isMaster()) print_with_prefix("Shared memory test failed!! Please, check MPI_NUM_NODE.");
-		MPI_Abort(mpi.comm_2d, 1);
+		MPI_Abort(MPI_COMM_WORLD, 1);
 	}
 }
 #else // #if SHARED_MEMORY
@@ -392,24 +380,19 @@ void shared_free(void* shm) {
 // Other functions
 //-------------------------------------------------------------//
 
-template <int width> size_t roundup(size_t size)
+template <typename T> T roundup(T size, T width)
 {
 	return (size + width - 1) / width * width;
 }
 
-template <int width> size_t get_blocks(size_t size)
+template <typename T> T get_blocks(T size, T width)
 {
 	return (size + width - 1) / width;
 }
 
-inline size_t roundup_2n(size_t size, size_t width)
+template <typename T> T roundup_2n(T size, T width)
 {
 	return (size + width - 1) & -width;
-}
-
-inline size_t get_blocks(size_t size, size_t width)
-{
-	return (size + width - 1) / width;
 }
 
 template <typename T>
@@ -806,7 +789,7 @@ inline int get_apic_id() {
 void initialize_core_id() {
 	my_apic_id = get_apic_id();
 }
-
+/*
 bool ensure_my_apic_id() {
 	int cur_id = get_apic_id();
 	if(my_apic_id != cur_id) {
@@ -814,6 +797,7 @@ bool ensure_my_apic_id() {
 	}
 	return false;
 }
+*/
 #else
 AffinityMode affinity_mode = USE_EXISTING_AFFINITY;
 void initialize_core_id() { }
@@ -839,7 +823,7 @@ void print_bind_mode() {
 }
 
 void check_affinity_setting() {
-	if(core_affinity_enabled == false) return ;
+	if(core_affinity_enabled == false || core_binding == NULL) return ;
 	if(thread_id == -1) {
 		print_with_prefix("th:%d affinity is not set", thread_id);
 		return ;
@@ -1039,13 +1023,13 @@ void set_affinity()
 		num_node = atoi(num_node_str);
 	}
 	else {
-		num_node = mpi.size_;
+		num_node = mpi.size;
 		if(mpi.isRmaster()) {
 			print_with_prefix("Warning: failed to get # of node (MPI_NUM_NODE=<# of node>). We assume 1 process per node");
 		}
 	}
 	const char* dist_round_robin = getenv("MPI_ROUND_ROBIN");
-	int max_procs_per_node = (mpi.size_ + num_node - 1) / num_node;
+	int max_procs_per_node = (mpi.size + num_node - 1) / num_node;
 	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
 	g_GpuIndex = proc_rank;
 
@@ -1060,10 +1044,10 @@ void set_affinity()
 		// create comm_z
 		if(mpi.size_z > 1) {
 			if(dist_round_robin) {
-				MPI_Comm_split(mpi.comm_2d, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
+				MPI_Comm_split(MPI_COMM_WORLD, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
 			}
 			else {
-				MPI_Comm_split(mpi.comm_2d, mpi.rank / max_procs_per_node, mpi.rank_z, &mpi.comm_z);
+				MPI_Comm_split(MPI_COMM_WORLD, mpi.rank / max_procs_per_node, mpi.rank_z, &mpi.comm_z);
 			}
 
 			// test shared memory
@@ -1110,12 +1094,21 @@ void set_affinity()
 					int NUM_SOCKET = numa_max_node() + 1;
 					if(proc_rank < NUM_SOCKET) {
 						numa_set_preferred(proc_rank);
+						numa_run_on_node(proc_rank);
+					}
+					else {
+						cpu_set_t set; CPU_ZERO(&set);
+						for(int i = 0; i < topology->num_procs; i++) {
+							CPU_SET(i, &set);
+						}
+						sched_setaffinity(0, sizeof(set), &set);
 					}
 					if(NUM_SOCKET != topology->num_numa_nodes) {
 						if(mpi.isMaster()) print_with_prefix("Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)",
 								NUM_SOCKET, topology->num_numa_nodes);
 					}
 				}
+				/*
 				cpu_set_t set; CPU_ZERO(&set);
 				if(proc_rank < topology->num_numa_nodes) {
 					for(int core = 0; core < topology->num_cores_within_numa; core++)
@@ -1127,6 +1120,9 @@ void set_affinity()
 						CPU_SET(i, &set);
 				}
 				sched_setaffinity(0, sizeof(set), &set);
+				*/
+				// disable core binding
+				delete topology; topology = NULL;
 
 				if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
 				  print_with_prefix("affinity for executing 3 processed per node is enabled.");
@@ -1152,7 +1148,7 @@ void set_affinity()
 				core_affinity_enabled = true;
 				if(mpi.isRmaster()) print_with_prefix("Core affinity is enabled");
 
-				if(mpi.rank == mpi.size_-1) { /* print from max rank node for easy debugging */
+				if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
 				  print_with_prefix("NUMA node affinity is enabled.");
 				}
 			}
@@ -1188,24 +1184,31 @@ void set_affinity()
 
 static void setup_2dcomm(bool row_major)
 {
-	const int log_size = get_msb_index(mpi.size_);
-
 	const char* twod_r_str = getenv("TWOD_R");
-	int log_size_r = log_size - log_size / 2;
+	int twod_r = 1, twod_c = 1;
 	if(twod_r_str){
-		int twod_r = atoi((char*)twod_r_str);
-		if(twod_r == 0 || /* Check for power of 2 */ (twod_r & (twod_r - 1)) != 0) {
-			print_with_prefix("Number of Rows %d is not a power of two.", twod_r);
+		twod_r = atoi((char*)twod_r_str);
+		twod_c = mpi.size / twod_r;
+		if(twod_r == 0 || (twod_c * twod_r) != mpi.size) {
+			if(mpi.isMaster()) print_with_prefix("# of MPI processes(%d) cannot be divided by %d", mpi.size, twod_r);
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
-		else {
-			log_size_r = get_msb_index(twod_r);
+	}
+	else {
+		for(twod_r = (int)sqrt(mpi.size); twod_r < mpi.size; ++twod_r) {
+			twod_c = mpi.size / twod_r;
+			if(twod_c * twod_r == mpi.size) {
+				break;
+			}
+		}
+		if(twod_c * twod_r != mpi.size) {
+			if(mpi.isMaster()) print_with_prefix("Could not find the RxC combination for the # of processes(%d)", mpi.size);
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
 	}
 
-	int log_size_c = log_size - log_size_r;
-
-	mpi.size_2dr = (1 << log_size_r);
-	mpi.size_2dc = (1 << log_size_c);
+	mpi.size_2dr = twod_r;
+	mpi.size_2dc = twod_c;
 
 	if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 
@@ -1222,90 +1225,51 @@ static void setup_2dcomm(bool row_major)
 
 	mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
 	mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
-	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
-	mpi.comm_w2dr = mpi.comm_2dr; mpi.size_w2dr = mpi.size_2dr;
-	mpi.comm_w2dc = mpi.comm_2dc; mpi.size_w2dc = mpi.size_2dc;
-	mpi.size_Z1 = 1; mpi.rank_z1 = 0;
-	mpi.size_Z2 = 1; mpi.rank_z2 = 0;
 	mpi.isRowMajor = row_major;
 }
 
 // assume rank = XYZ
 static void setup_2dcomm_on_3d()
 {
-	const int log_size = get_msb_index(mpi.size_);
-
-	const char* treed_map_str = getenv("TREED_MAP");
+	const char* treed_map_str = getenv("THREED_MAP");
 	if(treed_map_str) {
 		int X, Y, Z1, Z2;
 		sscanf(treed_map_str, "%dx%dx%dx%d", &X, &Y, &Z1, &Z2);
-		mpi.size_w2dr = X * Z1;
-		mpi.size_w2dc = Y * Z2;
-		mpi.size_2dr = 1 << get_msb_index(mpi.size_w2dr);
-		mpi.size_2dc = 1 << get_msb_index(mpi.size_w2dc);
-		mpi.size_Z1 = Z1;
-		mpi.size_Z2 = Z2;
+		mpi.size_2dr = X * Z1;
+		mpi.size_2dc = Y * Z2;
 
-		if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%dx%dx%d) -> (%dx%d) -> (%dx%d)",
-				X, Y, Z1, Z2, mpi.size_w2dr, mpi.size_w2dc, mpi.size_2dr, mpi.size_2dc);
-		if(mpi.size_ < mpi.size_w2dr*mpi.size_w2dc) {
-			if(mpi.isMaster()) print_with_prefix("Error: There are not enough processes.");
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Dimension: (%dx%dx%dx%d) -> (%dx%d)\n", X, Y, Z1, Z2, mpi.size_2dr, mpi.size_2dc);
+		if(mpi.size != mpi.size_2dr * mpi.size_2dc) {
+			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: # of processes does not match\n");
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
 
-		int x, y;
+		int x, y, z1, z2;
 		x = mpi.rank % X;
 		y = (mpi.rank / X) % Y;
-		mpi.rank_z1 = (mpi.rank / (X*Y)) % Z1;
-		mpi.rank_z2 = mpi.rank / (X*Y*Z1);
-		mpi.rank_2dr = mpi.rank_z1 * X + x;
-		mpi.rank_2dc = mpi.rank_z2 * Y + y;
+		z1 = (mpi.rank / (X*Y)) % Z1;
+		z2 = mpi.rank / (X*Y*Z1);
+		mpi.rank_2dr = z1 * X + x;
+		mpi.rank_2dc = z2 * Y + y;
 
 		mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
 		mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
-		mpi.isPadding2D = (mpi.rank_2dr >= mpi.size_2dr || mpi.rank_2dc >= mpi.size_2dc) ? true : false;
-
-		MPI_Comm_split(MPI_COMM_WORLD, mpi.isPadding2D ? 1 : 0, mpi.rank_2d, &mpi.comm_2d);
-		if(mpi.isPadding2D == false) {
-			MPI_Comm_split(mpi.comm_2d, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
-			MPI_Comm_split(mpi.comm_2d, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
-		}
-		else {
-			mpi.comm_2dc = MPI_COMM_NULL;
-			mpi.comm_2dr = MPI_COMM_NULL;
-		}
-
-		if(mpi.size_w2dr != mpi.size_2dr) {
-			int color = mpi.rank_2dc < mpi.size_2dc ? mpi.rank_2dc : MPI_UNDEFINED;
-			MPI_Comm_split(MPI_COMM_WORLD, color, mpi.rank_2dr, &mpi.comm_w2dc);
-		}
-		else {
-			mpi.comm_w2dc = mpi.comm_2dc;
-		}
-		if(mpi.size_w2dc != mpi.size_2dc) {
-			int color = mpi.rank_2dr < mpi.size_2dr ? mpi.rank_2dr : MPI_UNDEFINED;
-			MPI_Comm_split(MPI_COMM_WORLD, color, mpi.rank_2dc, &mpi.comm_w2dr);
-		}
-		else {
-			mpi.comm_w2dr = mpi.comm_2dr;
-		}
+		MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
+		MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
 	}
-	else if((1 << log_size) != mpi.size_) {
-		if(mpi.isMaster()) print_with_prefix("The program needs dimension information when mpi processes is not a power of two.");
+	else {
+		if(mpi.isMaster()) fprintf(IMD_OUT, "Program error.\n");
+		MPI_Abort(MPI_COMM_WORLD, 1);
 	}
 
 }
 
 void cleanup_2dcomm()
 {
-	MPI_Comm_free(&mpi.comm_2d);
-	if(mpi.comm_2dr != mpi.comm_w2dr) MPI_Comm_free(&mpi.comm_w2dr);
-	if(mpi.comm_2dc != mpi.comm_w2dc) MPI_Comm_free(&mpi.comm_w2dc);
-	if(mpi.isPadding2D == false) {
-		MPI_Comm_free(&mpi.comm_2dr);
-		MPI_Comm_free(&mpi.comm_2dc);
-	}
+	MPI_Comm_free(&mpi.comm_2dr);
+	MPI_Comm_free(&mpi.comm_2dc);
 }
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
@@ -1326,7 +1290,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 #endif
 	MPI_Init_thread(&argc, &argv, reqeust_level, &mpi.thread_level);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
-	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size_);
+	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size);
 #if ENABLE_FJMPI_RDMA
 	FJMPI_Rdma_init();
 #endif
@@ -1372,7 +1336,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	backtrace::start_thread();
 #endif
 
-	if(getenv("TREED_MAP")) {
+	if(getenv("THREED_MAP")) {
 		setup_2dcomm_on_3d();
 	}
 	else {
@@ -1380,9 +1344,9 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	}
 
 	// Initialize comm_[yz]
-	mpi.comm_y = mpi.comm_w2dc;
+	mpi.comm_y = mpi.comm_2dc;
 	mpi.comm_z = MPI_COMM_SELF;
-	mpi.size_y = mpi.size_w2dr;
+	mpi.size_y = mpi.size_2dr;
 	mpi.size_z = 1;
 	mpi.rank_y = mpi.rank_2dr;
 	mpi.rank_z = 0;
@@ -2458,7 +2422,7 @@ private:
 		pk_tail[1].offset = tail / sizeof(uint32_t); // bann hei
 
 #define O_TO_S(offset) ((offset)*sizeof(uint32_t))
-#define L_TO_S(length) roundup<sizeof(uint32_t)>(length)
+#define L_TO_S(length) roundup<int>(length, sizeof(uint32_t))
 #define TO_S(offset, length) (O_TO_S(offset) + L_TO_S(length))
 		int i = 0;
 		for( ; i < num_packet; ++i) {
@@ -2836,8 +2800,8 @@ private:
 			dbl_times[i] = times_[i].span;
 		}
 
-		MPI_Reduce(dbl_times, sum_times, num_times, MPI_DOUBLE, MPI_SUM, 0, mpi.comm_2d);
-		MPI_Reduce(dbl_times, max_times, num_times, MPI_DOUBLE, MPI_MAX, 0, mpi.comm_2d);
+		MPI_Reduce(dbl_times, sum_times, num_times, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(dbl_times, max_times, num_times, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
 		if(mpi.isMaster()) {
 			for(int i = 0; i < num_times; ++i) {
@@ -2889,8 +2853,8 @@ private:
 			dbl_times[i] = counters_[i].count;
 		}
 
-		MPI_Reduce(dbl_times, sum_times, num_times, MPI_INT64_T, MPI_SUM, 0, mpi.comm_2d);
-		MPI_Reduce(dbl_times, max_times, num_times, MPI_INT64_T, MPI_MAX, 0, mpi.comm_2d);
+		MPI_Reduce(dbl_times, sum_times, num_times, MPI_INT64_T, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(dbl_times, max_times, num_times, MPI_INT64_T, MPI_MAX, 0, MPI_COMM_WORLD);
 
 		if(mpi.isMaster()) {
 			for(int i = 0; i < num_times; ++i) {

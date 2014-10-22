@@ -34,7 +34,7 @@ public:
 		MPI_Comm_free(&mpi_comm);
 #endif
 	}
-	void init(MPI_Comm mpi_comm__, int Z2, int rank_z1) {
+	void init(MPI_Comm mpi_comm__) {
 		mpi_comm = mpi_comm__;
 #if OVERLAP_WAVE_AND_PRED
 		MPI_Comm_dup(mpi_comm__, &mpi_comm);
@@ -43,9 +43,8 @@ public:
 		MPI_Comm_size(mpi_comm__, &size);
 		MPI_Comm_rank(mpi_comm__, &rank);
 		// compute route
-		int v_rank = to_virtual_rank(rank, size, Z2, rank_z1);
-		int left_rank = to_physical_rank((size+v_rank-1) % size, size, Z2, rank_z1);
-		int right_rank = to_physical_rank((size+v_rank+1) % size, size, Z2, rank_z1);
+		int left_rank = (rank + 1) % size;
+		int right_rank = (rank + size - 1) % size;
 		nodes(0).rank = left_rank;
 		nodes(1).rank = right_rank;
 		debug("left=%d, right=%d", left_rank, right_rank);
@@ -208,34 +207,14 @@ protected:
 		debug("begin buffer_count=%d, buffer_width=%d, total_steps=%d",
 				buffer_count__, buffer_width__, total_steps__);
 	}
-
-	// virtual topology to avoid network congestion
-	static int to_virtual_rank(int rank, int size, int Z2, int rank_z1) {
-		// shift on the YxZ dimension
-		int Y = size / Z2; // the size of Y dim
-		int rank_y = rank % Y; // rank on physical Y dim
-		int v_rank_y = (rank_y + rank_z1) % Y; // rank on virtual Y dim
-		int rank_z = rank / Y; // rank on physical and virtual Z dim
-		return rank_z * Y + v_rank_y; // rank on virtual YxZ dim
-	}
-
-	static int to_physical_rank(int v_rank, int size, int Z2, int rank_z1) {
-		// shift on the YxZ dimension
-		int Y = size / Z2; // the size of Y dim
-		int v_rank_y = v_rank % Y; // rank on virtual Y dim
-		int rank_z = v_rank / Y; // rank on physical and virtual Z dim
-		int rank_z1_ = rank_z1 % Y;
-		int rank_y = (v_rank_y + Y - rank_z1_) % Y; // rank on physical Y dim
-		return rank_z * Y + rank_y; // rank on physical YxZ dim
-	}
 };
 
 class MpiBottomUpSubstepComm : public BottomUpSubstepCommBase {
 	typedef BottomUpSubstepCommBase super__;
 public:
-	MpiBottomUpSubstepComm(MPI_Comm mpi_comm__, int Z2, int rank_z1)
+	MpiBottomUpSubstepComm(MPI_Comm mpi_comm__)
 	{
-		init(mpi_comm__, Z2, rank_z1);
+		init(mpi_comm__);
 		for(int i = 0; i < int(sizeof(req)/sizeof(req[0])); ++i) {
 			req[i] = MPI_REQUEST_NULL;
 		}
@@ -375,7 +354,7 @@ protected:
 		int send_per_node = total_steps / 2;
 		CommTarget& node = nodes_[target];
 		while(true) {
-			if(node.recv_count >= send_per_node) {
+			if((int)node.recv_count >= send_per_node) {
 				break;
 			}
 			int buf_idx = node.recv_count % NBUF;

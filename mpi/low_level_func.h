@@ -26,6 +26,8 @@ struct LocalPacket {
 void backward_isolated_edge(
 	int half_bitmap_width,
 	int phase_bmp_off,
+	int phase_vertex_off,
+	int lgl, int L,
 	BitmapType* __restrict__ phase_bitmap,
 	const BitmapType* __restrict__ row_bitmap,
 	const BitmapType* __restrict__ shared_visited,

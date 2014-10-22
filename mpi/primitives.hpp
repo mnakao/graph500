@@ -128,42 +128,59 @@ struct WeightedEdge {
 // Index Array Types
 //-------------------------------------------------------------//
 
-class Pack40bit {
+struct Rail40bitElement {
+	uint32_t high[4];
+	uint8_t low[4];
+};
+
+class Rail40bit {
 public:
 	static const int bytes_per_edge = 5;
 
-	Pack40bit() : i32_(NULL), i8_(NULL) { }
-	~Pack40bit() { this->free(); }
+	Rail40bit() : rail_(NULL) { }
+	~Rail40bit() { this->free(); }
 	void alloc(int64_t length) {
-		i32_ = static_cast<int32_t*>(cache_aligned_xmalloc(length*sizeof(int32_t)));
-		i8_ = static_cast<uint8_t*>(cache_aligned_xmalloc(length*sizeof(uint8_t)));
+		int alloc_length = (length + 3) / 4;
+		rail_ = static_cast<Rail40bitElement*>(cache_aligned_xmalloc(alloc_length*sizeof(Rail40bitElement)));
 #ifndef NDEBUG
-		memset(i32_, 0x00, length*sizeof(i32_[0]));
-		memset(i8_, 0x00, length*sizeof(i8_[0]));
+		memset(rail_, 0x00, alloc_length*sizeof(rail_[0]));
 #endif
 	}
-	void free() { ::free(i32_); i32_ = NULL; ::free(i8_); i8_ = NULL; }
+	void free() { ::free(rail_); rail_ = NULL; }
 
 	int64_t operator()(int64_t index) const {
-		return static_cast<int64_t>(i8_[index]) |
-				(static_cast<int64_t>(i32_[index]) << 8);
+		Rail40bitElement* elm = &rail_[index/4];
+		return static_cast<int64_t>(elm->low[index%4]) |
+				(static_cast<int64_t>(elm->high[index%4]) << 8);
 	}
-	uint8_t low_bits(int64_t index) const { return i8_[index]; }
+	uint8_t low_bits(int64_t index) const {
+		Rail40bitElement* elm = &rail_[index/4];
+		return elm->low[index%4];
+	}
 	void set(int64_t index, int64_t value) {
-		i8_[index] = static_cast<uint8_t>(value);
-		i32_[index] = static_cast<int32_t>(value >> 8);
+		Rail40bitElement* elm = &rail_[index/4];
+		elm->low[index%4] = static_cast<uint8_t>(value);
+		elm->high[index%4] = static_cast<int32_t>(value >> 8);
 	}
 	void move(int64_t to, int64_t from, int64_t size) {
-		memmove(i32_ + to, i32_ + from, sizeof(i32_[0])*size);
-		memmove(i8_ + to, i8_ + from, sizeof(i8_[0])*size);
+		if(to < from) {
+			for(int i = 0; i < size; ++i) {
+				set(to+i, (*this)(from+i));
+			}
+		}
+		else if(from < to) {
+			for(int i = size; i > 0; --i) {
+				set(to+i-1, (*this)(from+i-1));
+			}
+		}
 	}
-	void copy_from(int64_t to, Pack40bit& array, int64_t from, int64_t size) {
-		memcpy(i32_ + to, array.i32_ + from, sizeof(i32_[0])*size);
-		memcpy(i8_ + to, array.i8_ + from, sizeof(i8_[0])*size);
+	void copy_from(int64_t to, Rail40bit& array, int64_t from, int64_t size) {
+		for(int i = 0; i < size; ++i) {
+			set(to+i, array(from+i));
+		}
 	}
 private:
-	int32_t *i32_;
-	uint8_t *i8_;
+	Rail40bitElement *rail_;
 };
 
 class Pack48bit {
@@ -304,6 +321,18 @@ public:
 	int64_t* get_ptr() { return i64_; }
 private:
 	int64_t *i64_;
+};
+
+struct SeparatedId {
+	uint64_t value;
+
+	explicit SeparatedId(uint64_t v) : value(v) { }
+	SeparatedId(int high, uint64_t low, int lgl)
+		: value((uint64_t(high) << lgl) | low) { }
+	uint64_t raw() const { return value; }
+	uint64_t compact(int lgl, int64_t L) const { return high(lgl) * L + low(lgl); }
+	int high(int lgl) const { return value >> lgl; }
+	uint64_t low(int lgl) const { return value & ((uint64_t(1) << lgl) - 1); }
 };
 
 

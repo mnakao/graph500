@@ -28,11 +28,17 @@
 #include "utils_core.h"
 #include "low_level_func.h"
 
+#if 1
+#include <mpi.h>
+#endif
+
 #if LOW_LEVEL_FUNCTION
 
 void backward_isolated_edge(
 	int half_bitmap_width,
-	int phase_bmp_off,
+	int phase_bmp_off, // compact
+	int phase_vertex_off, // separated
+	int lgl, int L,
 	BitmapType* __restrict__ phase_bitmap,
 	const BitmapType* __restrict__ row_bitmap,
 	const BitmapType* __restrict__ shared_visited,
@@ -47,8 +53,11 @@ void backward_isolated_edge(
 	int width_per_thread = (half_bitmap_width + num_threads - 1) / num_threads;
 	int off_start = std::min(half_bitmap_width, width_per_thread * tid);
 	int off_end = std::min(half_bitmap_width, off_start + width_per_thread);
+	TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
 	int num_send = 0;
-
+#if 1
+	int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
 #if CONSOLIDATE_IFE_PROC
 	for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
 		BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
@@ -62,12 +71,13 @@ void backward_isolated_edge(
 			int idx = __builtin_popcountl(mask);
 			TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
 			// short cut
-			TwodVertex src = isolated_edges[non_zero_idx];
-			if(shared_visited[src >> PRM::LOG_NBPE] & (BitmapType(1) << (src & PRM::NBPE_MASK))) {
+			TwodVertex separated_src = isolated_edges[non_zero_idx];
+			TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+			if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 				// add to next queue
 				visited_i |= vis_bit;
-				buffer->data.b[num_send+0] = src;
-				buffer->data.b[num_send+1] = (phase_bmp_off + blk_bmp_off) * PRM::NBPE + idx;
+				buffer->data.b[num_send+0] = separated_src;
+				buffer->data.b[num_send+1] = phase_vertex_off + (blk_bmp_off * PRM::NBPE) + idx;
 				num_send += 2;
 				// end this row
 				continue;
@@ -75,12 +85,13 @@ void backward_isolated_edge(
 			int64_t e_start = row_starts[non_zero_idx];
 			int64_t e_end = row_starts[non_zero_idx+1];
 			for(int64_t e = e_start; e < e_end; ++e) {
-				TwodVertex src = edge_array[e];
-				if(shared_visited[src >> PRM::LOG_NBPE] & (BitmapType(1) << (src & PRM::NBPE_MASK))) {
+				TwodVertex separated_src = edge_array[e];
+				TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
-					buffer->data.b[num_send+0] = src;
-					buffer->data.b[num_send+1] = (phase_bmp_off + blk_bmp_off) * PRM::NBPE + idx;
+					buffer->data.b[num_send+0] = separated_src;
+					buffer->data.b[num_send+1] = phase_vertex_off + (blk_bmp_off * PRM::NBPE) + idx;
 					num_send += 2;
 					// end this row
 					break;
@@ -104,11 +115,12 @@ void backward_isolated_edge(
 			int idx = __builtin_popcountl(mask);
 			TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
 			// short cut
-			TwodVertex src = isolated_edges[non_zero_idx];
-			if(shared_visited[src >> PRM::LOG_NBPE] & (BitmapType(1) << (src & PRM::NBPE_MASK))) {
+			TwodVertex separated_src = isolated_edges[non_zero_idx];
+			TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+			if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 				// add to next queue
 				visited_i |= vis_bit;
-				buffer->data.b[num_send+0] = src;
+				buffer->data.b[num_send+0] = separated_src;
 				buffer->data.b[num_send+1] = (phase_bmp_off + blk_bmp_off) * PRM::NBPE + idx;
 				num_send += 2;
 			}
@@ -131,11 +143,12 @@ void backward_isolated_edge(
 			int64_t e_start = row_starts[non_zero_idx];
 			int64_t e_end = row_starts[non_zero_idx+1];
 			for(int64_t e = e_start; e < e_end; ++e) {
-				TwodVertex src = edge_array[e];
-				if(shared_visited[src >> PRM::LOG_NBPE] & (BitmapType(1) << (src & PRM::NBPE_MASK))) {
+				TwodVertex separated_src = edge_array[e];
+				TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
-					buffer->data.b[num_send+0] = src;
+					buffer->data.b[num_send+0] = separated_src;
 					buffer->data.b[num_send+1] = (phase_bmp_off + blk_bmp_off) * PRM::NBPE + idx;
 					num_send += 2;
 					// end this row
