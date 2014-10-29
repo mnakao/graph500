@@ -28,10 +28,6 @@
 #include "utils_core.h"
 #include "low_level_func.h"
 
-#if 1
-#include <mpi.h>
-#endif
-
 #if LOW_LEVEL_FUNCTION
 
 void backward_isolated_edge(
@@ -55,9 +51,6 @@ void backward_isolated_edge(
 	int off_end = std::min(half_bitmap_width, off_start + width_per_thread);
 	TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
 	int num_send = 0;
-#if 1
-	int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif
 #if CONSOLIDATE_IFE_PROC
 	for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
 		BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);

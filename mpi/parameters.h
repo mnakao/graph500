@@ -9,8 +9,8 @@
 #define PARAMETERS_H_
 
 // for the systems that contains NUMA nodes
-#define NUMA_BIND 1
-#define SHARED_MEMORY 1
+#define NUMA_BIND 0
+#define SHARED_MEMORY 0
 
 #define CPU_BIND_CHECK 0
 #define PRINT_BINDING 0
@@ -23,7 +23,7 @@
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 2
+#define VALIDATION_LEVEL 1
 
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
@@ -31,7 +31,7 @@
 #define REPORT_GEN_RPGRESS 0
 #define ENABLE_FUJI_PROF 0
 #define ENABLE_FJMPI_RDMA 0
-#define OVERLAP_WAVE_AND_PRED 1
+#define OVERLAP_WAVE_AND_PRED 0
 
 // root switch to on/off debug print
 #define DEBUG_PRINT 0
@@ -125,7 +125,7 @@
 
 typedef uint8_t SortIdx;
 typedef uint64_t BitmapType;
-typedef uint64_t TwodVertex; // TODO:
+typedef uint32_t TwodVertex; // TODO:
 
 #ifdef __cplusplus
 namespace PRM { //
