@@ -151,8 +151,8 @@ template <typename EdgeList>
 class GraphConstructor2DCSR
 {
 	enum {
-		LOG_EDGE_PART_SIZE = 16,
-	//	LOG_EDGE_PART_SIZE = 12,
+	//	LOG_EDGE_PART_SIZE = 16,
+		LOG_EDGE_PART_SIZE = 12,
 		EDGE_PART_SIZE = 1 << LOG_EDGE_PART_SIZE, // == UINT64_MAX + 1
 		EDGE_PART_SIZE_MASK = EDGE_PART_SIZE - 1,
 
@@ -363,7 +363,7 @@ private:
 	void reduceMaxWeight(int max_weight, GraphType& g, typename EdgeType::has_weight dummy = 0)
 	{
 		int global_max_weight;
-		MPI_Allreduce(&max_weight, &global_max_weight, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+		MPI_Allreduce(&max_weight, &global_max_weight, 1, MPI_INT, MPI_MAX, mpi.comm_2d);
 		g.max_weight_ = global_max_weight;
 		g.log_max_weight_ = get_msb_index(global_max_weight);
 	}
@@ -376,7 +376,7 @@ private:
 
 	void scatterAndScanEdges(EdgeList* edge_list, GraphType& g) {
 		VT_TRACER("scan_edge");
-		ScatterContext scatter(MPI_COMM_WORLD);
+		ScatterContext scatter(mpi.comm_2d);
 		TwodVertex* edges_to_send = static_cast<TwodVertex*>(
 				xMPI_Alloc_mem(2 * EdgeList::CHUNK_SIZE * sizeof(TwodVertex)));
 		int num_loops = edge_list->beginRead(false);
@@ -402,7 +402,7 @@ private:
 #endif
 
 			uint64_t tmp_send = max_vertex;
-			MPI_Allreduce(&tmp_send, &max_vertex, 1, MpiTypeOf<uint64_t>::type, MPI_BOR, MPI_COMM_WORLD);
+			MPI_Allreduce(&tmp_send, &max_vertex, 1, MpiTypeOf<uint64_t>::type, MPI_BOR, mpi.comm_2d);
 
 #if NETWORK_PROBLEM_AYALISYS
 			if(mpi.isMaster()) print_with_prefix("OK! ");
@@ -589,7 +589,7 @@ private:
 		//const int comm_size = mpi.size_2dc;
 		int64_t num_max_edges = g.row_starts_[non_zero_rows];
 		int64_t tmp_send_num_max_edges = num_max_edges;
-		MPI_Allreduce(&tmp_send_num_max_edges, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, MPI_COMM_WORLD);
+		MPI_Allreduce(&tmp_send_num_max_edges, &num_max_edges, 1, MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
 		int num_loops = get_blocks<int64_t>(num_max_edges, EdgeList::CHUNK_SIZE*4);
 		int64_t bitmap_chunk_size = (num_loops == 0) ? 0 : get_blocks<int64_t>(row_bitmap_length, num_loops);
 
@@ -648,7 +648,7 @@ private:
 #if DEGREE_ORDER
 			free(recv_degree); recv_degree = NULL;
 #endif
-			MPI_Barrier(MPI_COMM_WORLD);
+			MPI_Barrier(mpi.comm_2d);
 			if(mpi.isMaster()) print_with_prefix("%d-th iteration finished.", loop);
 		} // for(int loop = 0; loop < num_loops; ++loop) {
 
@@ -909,8 +909,8 @@ private:
 		};
 		int64_t max_rowbmp[5];
 		int64_t sum_rowbmp[5];
-		MPI_Reduce(send_rowbmp, sum_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
-		MPI_Reduce(send_rowbmp, max_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
+		MPI_Reduce(send_rowbmp, sum_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
+		MPI_Reduce(send_rowbmp, max_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
 		if(mpi.isMaster()) {
 			int64_t local_bits_max = int64_t(1) << local_bits_;
 			print_with_prefix("non zero rows. Total %f M / %f M = %f %% Avg %f M / %f M Max %f %%+",
@@ -1049,7 +1049,7 @@ private:
 
 	void scatterAndStore(EdgeList* edge_list, GraphType& g) {
 		VT_TRACER("store_edge");
-		ScatterContext scatter(MPI_COMM_WORLD);
+		ScatterContext scatter(mpi.comm_2d);
 		EdgeType* edges_to_send = static_cast<EdgeType*>(
 				xMPI_Alloc_mem(2 * EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
 
@@ -1266,7 +1266,7 @@ private:
 
 		 int64_t num_edge_sum[2] = {0};
 		 int64_t num_edge[2] = {old_num_edges, rowstart_new};
-		MPI_Reduce(num_edge, num_edge_sum, 2, MPI_INT64_T, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(num_edge, num_edge_sum, 2, MPI_INT64_T, MPI_SUM, 0, mpi.comm_2d);
 		if(mpi.isMaster()) print_with_prefix("# of edges is reduced. Total %zd -> %zd Diff %f %%",
 				num_edge_sum[0], num_edge_sum[1], (double)(num_edge_sum[0] - num_edge_sum[1])/(double)num_edge_sum[0]*100.0);
 		g.num_global_edges_ = num_edge_sum[1];
@@ -1287,7 +1287,7 @@ private:
 			num_vertices += __builtin_popcountl(g.has_edge_bitmap_[i]);
 		}
 		int64_t tmp_send_num_vertices = num_vertices;
-		MPI_Allreduce(&tmp_send_num_vertices, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(&tmp_send_num_vertices, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
 		VERVOSE(int64_t num_virtual_vertices = int64_t(1) << g.log_actual_global_verts_);
 		VERVOSE(if(mpi.isMaster()) print_with_prefix("# of actual vertices %f G %f %%", to_giga(num_vertices),
 				(double)num_vertices / (double)num_virtual_vertices * 100.0));

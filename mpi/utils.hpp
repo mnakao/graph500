@@ -23,7 +23,7 @@
 #if BACKTRACE_ON_SIGNAL
 #include <signal.h>
 #endif
-#if ENABLE_FJMPI_RDMA
+#if ENABLE_FJMPI
 #include <mpi-ext.h>
 #endif
 
@@ -122,6 +122,7 @@ struct MPI_GLOBALS {
 	int size_2d; // = size
 	int size_2dc; // = comm_2dr.size()
 	int size_2dr; // = comm_2dc.size()
+	MPI_Comm comm_2d;
 	MPI_Comm comm_2dr; // = comm_x
 	MPI_Comm comm_2dc;
 	bool isRowMajor;
@@ -1184,49 +1185,98 @@ void set_affinity()
 
 static void setup_2dcomm(bool row_major)
 {
-	const char* twod_r_str = getenv("TWOD_R");
 	int twod_r = 1, twod_c = 1;
-	if(twod_r_str){
-		twod_r = atoi((char*)twod_r_str);
-		twod_c = mpi.size / twod_r;
-		if(twod_r == 0 || (twod_c * twod_r) != mpi.size) {
-			if(mpi.isMaster()) print_with_prefix("# of MPI processes(%d) cannot be divided by %d", mpi.size, twod_r);
-			MPI_Abort(MPI_COMM_WORLD, 1);
+#if ENABLE_FJMPI
+	const char* tofu_6d = getenv("TOFU_6D");
+	if(twod_r * twod_c == 1 && tofu_6d) {
+		int pdim = 0;
+		switch(*tofu_6d) {
+		case 'x': pdim = 0; break;
+		case 'y': pdim = 1; break;
+		case 'z': pdim = 2; break;
+		}
+		int rank6d[6];
+		int size6d[6];
+		FJMPI_Topology_rel_rank2xyzabc(mpi.rank, &rank6d[0], &rank6d[1], &rank6d[2], &rank6d[3], &rank6d[4], &rank6d[5]);
+		MPI_Allreduce(rank6d, size6d, 6, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+		int total = 1;
+		for(int i = 0; i < 6; ++i) {
+			total *= ++size6d[i];
+		}
+		if(mpi.isMaster()) print_with_prefix("Detected dimension %dx%dx%dx%dx%dx%d = %d", size6d[0], size6d[1], size6d[2], size6d[3], size6d[4], size6d[5], mpi.size);
+		if(total != mpi.size) {
+			if(mpi.isMaster()) print_with_prefix("Mismatch error!");
+		}
+		else {
+			int rank_r = 0, rank_c = 0;
+			for(int i = 3; i < 6; ++i) {
+				rank_c += rank6d[i] * twod_c;
+				twod_c *= size6d[i];
+			}
+			rank_c += rank6d[pdim] * twod_c;
+			twod_c *= size6d[pdim];
+			for(int i = 0; i < 3; ++i) {
+				if(pdim != i) {
+					rank_r += rank6d[i] * twod_r;
+					twod_r *= size6d[i];
+				}
+			}
+
+			mpi.size_2dr = twod_r;
+			mpi.size_2dc = twod_c;
+			mpi.rank_2dr = rank_r;
+			mpi.rank_2dc = rank_c;
+
+			if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 		}
 	}
-	else {
-		for(twod_r = (int)sqrt(mpi.size); twod_r < mpi.size; ++twod_r) {
+	else
+#endif // #if ENABLE_FJMPI
+	if(twod_r * twod_c == 1) {
+		const char* twod_r_str = getenv("TWOD_R");
+		if(twod_r_str){
+			twod_r = atoi((char*)twod_r_str);
 			twod_c = mpi.size / twod_r;
-			if(twod_c * twod_r == mpi.size) {
-				break;
+			if(twod_r == 0 || (twod_c * twod_r) != mpi.size) {
+				if(mpi.isMaster()) print_with_prefix("# of MPI processes(%d) cannot be divided by %d", mpi.size, twod_r);
+				MPI_Abort(MPI_COMM_WORLD, 1);
 			}
 		}
-		if(twod_c * twod_r != mpi.size) {
-			if(mpi.isMaster()) print_with_prefix("Could not find the RxC combination for the # of processes(%d)", mpi.size);
-			MPI_Abort(MPI_COMM_WORLD, 1);
+		else {
+			for(twod_r = (int)sqrt(mpi.size); twod_r < mpi.size; ++twod_r) {
+				twod_c = mpi.size / twod_r;
+				if(twod_c * twod_r == mpi.size) {
+					break;
+				}
+			}
+			if(twod_c * twod_r != mpi.size) {
+				if(mpi.isMaster()) print_with_prefix("Could not find the RxC combination for the # of processes(%d)", mpi.size);
+				MPI_Abort(MPI_COMM_WORLD, 1);
+			}
 		}
-	}
 
-	mpi.size_2dr = twod_r;
-	mpi.size_2dc = twod_c;
+		mpi.size_2dr = twod_r;
+		mpi.size_2dc = twod_c;
 
-	if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
+		if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 
-	if(row_major) {
-		// row major
-		mpi.rank_2dr = mpi.rank / mpi.size_2dc;
-		mpi.rank_2dc = mpi.rank % mpi.size_2dc;
-	}
-	else {
-		// column major
-		mpi.rank_2dc = mpi.rank / mpi.size_2dr;
-		mpi.rank_2dr = mpi.rank % mpi.size_2dr;
+		if(row_major) {
+			// row major
+			mpi.rank_2dr = mpi.rank / mpi.size_2dc;
+			mpi.rank_2dc = mpi.rank % mpi.size_2dc;
+		}
+		else {
+			// column major
+			mpi.rank_2dc = mpi.rank / mpi.size_2dr;
+			mpi.rank_2dr = mpi.rank % mpi.size_2dr;
+		}
 	}
 
 	mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
 	mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
+	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
 	mpi.isRowMajor = row_major;
 }
 
@@ -1258,6 +1308,7 @@ static void setup_2dcomm_on_3d()
 		mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
 		MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
 		MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
+		MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
 	}
 	else {
 		if(mpi.isMaster()) fprintf(IMD_OUT, "Program error.\n");

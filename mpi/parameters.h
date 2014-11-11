@@ -27,7 +27,7 @@
 
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
-#define PROFILING_MODE 0
+#define PROFILING_MODE 1
 #define REPORT_GEN_RPGRESS 0
 #define ENABLE_FUJI_PROF 0
 #define ENABLE_FJMPI_RDMA 0
@@ -97,8 +97,9 @@
 #define SGI_OMPLACE_BUG 0
 
 #ifdef __FUJITSU
-
+#	define ENABLE_FJMPI 1
 #else // #ifdef __FUJITSU
+#	define ENABLE_FJMPI 0
 #	undef ENABLE_FUJI_PROF
 #	define ENABLE_FUJI_PROF 0
 //#	undef ENABLE_FJMPI_RDMA

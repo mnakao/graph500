@@ -1,5 +1,6 @@
-SW = GNU3
+SW = GNU0
 VAMP = false
+SCOREP = false
 
 # default values
 LDFLAGS := -fopenmp -g # -pg
@@ -109,6 +110,10 @@ endif
 ifeq ($(VAMP), true)
 MPICC := vtcc -vt:cc $(MPICC) -vt:inst manual -vt:hyb -DVTRACE
 MPICPP := vtcc -vt:cc $(MPICPP) -vt:inst manual -vt:hyb -DVTRACE
+endif
+ifeq ($(SCOREP), true)
+MPICC := scorep --nocimpiler $(MPICC)
+MPICPP := scorep --nocimpiler $(MPICPP)
 endif
 
 CPPFLAGS := $(CFLAGS)

@@ -93,9 +93,145 @@ inline int __builtin_ctz_asm(uint32_t n) {
 #define __builtin_ctz32bit __builtin_ctz_asm
 #define __builtin_ctz64bit __builtin_ctzl_asm
 
+#if 1
+inline int32_t __sync_fetch_and_add(volatile int32_t* ptr, int32_t n) {
+	int32_t old_value;
+	__asm__ (
+		"ld     [%2], %0\n"
+	"1:\n\t"
+		"add    %0, %3, %%l0\n\t"
+			"membar 15\n\t"
+		"cas    [%2], %0, %%l0\n\t"
+		"cmp    %0, %%l0\n\t"
+		"bne,a,pn %%icc, 1b\n\t"
+		"mov    %%l0, %0\n\t"
+		:"=&r"(old_value),"=m"(*ptr)
+		:"r"(ptr),"r"(n)
+		:"%l0","cc"
+	);
+	return old_value;
+}
+inline int64_t __sync_fetch_and_add(volatile int64_t* ptr, int64_t n) {
+	int64_t old_value;
+	__asm__ (
+		"ldx    [%2], %0\n"
+	"1:\n\t"
+		"add    %0, %3, %%l0\n\t"
+			"membar 15\n\t"
+		"casx  [%2], %0, %%l0\n\t"
+		"cmp    %0, %%l0\n\t"
+		"bne,a,pn %%xcc, 1b\n\t"
+		"mov    %%l0, %0\n\t"
+		:"=&r"(old_value),"=m"(*ptr)
+		:"r"(ptr),"r"(n)
+		:"%l0","cc"
+	);
+	return old_value;
+}
+
+inline int32_t __sync_add_and_fetch(volatile int32_t* ptr, int32_t n) {
+	int32_t old_value;
+	__asm__ (
+		"ld     [%2], %0\n"
+	"1:\n\t"
+		"add    %0, %3, %%l0\n\t"
+			"membar 15\n\t"
+		"cas    [%2], %0, %%l0\n\t"
+		"cmp    %0, %%l0\n\t"
+		"bne,a,pn %%icc, 1b\n\t"
+		"mov    %%l0, %0\n\t"
+		:"=&r"(old_value),"=m"(*ptr)
+		:"r"(ptr),"r"(n)
+		:"%l0","cc"
+	);
+	return old_value + n;
+}
+inline int64_t __sync_add_and_fetch(volatile int64_t* ptr, int64_t n) {
+	int64_t old_value;
+	__asm__ (
+		"ldx    [%2], %0\n"
+	"1:\n\t"
+		"add    %0, %3, %%l0\n\t"
+			"membar 15\n\t"
+		"casx  [%2], %0, %%l0\n\t"
+		"cmp    %0, %%l0\n\t"
+		"bne,a,pn %%xcc, 1b\n\t"
+		"mov    %%l0, %0\n\t"
+		:"=&r"(old_value),"=m"(*ptr)
+		:"r"(ptr),"r"(n)
+		:"%l0","cc"
+	);
+	return old_value + n;
+}
+
+inline uint32_t __sync_fetch_and_or(volatile uint32_t* ptr, uint32_t n) {
+	int32_t old_value;
+	__asm__ (
+		"ld     [%2], %0\n"
+	"1:\n\t"
+		"or     %0, %3, %%l0\n\t"
+			"membar 15\n\t"
+		"cas    [%2], %0, %%l0\n\t"
+		"cmp    %0, %%l0\n\t"
+		"bne,a,pn %%icc, 1b\n\t"
+		"mov    %%l0, %0\n\t"
+		:"=&r"(old_value),"=m"(*ptr)
+		:"r"(ptr),"r"(n)
+		:"%l0","cc"
+	);
+	return old_value;
+}
+inline uint64_t __sync_fetch_and_or(volatile uint64_t* ptr, uint64_t n) {
+	int64_t old_value;
+	__asm__ (
+		"ldx    [%2], %0\n"
+	"1:\n\t"
+		"or     %0, %3, %%l0\n\t"
+			"membar 15\n\t"
+		"casx  [%2], %0, %%l0\n\t"
+		"cmp    %0, %%l0\n\t"
+		"bne,a,pn %%xcc, 1b\n\t"
+		"mov    %%l0, %0\n\t"
+		:"=&r"(old_value),"=m"(*ptr)
+		:"r"(ptr),"r"(n)
+		:"%l0","cc"
+	);
+	return old_value;
+}
+
+inline bool __sync_bool_compare_and_swap(volatile int32_t* ptr, int32_t old_value, int32_t new_value) {
+	bool ret;
+	__asm__ (
+		"membar 15\n\t"
+		"cas    [%2], %3, %4\n\t"
+		"cmp    %3, %4\n\t"
+		"or     %%g0, 1, %0\n\t"
+		"movne  %%icc, 0, %0\n\t"
+		:"=r"(ret),"=m"(*ptr)
+		:"r"(ptr),"r"(old_value),"r"(new_value)
+		:"cc"
+	);
+	return ret;
+}
+inline bool __sync_bool_compare_and_swap(volatile int64_t* ptr, int64_t old_value, int64_t new_value) {
+	bool ret;
+	__asm__ (
+		"membar 15\n\t"
+		"casx  [%2], %3, %4\n\t"
+		"cmp    %3, %4\n\t"
+		"or     %%g0, 1, %0\n\t"
+		"movne  %%xcc, 0, %0\n\t"
+		:"=r"(ret),"=m"(*ptr)
+		:"r"(ptr),"r"(old_value),"r"(new_value)
+		:"cc"
+	);
+	return ret;
+}
+#endif
+
 // Since Fujitsu compiler does not support __sync_synchronize.
 // We define here.
-static __thread int this_is_not_used_ = 0;
+static __thread uint this_is_not_used_ = 0;
 #define __sync_synchronize() do { __sync_fetch_and_or(&this_is_not_used_, 1); } while(false)
 
 #define NEXT_BIT(flags__, flag__, mask__, idx__) do {\

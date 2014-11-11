@@ -1030,10 +1030,10 @@ public:
 		}
 		int64_t send_nq_size = nq_size_;
 		PROF(seq_proc_time_ += tk_all);
-		PROF(MPI_Barrier(MPI_COMM_WORLD));
+		PROF(MPI_Barrier(mpi.comm_2d));
 		PROF(fold_competion_wait_ += tk_all);
-		MPI_Allreduce(&nq_size_, &max_nq_size_, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-		MPI_Allreduce(&send_nq_size, &global_nq_size_, 1, MpiTypeOf<int64_t>::type, MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(&nq_size_, &max_nq_size_, 1, MPI_INT, MPI_MAX, mpi.comm_2d);
+		MPI_Allreduce(&send_nq_size, &global_nq_size_, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
 		PROF(gather_nq_time_ += tk_all);
 	}
 
@@ -1879,14 +1879,14 @@ public:
 	void bottom_up_gather_nq_size(int* visited_count) {
 		VT_TRACER("bu_gather_info");
 		PROF(profiling::TimeKeeper tk_all);
-		PROF(MPI_Barrier(MPI_COMM_WORLD));
+		PROF(MPI_Barrier(mpi.comm_2d));
 		PROF(fold_competion_wait_ += tk_all);
 #if 1 // which one is faster ?
 		int recv_count[mpi.size_2dc]; for(int i = 0; i < mpi.size_2dc; ++i) recv_count[i] = 1;
 		MPI_Reduce_scatter(visited_count, &nq_size_, recv_count, MPI_INT, MPI_SUM, mpi.comm_2dr);
-		MPI_Allreduce(&nq_size_, &max_nq_size_, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+		MPI_Allreduce(&nq_size_, &max_nq_size_, 1, MPI_INT, MPI_MAX, mpi.comm_2d);
 		int64_t nq_size = nq_size_;
-		MPI_Allreduce(&nq_size, &global_nq_size_, 1, MpiTypeOf<int64_t>::type, MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(&nq_size, &global_nq_size_, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
 #else
 		int red_nq_size[mpi.size_2dc];
 		struct {

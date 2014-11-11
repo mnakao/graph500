@@ -57,7 +57,7 @@ gather* init_gather(void* input, size_t input_count, size_t elt_size, void* outp
   g->nrequests_max = nrequests_max;
   g->datatype = dt;
   g->valid = 0;
-  MPI_Comm_dup(MPI_COMM_WORLD, &g->comm);
+  MPI_Comm_dup(mpi.comm_2d, &g->comm);
   g->local_indices = (size_t*)page_aligned_xmalloc(nrequests_max * sizeof(size_t));
   g->remote_ranks = (int*)page_aligned_xmalloc(nrequests_max * sizeof(int));
   g->remote_indices = (MPI_Aint*)page_aligned_xmalloc(nrequests_max * sizeof(MPI_Aint));
@@ -228,7 +228,7 @@ scatter_constant* init_scatter_constant(void* array, size_t array_count, size_t 
   sc->constant = constant;
   sc->nrequests_max = nrequests_max;
   sc->valid = 0;
-  MPI_Comm_dup(MPI_COMM_WORLD, &sc->comm);
+  MPI_Comm_dup(mpi.comm_2d, &sc->comm);
   sc->remote_ranks = (int*)cache_aligned_xmalloc(nrequests_max * sizeof(int));
   sc->remote_indices = (MPI_Aint*)page_aligned_xmalloc(nrequests_max * sizeof(MPI_Aint));
   MPI_Comm_size(sc->comm, &sc->comm_size);
@@ -365,7 +365,7 @@ scatter* init_scatter(void* array, size_t array_count, size_t elt_size, size_t n
   sc->nrequests_max = nrequests_max;
   sc->datatype = dt;
   sc->valid = 0;
-  MPI_Comm_dup(MPI_COMM_WORLD, &sc->comm);
+  MPI_Comm_dup(mpi.comm_2d, &sc->comm);
   sc->remote_ranks = (int*)cache_aligned_xmalloc(nrequests_max * sizeof(int));
   sc->remote_indices = (MPI_Aint*)page_aligned_xmalloc(nrequests_max * sizeof(MPI_Aint));
   MPI_Comm_size(sc->comm, &sc->comm_size);
@@ -495,7 +495,7 @@ public:
 	, chunksize_(chunksize)
 	{
 		uint64_t maxlocalverts_ui = nlocalverts;
-		MPI_Allreduce(MPI_IN_PLACE, &maxlocalverts_ui, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &maxlocalverts_ui, 1, MPI_UINT64_T, MPI_MAX, mpi.comm_2d);
 		maxlocalverts = maxlocalverts_ui;
 	}
 
@@ -514,7 +514,7 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
   if (root < 0 || root >= nglobalverts) {
 	print_with_prefix("Validation error: root vertex %" PRId64 " is invalid.", root);
   }
-  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #1
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, mpi.comm_2d); // #1
   if (error_counts) return false; /* Fail */
   assert (pred);
 
@@ -567,7 +567,7 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 	free(pred_owner);
 	free(pred_local);
   }
-  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #2
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, mpi.comm_2d); // #2
   if (error_counts) return false; /* Fail */
 
   assert (pred);
@@ -578,7 +578,7 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 	/* Create a vertex depth map to use for later validation. */
 	  error_counts += build_bfs_depth_map(root, pred);
   }
-  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #3
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, mpi.comm_2d); // #3
   if (error_counts) return false; /* Fail */
 
   {
@@ -792,12 +792,12 @@ bool validate(EdgeList* edge_list, const int64_t root, int64_t* const pred, int6
 	}
 	free(pred_valid);
 
-	MPI_Allreduce(MPI_IN_PLACE, &edge_visit_count, 1, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &edge_visit_count, 1, MPI_INT64_T, MPI_SUM, mpi.comm_2d);
 	*edge_visit_count_ptr = edge_visit_count;
   }
 
   /* Collect the global validation result. */
-  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); // #4
+  MPI_Allreduce(MPI_IN_PLACE, &error_counts, 1, MPI_INT, MPI_SUM, mpi.comm_2d); // #4
   return error_counts == 0;
 }
 
@@ -904,7 +904,7 @@ int64_t build_bfs_depth_map(const int64_t root, int64_t* const pred)
           }
         }
       }
-      MPI_Allreduce(MPI_IN_PLACE, &any_changes, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
+      MPI_Allreduce(MPI_IN_PLACE, &any_changes, 1, MPI_INT, MPI_LOR, mpi.comm_2d);
       if (!any_changes) break;
     }
   }
