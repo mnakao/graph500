@@ -93,7 +93,7 @@ inline int __builtin_ctz_asm(uint32_t n) {
 #define __builtin_ctz32bit __builtin_ctz_asm
 #define __builtin_ctz64bit __builtin_ctzl_asm
 
-#if 1
+#if ENABLE_INLINE_ATOMICS
 inline int32_t __sync_fetch_and_add(volatile int32_t* ptr, int32_t n) {
 	int32_t old_value;
 	__asm__ (

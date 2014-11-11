@@ -29,9 +29,13 @@
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define REPORT_GEN_RPGRESS 0
-#define ENABLE_FUJI_PROF 0
-#define ENABLE_FJMPI_RDMA 0
 #define OVERLAP_WAVE_AND_PRED 0
+
+// for K computer
+#define ENABLE_FJMPI_RDMA 1
+#define ENABLE_MY_ALLGATHER 1
+#define ENABLE_INLINE_ATOMICS 0
+#define ENABLE_FUJI_PROF 0
 
 // root switch to on/off debug print
 #define DEBUG_PRINT 0
@@ -64,7 +68,7 @@
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
-#define PRE_EXEC_TIME 0 // 300 seconds
+#define PRE_EXEC_TIME 5 // 300 seconds
 
 #define VERTEX_SORTING 0 // do not support backward search
 #define LOW_LEVEL_FUNCTION 1
@@ -119,14 +123,14 @@
 #endif
 
 #define CACHE_LINE 128
-#define PAGE_SIZE 4096
+#define PAGE_SIZE 8192
 //#define PAGE_SIZE 16
 
 #define IMD_OUT stderr
 
 typedef uint8_t SortIdx;
 typedef uint64_t BitmapType;
-typedef uint32_t TwodVertex; // TODO:
+typedef uint64_t TwodVertex; // TODO:
 
 #ifdef __cplusplus
 namespace PRM { //
@@ -168,6 +172,7 @@ enum {
 	TOP_DOWN_FOLD_TAG = 0,
 	BOTTOM_UP_WAVE_TAG = 1,
 	BOTTOM_UP_PRED_TAG = 2,
+	MY_EXPAND_TAG = 3,
 };
 
 #ifdef __cplusplus

@@ -1545,6 +1545,43 @@ T* alltoallv(T* sendbuf, int* sendcount,
 	return recv_data;
 }
 
+template <typename T>
+void my_allgather(T *sendbuf, int count, T *recvbuf, MPI_Comm comm)
+{
+	int size; MPI_Comm_size(comm, &size);
+	int rank; MPI_Comm_rank(comm, &rank);
+	int sendto = (rank + size - 1) % size;
+	int recvfrom = (rank + size + 1) % size;
+	int sendidx = rank;
+	int recvidx = recvfrom;
+	memcpy(&recvbuf[count * rank], sendbuf, sizeof(T) * count);
+	for(int i = 1; i < size; ++i, ++sendidx, ++recvidx) {
+		if(sendidx >= size) sendidx -= size;
+		if(recvidx >= size) recvidx -= size;
+		MPI_Sendrecv(&recvbuf[count * sendidx], count, MpiTypeOf<T>::type, sendto, PRM::MY_EXPAND_TAG,
+				&recvbuf[count * recvidx], count, MpiTypeOf<T>::type, recvfrom, PRM::MY_EXPAND_TAG, comm, MPI_STATUS_IGNORE);
+	}
+}
+
+template <typename T>
+void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, MPI_Comm comm)
+{
+	int size; MPI_Comm_size(comm, &size);
+	int rank; MPI_Comm_rank(comm, &rank);
+	int sendto = (rank + size - 1) % size;
+	int recvfrom = (rank + size + 1) % size;
+	int sendidx = rank;
+	int recvidx = recvfrom;
+	memcpy(&recvbuf[recv_offset[rank]], sendbuf, sizeof(T) * send_count);
+	for(int i = 1; i < size; ++i, ++sendidx, ++recvidx) {
+		if(sendidx >= size) sendidx -= size;
+		if(recvidx >= size) recvidx -= size;
+		MPI_Sendrecv(&recvbuf[recv_offset[sendidx]], recv_count[sendidx], MpiTypeOf<T>::type, sendto, PRM::MY_EXPAND_TAG,
+				&recvbuf[recv_offset[recvidx]], recv_count[recvidx], MpiTypeOf<T>::type, recvfrom, PRM::MY_EXPAND_TAG,
+				comm, MPI_STATUS_IGNORE);
+	}
+}
+
 } // namespace MpiCol {
 
 //-------------------------------------------------------------//
@@ -3258,7 +3295,11 @@ int64_t pf_nedge[] = {
 	549752273512, // 35
 	1099505021204, // 36
 	0, // 37
-	0 // 38
+	0, // 38
+	0, // 39
+	0, // 40
+	0, // 41
+	0 // 42
 };
 
 #endif /* UTILS_IMPL_HPP_ */

@@ -449,8 +449,12 @@ public:
 			BitmapType* recv_buffer = shared_visited_;
 			// TODO: asymmetric size for z. (MPI_Allgather -> MPI_Allgatherv or MpiCol::allgatherv ?)
 			int shared_bitmap_width = bitmap_width * mpi.size_z;
+#if ENABLE_MY_ALLGATHER
+			MpiCol::my_allgather(bitmap, shared_bitmap_width, recv_buffer, mpi.comm_y);
+#else
 			MPI_Allgather(bitmap, shared_bitmap_width, get_mpi_type(bitmap[0]),
 					recv_buffer, shared_bitmap_width, get_mpi_type(bitmap[0]), mpi.comm_y);
+#endif
 #if VERVOSE_MODE
 			g_expand_bitmap_comm += shared_bitmap_width * mpi.size_y * sizeof(BitmapType);
 #endif
@@ -538,8 +542,12 @@ public:
 		TwodVertex* recv_buf = (TwodVertex*)((int64_t(cq_size_)*int64_t(sizeof(TwodVertex)) > work_buf_size_) ?
 				(work_extra_buf_ = malloc(cq_size_*sizeof(TwodVertex))) :
 				work_buf_);
+#if ENABLE_MY_ALLGATHER
+		MpiCol::my_allgatherv(nq, nq_size, recv_buf, recv_size, recv_off, comm);
+#else
 		MPI_Allgatherv(nq, nq_size, MpiTypeOf<TwodVertex>::type,
 				recv_buf, recv_size, recv_off, MpiTypeOf<TwodVertex>::type, comm);
+#endif
 		VERVOSE(g_expand_list_comm += cq_size_ * sizeof(TwodVertex));
 		cq_list_ = recv_buf;
 	}
@@ -2416,8 +2424,10 @@ public:
 		PRINT_VAL("%d", PROFILING_MODE);
 		PRINT_VAL("%d", DEBUG_PRINT);
 		PRINT_VAL("%d", REPORT_GEN_RPGRESS);
-		PRINT_VAL("%d", ENABLE_FUJI_PROF);
 		PRINT_VAL("%d", ENABLE_FJMPI_RDMA);
+		PRINT_VAL("%d", ENABLE_FUJI_PROF);
+		PRINT_VAL("%d", ENABLE_MY_ALLGATHER);
+		PRINT_VAL("%d", ENABLE_INLINE_ATOMICS);
 
 		PRINT_VAL("%d", BFELL);
 

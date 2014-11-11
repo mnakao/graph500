@@ -1,4 +1,4 @@
-SW = GNU0
+SW = FUJI3
 VAMP = false
 SCOREP = false
 
