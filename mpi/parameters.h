@@ -28,7 +28,8 @@
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
-#define REPORT_GEN_RPGRESS 0
+#define REPORT_GEN_RPGRESS 1
+#define TOP_DOWN_LOAD_BALANCE 1
 #define OVERLAP_WAVE_AND_PRED 0
 
 // for K computer

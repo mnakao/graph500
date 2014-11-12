@@ -206,6 +206,7 @@ protected:
 		initialized = false;
 		debug("begin buffer_count=%d, buffer_width=%d, total_steps=%d",
 				buffer_count__, buffer_width__, total_steps__);
+		if(mpi.isMaster()) print_with_prefix("Bottom-up substep buffer count: %d", buffer_count__);
 	}
 };
 
@@ -255,6 +256,9 @@ public:
 				free_buffer(node.send_buf[buf_idx].data);
 				node.send_buf[buf_idx].data = NULL;
 				node.send_complete_count++;
+
+				set_send_buffer(0);
+				set_send_buffer(1);
 			}
 			else {
 				BottomUpSubstepTag tag = make_tag(status);
@@ -264,6 +268,9 @@ public:
 				recv_data(&node.recv_buf[buf_idx]);
 				node.recv_buf[buf_idx].data = NULL;
 				node.recv_complete_count++;
+
+				set_recv_buffer(0);
+				set_recv_buffer(1);
 			}
 		}
 

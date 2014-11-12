@@ -1183,7 +1183,26 @@ void set_affinity()
 // ?
 //-------------------------------------------------------------//
 
-static void setup_2dcomm(bool row_major)
+/**
+ * compute rank that is assigned continuously in the field
+ * the first dimension size should be even.
+ */
+static int compute_rank(std::vector<int>& ss, std::vector<int>& rs, int& size) {
+	size = 1;
+	int rank = 0;
+	for(int i = ss.size() - 1; i >= 0; --i) {
+		if(rank % 2) {
+			rank = rank * ss[i] + (ss[i] - 1 - rs[i]);
+		}
+		else {
+			rank = rank * ss[i] + rs[i];
+		}
+		size *= ss[i];
+	}
+	return rank;
+}
+
+static void setup_2dcomm()
 {
 	int twod_r = 1, twod_c = 1;
 #if ENABLE_FJMPI
@@ -1208,26 +1227,36 @@ static void setup_2dcomm(bool row_major)
 			if(mpi.isMaster()) print_with_prefix("Mismatch error!");
 		}
 		else {
-			int rank_r = 0, rank_c = 0;
+			std::vector<int> ss, rs;
 			for(int i = 3; i < 6; ++i) {
-				rank_c += rank6d[i] * twod_c;
-				twod_c *= size6d[i];
-			}
-			rank_c += rank6d[pdim] * twod_c;
-			twod_c *= size6d[pdim];
-			for(int i = 0; i < 3; ++i) {
-				if(pdim != i) {
-					rank_r += rank6d[i] * twod_r;
-					twod_r *= size6d[i];
+				ss.push_back(size6d[i]);
+				rs.push_back(rank6d[i]);
+				if(i == 4) {
+					ss.push_back(size6d[pdim]);
+					rs.push_back(rank6d[pdim]);
 				}
 			}
+			int rank_c = compute_rank(ss, rs, twod_c);
+			if(mpi.isMaster()) print_with_prefix("C: %dx%dx%dx%d", ss[0], ss[1], ss[2], ss[3]);
+			ss.clear(); rs.clear();
+
+			for(int i = 0; i < 3; ++i) {
+				if(pdim != i) {
+					ss.push_back(size6d[i]);
+					rs.push_back(rank6d[i]);
+				}
+			}
+			int rank_r = compute_rank(ss, rs, twod_r);
+			if(mpi.isMaster()) print_with_prefix("R: %dx%d", ss[0], ss[1]);
+			ss.clear(); rs.clear();
 
 			mpi.size_2dr = twod_r;
 			mpi.size_2dc = twod_c;
 			mpi.rank_2dr = rank_r;
 			mpi.rank_2dc = rank_c;
 
-			if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
+			//print_with_prefix("rank: (%d,%d,%d,%d,%d,%d) -> (%d,%d)",
+			//		rank6d[0], rank6d[1], rank6d[2], rank6d[3], rank6d[4], rank6d[5], mpi.rank_2dr, mpi.rank_2dc);
 		}
 	}
 	else
@@ -1257,19 +1286,18 @@ static void setup_2dcomm(bool row_major)
 
 		mpi.size_2dr = twod_r;
 		mpi.size_2dc = twod_c;
+		mpi.rank_2dc = mpi.rank / mpi.size_2dr;
+		mpi.rank_2dr = mpi.rank % mpi.size_2dr;
+	}
 
-		if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
+	if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 
-		if(row_major) {
-			// row major
-			mpi.rank_2dr = mpi.rank / mpi.size_2dc;
-			mpi.rank_2dc = mpi.rank % mpi.size_2dc;
-		}
-		else {
-			// column major
-			mpi.rank_2dc = mpi.rank / mpi.size_2dr;
-			mpi.rank_2dr = mpi.rank % mpi.size_2dr;
-		}
+	mpi.isRowMajor = false;
+	if(getenv("INVERT_RC")) {
+		mpi.isRowMajor = true;
+		std::swap(mpi.size_2dr, mpi.size_2dc);
+		std::swap(mpi.rank_2dr, mpi.rank_2dc);
+		if(mpi.isMaster()) print_with_prefix("Inverted: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 	}
 
 	mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
@@ -1277,7 +1305,6 @@ static void setup_2dcomm(bool row_major)
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
 	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
-	mpi.isRowMajor = row_major;
 }
 
 // assume rank = XYZ
@@ -1391,7 +1418,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		setup_2dcomm_on_3d();
 	}
 	else {
-		setup_2dcomm(false);
+		setup_2dcomm();
 	}
 
 	// Initialize comm_[yz]
@@ -1550,16 +1577,28 @@ void my_allgather(T *sendbuf, int count, T *recvbuf, MPI_Comm comm)
 {
 	int size; MPI_Comm_size(comm, &size);
 	int rank; MPI_Comm_rank(comm, &rank);
-	int sendto = (rank + size - 1) % size;
-	int recvfrom = (rank + size + 1) % size;
-	int sendidx = rank;
-	int recvidx = recvfrom;
+	int left = (rank + size - 1) % size;
+	int right = (rank + size + 1) % size;
+	int l_sendidx = rank;
+	int l_recvidx = right;
+	int r_sendidx = rank;
+	int r_recvidx = left;
+	int l_count = count / 2;
+	int r_count = count - l_count;
+
 	memcpy(&recvbuf[count * rank], sendbuf, sizeof(T) * count);
-	for(int i = 1; i < size; ++i, ++sendidx, ++recvidx) {
-		if(sendidx >= size) sendidx -= size;
-		if(recvidx >= size) recvidx -= size;
-		MPI_Sendrecv(&recvbuf[count * sendidx], count, MpiTypeOf<T>::type, sendto, PRM::MY_EXPAND_TAG,
-				&recvbuf[count * recvidx], count, MpiTypeOf<T>::type, recvfrom, PRM::MY_EXPAND_TAG, comm, MPI_STATUS_IGNORE);
+	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
+		if(l_sendidx >= size) l_sendidx -= size;
+		if(l_recvidx >= size) l_recvidx -= size;
+		if(r_sendidx < 0) r_sendidx += size;
+		if(r_recvidx < 0) r_recvidx += size;
+
+		MPI_Request req[4];
+		MPI_Irecv(&recvbuf[count * l_recvidx], l_count, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
+		MPI_Irecv(&recvbuf[count * r_recvidx + l_count], r_count, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
+		MPI_Isend(&recvbuf[count * l_sendidx], l_count, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
+		MPI_Isend(&recvbuf[count * r_sendidx + l_count], r_count, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
+		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
 	}
 }
 
@@ -1568,17 +1607,36 @@ void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int*
 {
 	int size; MPI_Comm_size(comm, &size);
 	int rank; MPI_Comm_rank(comm, &rank);
-	int sendto = (rank + size - 1) % size;
-	int recvfrom = (rank + size + 1) % size;
-	int sendidx = rank;
-	int recvidx = recvfrom;
+	int left = (rank + size - 1) % size;
+	int right = (rank + size + 1) % size;
+	int l_sendidx = rank;
+	int l_recvidx = right;
+	int r_sendidx = rank;
+	int r_recvidx = left;
+
 	memcpy(&recvbuf[recv_offset[rank]], sendbuf, sizeof(T) * send_count);
-	for(int i = 1; i < size; ++i, ++sendidx, ++recvidx) {
-		if(sendidx >= size) sendidx -= size;
-		if(recvidx >= size) recvidx -= size;
-		MPI_Sendrecv(&recvbuf[recv_offset[sendidx]], recv_count[sendidx], MpiTypeOf<T>::type, sendto, PRM::MY_EXPAND_TAG,
-				&recvbuf[recv_offset[recvidx]], recv_count[recvidx], MpiTypeOf<T>::type, recvfrom, PRM::MY_EXPAND_TAG,
-				comm, MPI_STATUS_IGNORE);
+	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
+		if(l_sendidx >= size) l_sendidx -= size;
+		if(l_recvidx >= size) l_recvidx -= size;
+		if(r_sendidx < 0) r_sendidx += size;
+		if(r_recvidx < 0) r_recvidx += size;
+
+		int l_send_off = recv_offset[l_sendidx];
+		int l_send_cnt = recv_count[l_sendidx] / 2;
+		int l_recv_off = recv_offset[l_recvidx];
+		int l_recv_cnt = recv_count[l_recvidx] / 2;
+
+		int r_send_off = recv_offset[r_sendidx] + recv_count[r_sendidx] / 2;
+		int r_send_cnt = recv_count[r_sendidx] - recv_count[r_sendidx] / 2;
+		int r_recv_off = recv_offset[r_recvidx] + recv_count[r_recvidx] / 2;
+		int r_recv_cnt = recv_count[r_recvidx] - recv_count[r_recvidx] / 2;
+
+		MPI_Request req[4];
+		MPI_Irecv(&recvbuf[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
+		MPI_Irecv(&recvbuf[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
+		MPI_Isend(&recvbuf[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
+		MPI_Isend(&recvbuf[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
+		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
 	}
 }
 

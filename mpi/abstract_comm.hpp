@@ -106,6 +106,7 @@ public:
 		node_list_length_ = 0;
 		node_ = NULL;
 		send_queue_limit_ = INT_MAX;
+		paused_ = false;
 
 		d_ = new DynamicDataSet();
 		pthread_mutex_init(&d_->thread_sync_, NULL);
@@ -250,6 +251,7 @@ public:
 
 	virtual void run() {
 		VT_TRACER("comm_routine");
+		void* comm_data = comm_->probe();
 
 		// command loop
 		while(true) {
@@ -281,9 +283,11 @@ public:
 						break;
 					case PAUSE:
 						comm_->pause();
+						paused_ = true;
 						break;
 					case RESTART:
 						comm_->restart();
+						paused_ = false;
 						break;
 					}
 					pthread_mutex_lock(&d_->thread_sync_);
@@ -296,7 +300,9 @@ public:
 				break;
 			}
 
-			void* comm_data = comm_->probe();
+			if(!paused_) {
+				comm_data = comm_->probe();
+			}
 
 			for(int i = 0; i < (int)async_comm_handlers_.size(); ++i) {
 				MY_TRACE;
@@ -356,6 +362,7 @@ private:
 	int buffer_size_;
 	int comm_size_;
 	int send_queue_limit_;
+	bool paused_;
 
 	int node_list_length_;
 	CommTarget* node_;
