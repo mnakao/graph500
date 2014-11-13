@@ -206,7 +206,9 @@ protected:
 		initialized = false;
 		debug("begin buffer_count=%d, buffer_width=%d, total_steps=%d",
 				buffer_count__, buffer_width__, total_steps__);
+#if VERVOSE_MODE
 		if(mpi.isMaster()) print_with_prefix("Bottom-up substep buffer count: %d", buffer_count__);
+#endif
 	}
 };
 

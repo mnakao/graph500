@@ -109,6 +109,17 @@ void thread_join();
 }
 #endif
 
+struct COMM_2D {
+	MPI_Comm comm;
+	int rank, rank_x, rank_y;
+	int size, size_x, size_y;
+};
+
+static void swap(COMM_2D& a, COMM_2D& b) {
+	COMM_2D tmp = b;
+	b = a;
+	a = tmp;
+}
 
 struct MPI_GLOBALS {
 	int rank;
@@ -126,6 +137,11 @@ struct MPI_GLOBALS {
 	MPI_Comm comm_2dr; // = comm_x
 	MPI_Comm comm_2dc;
 	bool isRowMajor;
+
+	// multi dimension
+	COMM_2D comm_r;
+	COMM_2D comm_c;
+	bool isMultiDimAvailable;
 
 	// for shared memory
 	int rank_y;
@@ -1185,10 +1201,10 @@ void set_affinity()
 
 /**
  * compute rank that is assigned continuously in the field
- * the first dimension size should be even.
+ * the last dimension size should be even.
  */
-static int compute_rank(std::vector<int>& ss, std::vector<int>& rs, int& size) {
-	size = 1;
+static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c) {
+	int size = 1;
 	int rank = 0;
 	for(int i = ss.size() - 1; i >= 0; --i) {
 		if(rank % 2) {
@@ -1199,15 +1215,34 @@ static int compute_rank(std::vector<int>& ss, std::vector<int>& rs, int& size) {
 		}
 		size *= ss[i];
 	}
-	return rank;
+	c.size_x = ss[0];
+	c.size_y = size / c.size_x;
+	c.rank_x = rs[0];
+	c.rank_y = rank / c.size_x;
+	c.rank = rank;
+	c.size = size;
+}
+
+static int compute_rank_2d(int x, int y, int sx, int sy) {
+	if(x >= sx) x -= sx;
+	if(x < 0) x += sx;
+	if(y >= sy) y -= sy;
+	if(y < 0) y += sy;
+
+	if(y % 2)
+		return y * sx + (sx - 1 - x);
+	else
+		return y * sx + x;
 }
 
 static void setup_2dcomm()
 {
-	int twod_r = 1, twod_c = 1;
+	bool success = false;
+	mpi.isMultiDimAvailable = false;
+
 #if ENABLE_FJMPI
 	const char* tofu_6d = getenv("TOFU_6D");
-	if(twod_r * twod_c == 1 && tofu_6d) {
+	if(!success && tofu_6d) {
 		int pdim = 0;
 		switch(*tofu_6d) {
 		case 'x': pdim = 0; break;
@@ -1228,15 +1263,13 @@ static void setup_2dcomm()
 		}
 		else {
 			std::vector<int> ss, rs;
+			ss.push_back(size6d[pdim]);
+			rs.push_back(rank6d[pdim]);
 			for(int i = 3; i < 6; ++i) {
 				ss.push_back(size6d[i]);
 				rs.push_back(rank6d[i]);
-				if(i == 4) {
-					ss.push_back(size6d[pdim]);
-					rs.push_back(rank6d[pdim]);
-				}
 			}
-			int rank_c = compute_rank(ss, rs, twod_c);
+			compute_rank(ss, rs, mpi.comm_r);
 			if(mpi.isMaster()) print_with_prefix("C: %dx%dx%dx%d", ss[0], ss[1], ss[2], ss[3]);
 			ss.clear(); rs.clear();
 
@@ -1246,22 +1279,62 @@ static void setup_2dcomm()
 					rs.push_back(rank6d[i]);
 				}
 			}
-			int rank_r = compute_rank(ss, rs, twod_r);
+			compute_rank(ss, rs, mpi.comm_c);
 			if(mpi.isMaster()) print_with_prefix("R: %dx%d", ss[0], ss[1]);
 			ss.clear(); rs.clear();
 
-			mpi.size_2dr = twod_r;
-			mpi.size_2dc = twod_c;
-			mpi.rank_2dr = rank_r;
-			mpi.rank_2dc = rank_c;
+			mpi.size_2dr = mpi.comm_c.size;
+			mpi.size_2dc = mpi.comm_r.size;
+			mpi.rank_2dr = mpi.comm_c.rank;
+			mpi.rank_2dc = mpi.comm_r.rank;
+			mpi.isMultiDimAvailable = true;
 
 			//print_with_prefix("rank: (%d,%d,%d,%d,%d,%d) -> (%d,%d)",
 			//		rank6d[0], rank6d[1], rank6d[2], rank6d[3], rank6d[4], rank6d[5], mpi.rank_2dr, mpi.rank_2dc);
+
+			success = true;
 		}
 	}
-	else
 #endif // #if ENABLE_FJMPI
-	if(twod_r * twod_c == 1) {
+
+	const char* virt_4d = getenv("VIRT_4D");
+	if(!success && virt_4d) {
+		int RX, RY, CX, CY;
+		sscanf(virt_4d, "%dx%dx%dx%d", &RX, &RY, &CX, &CY);
+		if(mpi.isMaster()) print_with_prefix("Provided dimension %dx%dx%dx%d = %d", RX, RY, CX, CY, mpi.size);
+		if(RX*RY*CX*CY != mpi.size) {
+			if(mpi.isMaster()) print_with_prefix("Mismatch error!");
+		}
+
+		int psr = RX * RY;
+		int pr = mpi.rank % psr;
+		int pc = mpi.rank / psr;
+
+		std::vector<int> ss, rs;
+		ss.push_back(RX);
+		ss.push_back(RY);
+		rs.push_back(pr % RX);
+		rs.push_back(pr / RX);
+		compute_rank(ss, rs, mpi.comm_c);
+		ss.clear(); rs.clear();
+
+		ss.push_back(CX);
+		ss.push_back(CY);
+		rs.push_back(pc % CX);
+		rs.push_back(pc / CX);
+		compute_rank(ss, rs, mpi.comm_r);
+
+		mpi.size_2dr = mpi.comm_c.size;
+		mpi.size_2dc = mpi.comm_r.size;
+		mpi.rank_2dr = mpi.comm_c.rank;
+		mpi.rank_2dc = mpi.comm_r.rank;
+		mpi.isMultiDimAvailable = true;
+
+		success = true;
+	}
+
+	if(!success) {
+		int twod_r = 1, twod_c = 1;
 		const char* twod_r_str = getenv("TWOD_R");
 		if(twod_r_str){
 			twod_r = atoi((char*)twod_r_str);
@@ -1284,10 +1357,10 @@ static void setup_2dcomm()
 			}
 		}
 
-		mpi.size_2dr = twod_r;
-		mpi.size_2dc = twod_c;
-		mpi.rank_2dc = mpi.rank / mpi.size_2dr;
-		mpi.rank_2dr = mpi.rank % mpi.size_2dr;
+		mpi.comm_c.size = mpi.size_2dr = twod_r;
+		mpi.comm_r.size = mpi.size_2dc = twod_c;
+		mpi.comm_c.rank = mpi.rank_2dr = mpi.rank % mpi.size_2dr;
+		mpi.comm_r.rank = mpi.rank_2dc = mpi.rank / mpi.size_2dr;
 	}
 
 	if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
@@ -1297,13 +1370,16 @@ static void setup_2dcomm()
 		mpi.isRowMajor = true;
 		std::swap(mpi.size_2dr, mpi.size_2dc);
 		std::swap(mpi.rank_2dr, mpi.rank_2dc);
+		swap(mpi.comm_r, mpi.comm_c);
 		if(mpi.isMaster()) print_with_prefix("Inverted: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 	}
 
 	mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
 	mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
+	mpi.comm_c.comm = mpi.comm_2dc;
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
+	mpi.comm_r.comm = mpi.comm_2dr;
 	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
 }
 
@@ -1573,6 +1649,40 @@ T* alltoallv(T* sendbuf, int* sendcount,
 }
 
 template <typename T>
+void my_allgatherv(T *buffer, int* count, int* offset, MPI_Comm comm, int rank, int size, int left, int right)
+{
+	int l_sendidx = rank;
+	int l_recvidx = (rank + size + 1) % size;
+	int r_sendidx = rank;
+	int r_recvidx = (rank + size - 1) % size;
+
+	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
+		if(l_sendidx >= size) l_sendidx -= size;
+		if(l_recvidx >= size) l_recvidx -= size;
+		if(r_sendidx < 0) r_sendidx += size;
+		if(r_recvidx < 0) r_recvidx += size;
+
+		int l_send_off = offset[l_sendidx];
+		int l_send_cnt = count[l_sendidx] / 2;
+		int l_recv_off = offset[l_recvidx];
+		int l_recv_cnt = count[l_recvidx] / 2;
+
+		int r_send_off = offset[r_sendidx] + count[r_sendidx] / 2;
+		int r_send_cnt = count[r_sendidx] - count[r_sendidx] / 2;
+		int r_recv_off = offset[r_recvidx] + count[r_recvidx] / 2;
+		int r_recv_cnt = count[r_recvidx] - count[r_recvidx] / 2;
+
+		MPI_Request req[4];
+		MPI_Irecv(&buffer[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
+		MPI_Irecv(&buffer[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
+		MPI_Isend(&buffer[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
+		MPI_Isend(&buffer[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
+		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
+	}
+}
+
+#if 0
+template <typename T>
 void my_allgather(T *sendbuf, int count, T *recvbuf, MPI_Comm comm)
 {
 	int size; MPI_Comm_size(comm, &size);
@@ -1638,6 +1748,58 @@ void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int*
 		MPI_Isend(&recvbuf[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
 		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
 	}
+}
+#endif
+
+template <typename T>
+void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, COMM_2D comm)
+{
+	memcpy(&recvbuf[recv_offset[comm.rank]], sendbuf, sizeof(T) * send_count);
+	if(mpi.isMultiDimAvailable == false) {
+		int size; MPI_Comm_size(comm.comm, &size);
+		int rank; MPI_Comm_rank(comm.comm, &rank);
+		int left = (rank + size - 1) % size;
+		int right = (rank + size + 1) % size;
+		my_allgatherv(recvbuf, recv_count, recv_offset, comm.comm, rank, size, left, right);
+		return ;
+	}
+	{
+		int size = comm.size_x;
+		int rank = comm.rank % comm.size_x;
+		int base = comm.rank - rank;
+		int left = (rank + size - 1) % size + base;
+		int right = (rank + size + 1) % size + base;
+		my_allgatherv(recvbuf, &recv_count[base], &recv_offset[base], comm.comm, rank, size, left, right);
+	}
+	{
+		int size = comm.size_y;
+		int rank = comm.rank / comm.size_x;
+		int left = compute_rank_2d(comm.rank_x, comm.rank_y - 1, comm.size_x, comm.size_y);
+		int right = compute_rank_2d(comm.rank_x, comm.rank_y + 1, comm.size_x, comm.size_y);
+		int count[comm.size_y];
+		int offset[comm.size_y];
+		for(int y = 0; y < comm.size_y; ++y) {
+			int start = y * comm.size_x;
+			int last = start + comm.size_x - 1;
+			offset[y] = recv_offset[start];
+			count[y] = recv_offset[last] + recv_count[last] - offset[y];
+		}
+		my_allgatherv(recvbuf, count, offset, comm.comm, rank, size, left, right);
+	}
+}
+
+template <typename T>
+void my_allgather(T *sendbuf, int count, T *recvbuf, COMM_2D comm)
+{
+	memcpy(&recvbuf[count * comm.rank], sendbuf, sizeof(T) * count);
+	int recv_count[comm.size];
+	int recv_offset[comm.size+1];
+	recv_offset[0] = 0;
+	for(int i = 0; i < comm.size; ++i) {
+		recv_count[i] = count;
+		recv_offset[i+1] = recv_offset[i] + count;
+	}
+	my_allgatherv(sendbuf, count, recvbuf, recv_count, recv_offset, comm);
 }
 
 } // namespace MpiCol {
