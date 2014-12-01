@@ -35,7 +35,7 @@
 // for K computer
 #define ENABLE_FJMPI_RDMA 1
 #define ENABLE_MY_ALLGATHER 1
-#define ENABLE_INLINE_ATOMICS 0
+#define ENABLE_INLINE_ATOMICS 1
 #define ENABLE_FUJI_PROF 0
 
 // root switch to on/off debug print

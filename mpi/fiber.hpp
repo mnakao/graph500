@@ -59,7 +59,7 @@ public:
 				Runnable* cmd;
 				while(pop_command(&cmd, 0)) {
 					pthread_mutex_unlock(&thread_sync_);
-					VT_TRACER("fib_run");
+					TRACER(fib_run);
 					cmd->run();
 					pthread_mutex_lock(&thread_sync_);
 				}
@@ -70,7 +70,7 @@ public:
 				if(command_active_ == false) {
 					if( terminated_ ) { pthread_mutex_unlock(&thread_sync_); break; }
 					++suspended_;
-					VT_TRACER("fib_wait");
+					TRACER(fib_wait);
 					PROF(profiling::TimeKeeper wait_);
 					pthread_cond_wait(&thread_state_, &thread_sync_);
 					PROF(wait_time_ += wait_);
@@ -87,7 +87,7 @@ public:
 			Runnable* cmd;
 			if(pop_command(&cmd, priority_lower_bound)) {
 				pthread_mutex_unlock(&thread_sync_);
-				VT_TRACER("fib_run");
+				TRACER(fib_run);
 				cmd->run();
 				return true;
 			}

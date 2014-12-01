@@ -44,6 +44,16 @@
 
 #if VTRACE
 #include "vt_user.h"
+#define USER_START(s) VT_USER_START(#s)
+#define USER_END(s) VT_USER_END(#s)
+#define TRACER(s) VT_TRACER(#s)
+#define CTRACER(s)
+#elif SCOREP
+#include <scorep/SCOREP_User.h>
+#define USER_START(s) SCOREP_USER_REGION_DEFINE( scorep_region_##s ); SCOREP_USER_REGION_BEGIN( scorep_region_##s, #s, SCOREP_USER_REGION_TYPE_COMMON )
+#define USER_END(s) SCOREP_USER_REGION_END( scorep_region_##s )
+#define TRACER(s) SCOREP_USER_REGION( #s, SCOREP_USER_REGION_TYPE_COMMON )
+#define CTRACER(s)
 #elif BACKTRACE_ON_SIGNAL
 extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD);
 
@@ -62,18 +72,18 @@ struct ScopedRegion {
 	}
 };
 
-#define VT_USER_START(s) do { int line = __LINE__; int flag = 102;\
+#define USER_START(s) do { int line = __LINE__; int flag = 102;\
 		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
-#define VT_USER_END(s) do { int line = __LINE__; int flag = 103;\
+#define USER_END(s) do { int line = __LINE__; int flag = 103;\
 		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
-#define VT_TRACER(s) ScopedRegion my_trace_obj(__FILE__, __LINE__)
+#define TRACER(s) ScopedRegion my_trace_obj(__FILE__, __LINE__)
 
 #else // #if VTRACE
-#define VT_USER_START(s)
-#define VT_USER_END(s)
-#define VT_TRACER(s)
+#define USER_START(s)
+#define USER_END(s)
+#define TRACER(s)
+#define CTRACER(s)
 #endif // #if VTRACE
-#define MY_TRACE VT_TRACER(__func__)
 
 
 #if VERVOSE_MODE
@@ -1603,7 +1613,7 @@ namespace MpiCol {
 
 template <typename T>
 int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
-	VT_TRACER("MpiCol::allgatherv");
+	TRACER(MpiCol::allgatherv);
 	int recv_off[comm_size+1], recv_cnt[comm_size];
 	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
 	recv_off[0] = 0;

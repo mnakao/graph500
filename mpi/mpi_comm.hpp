@@ -24,25 +24,25 @@ class MpiAlltoallCommunicatorBase : public AlltoallCommunicator {
 	};
 public:
 	MpiAlltoallCommunicatorBase() {
-		MY_TRACE;
+		CTRACER(MPIA2A_constructor);
 		node_list_length_ = 0;
 		node_ = NULL;
 		mpi_reqs_ = NULL;
 		num_pending_send = 0;
 	}
 	virtual ~MpiAlltoallCommunicatorBase() {
-		MY_TRACE;
+		CTRACER(MPIA2A_destructor);
 		delete [] node_;
 		delete [] mpi_reqs_;
 	}
 	virtual void send(CommunicationBuffer* data, int target) {
-		MY_TRACE;
+		CTRACER(MPIA2A_send);
 		node_[target].send_queue.push_back(data);
 		++num_pending_send;
 		set_send_buffer(target);
 	}
 	virtual AlltoallSubCommunicator reg_comm(AlltoallCommParameter parm) {
-		MY_TRACE;
+		CTRACER(MPIA2A_reg_comm);
 		int idx = handlers_.size();
 		handlers_.push_back(parm);
 		int comm_size;
@@ -51,7 +51,7 @@ public:
 		return idx;
 	}
 	virtual AlltoallBufferHandler* begin(AlltoallSubCommunicator sub_comm) {
-		MY_TRACE;
+		CTRACER(MPIA2A_begin);
 		AlltoallCommParameter active = handlers_[sub_comm];
 		comm_ = active.base_communicator;
 		tag_ = active.tag;
@@ -79,16 +79,16 @@ public:
 	}
 	//! @return finished
 	virtual void* probe() {
-		MY_TRACE;
+		CTRACER(MPIA2A_begin_probe);
 		if(num_recv_active == 0 && num_send_active == 0) {
 			return NULL;
 		}
 
 		if(initialized_ == false) {
-			MY_TRACE;
+			CTRACER(MPIA2A_initialize);
 			initialized_ = true;
 			for(int i = 0; i < comm_size_; ++i) {
-				MY_TRACE;
+				CTRACER(MpiAlltoallCommunicatorBase);
 				CommTarget& node = node_[i];
 				assert (node.recv_buf == NULL);
 				node.recv_buf = handler_->alloc_buffer();
@@ -103,7 +103,7 @@ public:
 		MPI_Testany(comm_size_ * (int)REQ_TOTAL, mpi_reqs_, &index, &flag, &status);
 
 		if(flag != 0 && index != MPI_UNDEFINED) {
-			MY_TRACE;
+			CTRACER(MPIA2A_request_completed);
 			const int src_c = index/REQ_TOTAL;
 			const MPI_REQ_INDEX req_kind = (MPI_REQ_INDEX)(index%REQ_TOTAL);
 			const bool b_send = (req_kind == REQ_SEND);
@@ -156,7 +156,7 @@ public:
 
 			// process recv starves
 			while(recv_stv.size() > 0) {
-				MY_TRACE;
+				CTRACER(MPIA2A_process_recv_starves);
 				int target = recv_stv.front();
 				CommTarget& node = node_[target];
 				assert (node.recv_buf == NULL);
@@ -168,7 +168,7 @@ public:
 		}
 
 		if(num_recv_active == 0 && num_send_active == 0) {
-			MY_TRACE;
+			CTRACER(MpiAlltoallCommunicatorBase);
 			// finished
 			debug("finished");
 			handler_->finished();
@@ -224,7 +224,7 @@ private:
 	bool paused;
 
 	void set_send_buffer(int target) {
-		MY_TRACE;
+		CTRACER(MPIA2A_set_send_buffer);
 		// do not send when this is paused
 		if(paused) return;
 		CommTarget& node = node_[target];
@@ -245,7 +245,7 @@ private:
 	}
 
 	void set_recv_buffer(CommunicationBuffer* buf, int target, MPI_Request* req) {
-		MY_TRACE;
+		CTRACER(MPIA2A_set_recv_buffer);
 		MPI_Irecv(buf->pointer(), handler_->buffer_length(), data_type_,
 				target, tag_, comm_, req);
 	}

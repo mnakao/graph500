@@ -99,7 +99,7 @@ class AsyncAlltoallManager : public Runnable {
 	};
 public:
 	AsyncAlltoallManager(AlltoallCommunicator* comm__, FiberManager* fiber_man__) {
-		MY_TRACE;
+		CTRACER(AsyncA2A_construtor);
 		comm_ = comm__;
 		fiber_man_ = fiber_man__;
 		comm_size_ = 0;
@@ -117,7 +117,7 @@ public:
 	}
 
 	void prepare(AlltoallSubCommunicator sub_comm, memory::SpinBarrier* sync) {
-		MY_TRACE;
+		CTRACER(prepare);
 		debug("prepare idx=%d", sub_comm);
 		caller_sync_ = sync;
 		buffer_provider_ = comm_->begin(sub_comm);
@@ -143,7 +143,7 @@ public:
 	template <bool proc>
 	void send(void* ptr, int length, int target)
 	{
-		VT_TRACER("comm_send");
+		CTRACER(comm_send);
 		if(length == 0) {
 			assert(length > 0);
 			return ;
@@ -194,7 +194,7 @@ public:
 	}
 
 	void send_end(int target) {
-		MY_TRACE;
+		CTRACER(send_end);
 		CommTarget& node = node_[target];
 		assert (node.reserved_size_ == node.filled_size_);
 
@@ -212,7 +212,7 @@ public:
 	}
 
 	void input_command(CommCommand* comm) {
-		MY_TRACE;
+		CTRACER(input_command);
 		InternalCommand cmd;
 		cmd.kind = MANUAL_CMD;
 		cmd.cmd = comm;
@@ -220,7 +220,7 @@ public:
 	}
 
 	void register_handler(AsyncCommHandler* comm) {
-		MY_TRACE;
+		CTRACER(register_handler);
 		InternalCommand cmd;
 		cmd.kind = ADD_HANDLER;
 		cmd.handler = comm;
@@ -228,7 +228,7 @@ public:
 	}
 
 	void remove_handler(AsyncCommHandler* comm) {
-		MY_TRACE;
+		CTRACER(remove_handler);
 		InternalCommand cmd;
 		cmd.kind = REMOVE_HANDLER;
 		cmd.handler = comm;
@@ -236,27 +236,27 @@ public:
 	}
 
 	void pause() {
-		MY_TRACE;
+		CTRACER(pause);
 		InternalCommand cmd;
 		cmd.kind = PAUSE;
 		put_command(cmd);
 	}
 
 	void restart() {
-		MY_TRACE;
+		CTRACER(restart);
 		InternalCommand cmd;
 		cmd.kind = RESTART;
 		put_command(cmd);
 	}
 
 	virtual void run() {
-		VT_TRACER("comm_routine");
+		CTRACER(comm_routine_begin);
 		void* comm_data = comm_->probe();
 
 		// command loop
 		while(true) {
 			if(d_->command_active_) {
-				MY_TRACE;
+				CTRACER(comm_routine_loop);
 				pthread_mutex_lock(&d_->thread_sync_);
 				InternalCommand cmd;
 				while(pop_command(&cmd)) {
@@ -305,7 +305,7 @@ public:
 			}
 
 			for(int i = 0; i < (int)async_comm_handlers_.size(); ++i) {
-				MY_TRACE;
+				CTRACER(comm_routine);
 				async_comm_handlers_[i]->probe(comm_data);
 			}
 #if WITH_VALGRIND
@@ -372,7 +372,7 @@ private:
 
 	template <bool proc>
 	CommunicationBuffer* get_send_buffer() {
-		MY_TRACE;
+		CTRACER(get_send_buffer);
 #if 0
 		PROF(profiling::TimeKeeper tk_wait);
 		PROF(profiling::TimeSpan ts_proc);
@@ -387,7 +387,7 @@ private:
 	}
 
 	bool pop_command(InternalCommand* cmd) {
-		MY_TRACE;
+		CTRACER(pop_command);
 		if(d_->command_queue_.size()) {
 			*cmd = d_->command_queue_[0];
 			d_->command_queue_.pop_front();
@@ -398,7 +398,7 @@ private:
 	}
 
 	void put_command(InternalCommand& cmd) {
-		MY_TRACE;
+		CTRACER(put_command);
 		pthread_mutex_lock(&d_->thread_sync_);
 		d_->command_queue_.push_back(cmd);
 		d_->command_active_ = true;
@@ -410,7 +410,7 @@ private:
 	 * because they are very sensitive and it is easy to generate race condition.
 	 */
 	void send_submit(int target) {
-		MY_TRACE;
+		CTRACER(send_submit);
 		CommTarget& node = node_[target];
 		node.cur_buf->length_ = node.filled_size_;
 

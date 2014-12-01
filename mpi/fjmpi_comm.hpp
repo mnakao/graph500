@@ -142,7 +142,7 @@ private:
 
 public:
 	FJMpiAlltoallCommunicatorBase() {
-		MY_TRACE;
+		CTRACER(FJMpiAlltoallCommunicatorBase);
 		c_ = NULL;
 		fix_system_memory_ = false;
 		remote_address_table_ = NULL;
@@ -157,7 +157,7 @@ public:
 		system_rdma_mem_size_ = 0;
 	}
 	virtual ~FJMpiAlltoallCommunicatorBase() {
-		MY_TRACE;
+		CTRACER(~FJMpiAlltoallCommunicatorBase);
 		free(remote_address_table_); remote_address_table_ = NULL;
 		for(int i = 0; i < MAX_RDMA_BUFFER; ++i) {
 			if(rdma_buffer_pointers_[i] != NULL) {
@@ -168,14 +168,14 @@ public:
 		MPI_Group_free(&world_group_);
 	}
 	virtual void send(CommunicationBuffer* data, int target) {
-		MY_TRACE;
+		CTRACER(FJMpiAlltoallCommunicatorBase::send);
 		c_->proc_info[target].send_queue.push_back(data);
 		debug("send data queued to=%d, length=%d", pid_from_rank(target), data->length_);
 		c_->num_pending_send++;
 		set_send_buffer(target);
 	}
 	virtual AlltoallSubCommunicator reg_comm(AlltoallCommParameter parm) {
-		MY_TRACE;
+		CTRACER(FJMpiAlltoallCommunicatorBase::AlltoallSubCommunicator);
 		if(fix_system_memory_) {
 			throw_exception("reg_comm is called after data memory allocation");
 		}
@@ -264,7 +264,7 @@ public:
 		return idx;
 	}
 	virtual AlltoallBufferHandler* begin(AlltoallSubCommunicator sub_comm) {
-		MY_TRACE;
+		CTRACER(FJMpiAlltoallCommunicatorBase::begin);
 		c_ = &internal_communicators_[sub_comm];
 		c_->num_recv_active = c_->num_send_active = c_->size;
 		paused = false;
@@ -279,7 +279,7 @@ public:
 	}
 	//! @return finished
 	virtual void* probe() {
-		MY_TRACE;
+		CTRACER(FJMpiAlltoallCommunicatorBase::probe);
 
 		user_cq.clear();
 
@@ -303,7 +303,7 @@ public:
 			FJMPI_RDMA_NIC3
 		};
 		for(int nic = 0; nic < c_->num_nics_to_use; ++nic) {
-			MY_TRACE;
+			CTRACER(probe_foreach_nic);
 			while(true) {
 				struct FJMPI_Rdma_cq cq;
 				int ret = FJMPI_Rdma_poll_cq(nics[nic], &cq);
@@ -424,7 +424,7 @@ public:
 	}
 protected:
 	void* fix_system_memory(int64_t* data_mem_size) {
-		MY_TRACE;
+		CTRACER(fix_system_memory);
 		if(fix_system_memory_ == false) {
 			fix_system_memory_ = true;
 			debug("fix system memory system_rdma_mem_size=%d", system_rdma_mem_size_);
@@ -436,7 +436,7 @@ protected:
 		return NULL;
 	}
 	void* allocate_new_rdma_buffer(int* memory_id) {
-		MY_TRACE;
+		CTRACER(allocate_new_rdma_buffer);
 		if(num_free_memory_ == 0) {
 			throw_exception("Out of memory");
 		}
@@ -478,7 +478,7 @@ private:
 	}
 
 	void initialize_rdma_buffer() {
-		MY_TRACE;
+		CTRACER(initialize_rdma_buffer);
 		if(rdma_buffer_pointers_[0] == NULL) {
 			debug("initialize_rdma_buffer");
 			allocate_rdma_buffer(0);
@@ -491,7 +491,7 @@ private:
 	}
 
 	void allocate_rdma_buffer(int memory_id) {
-		MY_TRACE;
+		CTRACER(allocate_rdma_buffer);
 		void*& pointer = rdma_buffer_pointers_[memory_id];
 		assert (pointer == NULL);
 		pointer = page_aligned_xmalloc(RDMA_BUF_SIZE);
@@ -504,7 +504,7 @@ private:
 	}
 
 	uint64_t get_remote_address(int proc_index, int memory_id, int64_t offset) {
-		MY_TRACE;
+		CTRACER(get_remote_address);
 		int new_num_entry = num_address_per_proc_;
 		bool need_to_grow = false;
 		// at first, grow the table if needed
@@ -536,7 +536,7 @@ private:
 	}
 
 	void grow_remote_address_table(int num_procs, int num_address_per_proc) {
-		MY_TRACE;
+		CTRACER(grow_remote_address_table);
 		assert(num_procs > 0);
 		uint64_t* new_table = (uint64_t*)cache_aligned_xmalloc(
 				num_procs*num_address_per_proc*sizeof(uint64_t));
@@ -561,7 +561,7 @@ private:
 	}
 
 	void set_send_buffer(int target) {
-		MY_TRACE;
+		CTRACER(set_send_buffer);
 		// do not send when paused
 		if(paused) return ;
 		CommTarget& node = c_->proc_info[target];
@@ -610,7 +610,7 @@ private:
 	}
 
 	void set_recv_buffer(int target) {
-		MY_TRACE;
+		CTRACER(set_recv_buffer);
 		CommTarget& node = c_->proc_info[target];
 		while(true) {
 			int buf_idx = node.recv_count % MAX_FLYING_REQ;
@@ -641,7 +641,7 @@ private:
 	}
 
 	void check_recv_completion(int target) {
-		MY_TRACE;
+		CTRACER(check_recv_completion);
 		CommTarget& node = c_->proc_info[target];
 		while(true) {
 			int buf_idx = node.recv_complete_count % MAX_FLYING_REQ;
@@ -700,7 +700,7 @@ public:
 
 private:
 	virtual T* allocate_new() {
-		MY_TRACE;
+		CTRACER(FJMpiA2A::allocate_new);
 		bool ok = false;
 		pthread_mutex_lock(&this->thread_sync_);
 		// maybe, someone already allocated new buffer
@@ -750,7 +750,7 @@ private:
 	};
 
 	void add_memory_blocks(void* ptr, int64_t mem_size, int memory_id) {
-		MY_TRACE;
+		CTRACER(FJMpiA2A_add_memory_blocks);
 		MemoryBlock* buf = (MemoryBlock*)ptr;
 		int64_t num_blocks = mem_size / sizeof(MemoryBlock);
 		// initialize blocks

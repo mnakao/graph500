@@ -1,15 +1,15 @@
 SW = FUJI3
 VAMP = false
-SCOREP = false
+SCOREP = true
 
 # default values
 LDFLAGS := -fopenmp -g # -pg
 NVCCFLAGS := -Drestrict=__restrict__ -Xcompiler -fopenmp,-ffast-math,-Wall -arch=compute_20 -code=sm_20
 
-GCC_BASE := -fopenmp -g -Wall -Drestrict=__restrict__ -ffast-math -msse4.2 # -pg
-#GCC_BASE := -g -Wall -Drestrict=__restrict__ -ffast-math -msse4.2 # -pg
-FCC_BASE := -Kopenmp -Xg -Drestrict=__restrict__ -g #-Nquickdbg=heapchk # -Koptmsg=2
-#FCC_BASE := -Xg -g -Drestrict=__restrict__
+GCC_BASE := -fopenmp -g -Wall -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -ffast-math -msse4.2 # -pg
+#GCC_BASE := -g -Wall -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -ffast-math -msse4.2 # -pg
+FCC_BASE := -Kopenmp -Xg -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -g #-Nquickdbg=heapchk # -Koptmsg=2
+#FCC_BASE := -Xg -g -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS
 
 MPICC := mpicc
 MPICPP := mpicxx
@@ -112,8 +112,8 @@ MPICC := vtcc -vt:cc $(MPICC) -vt:inst manual -vt:hyb -DVTRACE
 MPICPP := vtcc -vt:cc $(MPICPP) -vt:inst manual -vt:hyb -DVTRACE
 endif
 ifeq ($(SCOREP), true)
-MPICC := scorep --nocimpiler $(MPICC)
-MPICPP := scorep --nocimpiler $(MPICPP)
+MPICC := scorep --nocompiler --user --mpp=none $(MPICC)
+MPICPP := scorep --nocompiler --user --mpp=none $(MPICPP)
 endif
 
 CPPFLAGS := $(CFLAGS)

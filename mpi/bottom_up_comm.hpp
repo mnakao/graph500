@@ -73,7 +73,7 @@ public:
 		++recv_tail;
 	}
 	void finish() {
-		VT_TRACER("bu_comm_fin_wait");
+		TRACER(bu_comm_fin_wait);
 		while(!finished) sched_yield();
 		debug("user finished");
 	}
@@ -329,7 +329,7 @@ protected:
 	}
 
 	void set_send_buffer(int target) {
-		MY_TRACE;
+		TRACER(set_send_buffer);
 		CommTarget& node = nodes_[target];
 		while(node.send_queue.size() > 0) {
 			int buf_idx = node.send_count % NBUF;
@@ -359,7 +359,7 @@ protected:
 	}
 
 	void set_recv_buffer(int target) {
-		MY_TRACE;
+		TRACER(set_recv_buffer);
 		int send_per_node = total_steps / 2;
 		CommTarget& node = nodes_[target];
 		while(true) {
