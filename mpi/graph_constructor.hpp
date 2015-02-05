@@ -916,7 +916,7 @@ private:
 			print_with_prefix("non zero rows. Total %f M / %f M = %f %% Avg %f M / %f M Max %f %%+",
 					to_mega(sum_rowbmp[0]), to_mega(sum_rowbmp[1]), to_mega(sum_rowbmp[0]) / to_mega(sum_rowbmp[1]) * 100,
 					to_mega(sum_rowbmp[0]) / mpi.size_2d, to_mega(sum_rowbmp[1]) / mpi.size_2d,
-					diff_percent(max_rowbmp[0], send_rowbmp[0], mpi.size_2d));
+					diff_percent(max_rowbmp[0], sum_rowbmp[0], mpi.size_2d));
 			print_with_prefix("distributed edges. Total %f M Avg %f M Max %f %%+",
 					to_mega(sum_rowbmp[2]), to_mega(sum_rowbmp[2]) / mpi.size_2d,
 					diff_percent(max_rowbmp[2], sum_rowbmp[2], mpi.size_2d));
@@ -945,7 +945,7 @@ private:
 			print_with_prefix("column_length(opt) %f MB", to_mega(max_rowbmp[3]*sizeof(SortIdx)));
 			print_with_prefix("column_length(naive) %f MB", to_mega(max_rowbmp[4]*sizeof(SortIdx)));
 #else
-			print_with_prefix("row_starts %f MB", to_mega(row_bitmap_length*sizeof(BitmapType)));
+			print_with_prefix("row_starts %f MB", to_mega(max_rowbmp[0]*sizeof(int64_t)));
 #endif
 		}
 #endif // #if VERVOSE_MODE

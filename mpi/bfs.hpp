@@ -84,13 +84,15 @@ public:
 
 	BfsBase()
 		: fiber_man_()
+#if !OPENMP_SUB_THREAD
 		, compute_thread_()
-		, alltoall_comm_(new AlltoallCommType())
+#endif
 		, bottom_up_substep_(NULL)
-		, comm_(alltoall_comm_, &fiber_man_)
-		, comm_sync_(2)
 		, top_down_comm_(this)
 		, bottom_up_comm_(this)
+		, td_comm_(mpi.comm_2dc, &top_down_comm_)
+		, bu_comm_(mpi.comm_2dr, &bottom_up_comm_)
+		, comm_sync_(2)
 		, denom_to_bottom_up_(DENOM_TOPDOWN_TO_BOTTOMUP)
 		, denom_bitmap_to_list_(DENOM_BITMAP_TO_LIST)
 		, thread_sync_(omp_get_max_threads())
@@ -99,7 +101,6 @@ public:
 
 	virtual ~BfsBase()
 	{
-		delete alltoall_comm_; alltoall_comm_ = NULL;
 		delete bottom_up_substep_; bottom_up_substep_ = NULL;
 	}
 
@@ -158,11 +159,6 @@ public:
 		const int max_comm_size = std::max(mpi.size_2dc, mpi.size_2dr);
 		int64_t bitmap_width = get_bitmap_size_local();
 
-		AlltoallCommParameter td_prm(mpi.comm_2dc, PRM::TOP_DOWN_FOLD_TAG, 4, &top_down_comm_);
-		top_down_comm_idx_ = alltoall_comm_->reg_comm(td_prm);
-		AlltoallCommParameter bu_prm(mpi.comm_2dr, PRM::BOTTOM_UP_PRED_TAG, 4, &bottom_up_comm_);
-		bottom_up_comm_idx_ = alltoall_comm_->reg_comm(bu_prm);
-
 		/**
 		 * Buffers for computing BFS
 		 * - next queue: This is vertex list in the top-down phase, and <pred, target> tuple list in the bottom-up phase.
@@ -170,14 +166,16 @@ public:
 		 * - two visited memory (for double buffering)
 		 * - working memory: This is used
 		 * 	1) to store steaming visited in the bottom-up search phase
-		 * 		required size: half_bitmap_width * BOTTOM_UP_BUFFER (for each place)
+		 * 		required size: half_bitmap_width * BOTTOM_UP_BUFFER (for each process)
 		 * 	2) to store next queue vertices in the bottom-up expand phase
-		 * 		required size: half_bitmap_width * 2 (for each place)
+		 * 		required size: half_bitmap_width * 2 (for each process)
 		 * - shared visited:
 		 * - shared visited update (to store the information to update shared visited)
 		 * - current queue extra memory (is allocated dynamically when the it is required)
 		 * - communication buffer for asynchronous communication:
 		 */
+
+		a2a_comm_buf_.allocate_memory(graph_.num_local_verts_ * sizeof(int32_t) * 4);
 
 		thread_local_buffer_ = (ThreadLocalBuffer**)malloc(sizeof(thread_local_buffer_[0])*max_threads);
 
@@ -238,6 +236,7 @@ public:
 		free(buffer_.thread_local_); buffer_.thread_local_ = NULL;
 		shared_free(buffer_.shared_memory_); buffer_.shared_memory_ = NULL;
 		free(thread_local_buffer_); thread_local_buffer_ = NULL;
+		a2a_comm_buf_.deallocate_memory();
 	}
 
 	void initialize_memory(int64_t* pred)
@@ -281,73 +280,89 @@ public:
 	// Async communication
 	//-------------------------------------------------------------//
 
-	template <typename ELEM>
-	class BFSCommBufferImpl : public CommunicationBuffer {
-		typedef CommunicationBuffer super;
+	class CommBufferPool {
 	public:
-		enum { BUF_SIZE = PRM::COMM_BUFFER_SIZE / sizeof(ELEM) };
-		BFSCommBufferImpl(void* buffer__, void* obj_ptr__)
-			: buffer_((ELEM*)buffer__)
-			, obj_ptr_(obj_ptr__)
-		{ }
-		virtual ~BFSCommBufferImpl() { }
-		virtual void add(void* ptr__, int offset, int length) {
-			assert (offset >= 0);
-			assert (offset + length <= BUF_SIZE);
-			memcpy(buffer_ + offset, ptr__, length*sizeof(ELEM));
-		}
-		virtual void* base_object() {
-			return obj_ptr_;
-		}
-		virtual int element_size() {
-			return sizeof(ELEM);
-		}
-		virtual void* pointer() {
-			return buffer_;
+		void allocate_memory(int size) {
+			first_buffer_ = malloc(size);
+			second_buffer_ = malloc(size);
+			current_index_ = 0;
+			pool_buffer_size_ = size;
+			num_buffers_ = size / PRM::COMM_BUFFER_SIZE;
 		}
 
-		ELEM* buffer_;
-		void* obj_ptr_;
-		// info
-		int src_; // rank to which send or from which receive
-	};
+		void deallocate_memory() {
+			free(first_buffer_); first_buffer_ = NULL;
+			free(second_buffer_); second_buffer_ = NULL;
+		}
 
-	struct BFSCommBufferData {
-		uint8_t mem[PRM::COMM_BUFFER_SIZE];
-		BFSCommBufferImpl<uint32_t> top_down_buffer;
-		BFSCommBufferImpl<TwodVertex> bottom_up_buffer;
+		void* get_next() {
+			int idx = current_index_++;
+			if(num_buffers_ <= idx) {
+				fprintf(IMD_OUT, "num_buffers_ <= idx\n");
+				throw "Error: buffer size not enough";
+			}
+			return (uint8_t*)first_buffer_ + PRM::COMM_BUFFER_SIZE * idx;
+		}
 
-		BFSCommBufferData()
-			: top_down_buffer(mem, this)
-			, bottom_up_buffer(mem, this)
-		{ }
+		void* clear_buffers() {
+			current_index_ = 0;
+			return first_buffer_;
+		}
+
+		void* second_buffer() {
+			return second_buffer_;
+		}
+
+		int pool_buffer_size() {
+			return pool_buffer_size_;
+		}
+
+	protected:
+		int pool_buffer_size_;
+		void* first_buffer_;
+		void* second_buffer_;
+		int current_index_;
+		int num_buffers_;
 	};
 
 	template <typename T>
 	class CommHandlerBase : public AlltoallBufferHandler {
-		typedef BFSCommBufferImpl<T> BufferType;
 	public:
+		enum { BUF_SIZE = PRM::COMM_BUFFER_SIZE / sizeof(T) };
 		CommHandlerBase(ThisType* this__)
 			: this_(this__)
-			, pool_(this__->alltoall_comm_->get_allocator())
+			, pool_(&this__->a2a_comm_buf_)
 		{ }
 		virtual ~CommHandlerBase() { }
-		virtual void free_buffer(CommunicationBuffer* buf__) {
-			buf__->length_ = 0;
-			pool_->free(static_cast<BFSCommBufferData*>(buf__->base_object()));
+		virtual void* get_buffer() {
+			return this->pool_->get_next();
+		}
+		virtual void add(void* buffer, void* ptr__, int offset, int length) {
+			assert (offset >= 0);
+			assert (offset + length <= BUF_SIZE);
+			memcpy((T*)buffer + offset, ptr__, length*sizeof(T));
+		}
+		virtual void* clear_buffers() {
+			return this->pool_->clear_buffers();
+		}
+		virtual void* second_buffer() {
+			return this->pool_->second_buffer();
+		}
+		virtual int max_size() {
+			return this->pool_->pool_buffer_size();
 		}
 		virtual int buffer_length() {
-			return BufferType::BUF_SIZE;
+			return BUF_SIZE;
 		}
 		virtual MPI_Datatype data_type() {
 			return MpiTypeOf<T>::type;
 		}
-		virtual void finished() {
-			this_->fiber_man_.end_processing();
+		virtual int element_size() {
+			return sizeof(T);
 		}
 	protected:
 		ThisType* this_;
-		memory::Pool<BFSCommBufferData>* pool_;
+		CommBufferPool* pool_;
 	};
 
 	class TopDownCommHandler : public CommHandlerBase<uint32_t> {
@@ -356,17 +371,16 @@ public:
 			: CommHandlerBase<uint32_t>(this__)
 			  { }
 
-		virtual CommunicationBuffer* alloc_buffer() {
-			return &this->pool_->get()->top_down_buffer;
-		}
-		virtual void received(CommunicationBuffer* buf_, int src) {
-			BFSCommBufferImpl<uint32_t>* buf = static_cast<BFSCommBufferImpl<uint32_t>*>(buf_);
-			buf->src_ = src;
-			VERVOSE(g_tp_comm += buf->length_ * sizeof(uint32_t));
-			if(this->this_->growing_or_shrinking_) // former top down
-				this->this_->fiber_man_.submit(new TopDownReceiver<true>(this->this_, buf), 1);
-			else // later top down
-				this->this_->fiber_man_.submit(new TopDownReceiver<false>(this->this_, buf), 1);
+		virtual void received(void* buf, int offset, int length, int src) {
+			VERVOSE(g_tp_comm += length * sizeof(uint32_t));
+			if(this_->growing_or_shrinking_) {
+				TopDownReceiver<true> recv(this->this_, (uint32_t*)buf + offset, length, src);
+				recv.run();
+			}
+			else {
+				TopDownReceiver<false> recv(this->this_, (uint32_t*)buf + offset, length, src);
+				recv.run();
+			}
 		}
 	};
 
@@ -376,21 +390,32 @@ public:
 			: CommHandlerBase<TwodVertex>(this__)
 			  { }
 
-		virtual CommunicationBuffer* alloc_buffer() {
-			return &this->pool_->get()->bottom_up_buffer;
-		}
-		virtual void received(CommunicationBuffer* buf_, int src) {
-			BFSCommBufferImpl<TwodVertex>* buf = static_cast<BFSCommBufferImpl<TwodVertex>*>(buf_);
-			buf->src_ = src;
-			VERVOSE(g_bu_pred_comm += buf->length_ * sizeof(TwodVertex));
-			this->this_->fiber_man_.submit(new BottomUpReceiver(this->this_, buf), 1);
+		virtual void received(void* buf, int offset, int length, int src) {
+			VERVOSE(g_bu_pred_comm += length * sizeof(TwodVertex));
+			BottomUpReceiver recv(this->this_, (TwodVertex*)buf + offset, length, src);
+			recv.run();
 		}
 	};
-#if ENABLE_FJMPI_RDMA
-	typedef FJMpiAlltoallCommunicator<BFSCommBufferData> AlltoallCommType;
+
+	void do_in_parallel(Runnable* main, Runnable* sub, bool inverse) {
+		if(inverse) {
+			std::swap(main, sub);
+		}
+#if OPENMP_SUB_THREAD
+#pragma omp parallel num_threads(2)
+		{
+			SET_AFFINITY;
+			if(omp_get_thread_num() == 0) {
+				main->run();
+			}
+			else {
+				sub->run();
+			}
+		}
 #else
-	typedef MpiAlltoallCommunicator<BFSCommBufferData> AlltoallCommType;
+		compute_thread_.do_in_parallel(main, sub);
 #endif
+	}
 
 	//-------------------------------------------------------------//
 	// expand phase
@@ -879,7 +904,7 @@ public:
 		LocalPacket& pk = packet_array[dest];
 		if(pk.length > LocalPacket::TOP_DOWN_LENGTH-3) { // low probability
 			PROF(profiling::TimeKeeper tk_commit);
-			comm_.send<false>(pk.data.t, pk.length, dest);
+			td_comm_.put(pk.data.t, pk.length, dest);
 			PROF(ts_commit += tk_commit);
 			pk.src = -1;
 			pk.length = 0;
@@ -1035,9 +1060,6 @@ public:
 #endif
 					);
 				}
-				else {
-					fiber_man_.process_task(1);
-				}
 			}
 
 			// process pending blocks
@@ -1049,8 +1071,7 @@ public:
 
 			// wait for completion
 			__sync_fetch_and_add(&fin.step2, 1);
-			while(fin.step2 != max_threads)
-				fiber_man_.process_task(1);
+			while(fin.step2 != max_threads) ;
 
 			// flush buffer
 #pragma omp for nowait
@@ -1061,26 +1082,20 @@ public:
 					LocalPacket& pk = packet_array[target];
 					if(pk.length > 0) {
 						PROF(profiling::TimeKeeper tk_commit);
-						comm_.send<false>(pk.data.t, pk.length, target);
+						td_comm_.put(pk.data.t, pk.length, target);
 						PROF(ts_commit += tk_commit);
 						pk.length = 0;
 						pk.src = -1;
 					}
 				}
-				PROF(profiling::TimeKeeper tk_commit);
-				comm_.send_end(target);
-				PROF(ts_commit += tk_commit);
 			} // #pragma omp for
 			PROF(profiling::TimeSpan ts_all; ts_all += tk_all; ts_all -= ts_commit);
 			PROF(extract_edge_time_ += ts_all);
 			PROF(commit_time_ += ts_commit);
 			VERVOSE(__sync_fetch_and_add(&num_edge_top_down_, num_edge_relax));
 			VERVOSE(__sync_fetch_and_add(&num_td_large_edge_, num_large_edge));
-			// process remaining recv tasks
-			fiber_man_.enter_processing();
 		} // #pragma omp parallel reduction(+:num_edge_relax)
 		debug("finished parallel");
-		comm_sync_.barrier();
 	}
 
 	struct TopDownParallelSection : public Runnable {
@@ -1093,13 +1108,9 @@ public:
 		TRACER(td);
 		PROF(profiling::TimeKeeper tk_all);
 
-		comm_.prepare(top_down_comm_idx_, &comm_sync_);
-		TopDownParallelSection par_sec(this);
-
-		debug("do_in_parallel");
-		// If mpi thread level is single, we have to call mpi function from the main thread.
-		compute_thread_.do_in_parallel(&par_sec, &comm_,
-				(mpi.thread_level == MPI_THREAD_SINGLE));
+		td_comm_.prepare();
+		top_down_parallel_section();
+		td_comm_.run();
 
 		PROF(parallel_reg_time_ += tk_all);
 		// flush NQ buffer and count NQ total
@@ -1125,8 +1136,8 @@ public:
 
 	template <bool growing>
 	struct TopDownReceiver : public Runnable {
-		TopDownReceiver(ThisType* this__, BFSCommBufferImpl<uint32_t>* data__)
-			: this_(this__), data_(data__) 	{ }
+		TopDownReceiver(ThisType* this_, uint32_t* stream_, int length_, int src_)
+			: this_(this_), stream_(stream_), length_(length_), src_(src_) { }
 		virtual void run() {
 			TRACER(td_recv);
 			PROF(profiling::TimeKeeper tk_all);
@@ -1137,15 +1148,15 @@ public:
 			BitmapType* visited = (BitmapType*)this_->new_visited_;
 			int64_t* restrict const pred = this_->pred_;
 			const int cur_level = this_->current_level_;
-			uint32_t* stream = data_->buffer_;
-			int length = data_->length_;
+			uint32_t* stream = stream_;
+			int length = length_;
 			int64_t pred_v = -1;
 
 			// for id converter //
 			int lgl = this_->graph_.local_bits_;
 			int P = mpi.size_2d;
 			int R = mpi.size_2dr;
-			int r = data_->src_;
+			int r = src_;
 			// ------------------- //
 
 			for(int i = 0; i < length; ) {
@@ -1187,12 +1198,12 @@ public:
 				}
 			}
 			tlb->cur_buffer = buf;
-			this_->top_down_comm_.free_buffer(data_);
 			PROF(this_->recv_proc_time_ += tk_all);
-			delete this;
 		}
 		ThisType* const this_;
-		BFSCommBufferImpl<uint32_t>* data_;
+		uint32_t* stream_;
+		int length_;
+		int src_;
 	};
 
 	//-------------------------------------------------------------//
@@ -1272,10 +1283,10 @@ public:
 
 	void flush_bottom_up_send_buffer(LocalPacket* buffer, int target_rank) {
 		TRACER(flush);
-		int bulk_send_size = BFSCommBufferImpl<TwodVertex>::BUF_SIZE;
+		int bulk_send_size = BottomUpCommHandler::BUF_SIZE;
 		for(int offset = 0; offset < buffer->length; offset += bulk_send_size) {
 			int length = std::min(buffer->length - offset, bulk_send_size);
-			comm_.send<false>(buffer->data.b + offset, length, target_rank);
+			bu_comm_.put(buffer->data.b + offset, length, target_rank);
 		}
 		buffer->length = 0;
 	}
@@ -2029,17 +2040,10 @@ public:
 				}
 			}
 #endif // #if !LOW_LEVEL_FUNCTION
-			PROF(profiling::TimeKeeper tk_commit);
-			comm_.send_end(target);
-			PROF(ts_commit += tk_commit);
 			PROF(profiling::TimeSpan ts_all(tk_all); ts_all -= ts_commit);
 			PROF(extract_edge_time_ += ts_all);
 			PROF(commit_time_ += ts_commit);
 		}// #pragma omp for nowait
-
-		// update pred
-		fiber_man_.enter_processing();
-
 		PROF(parallel_reg_time_ += tk_all);
 	}
 
@@ -2057,11 +2061,7 @@ public:
 
 		// since the first 4 buffer contains initial data, skip this region
 		bottom_up_substep_->begin(bitmap_buffer + BU_SUBSTEP, buffer_count - BU_SUBSTEP,
-				step_bitmap_width, comm_size*BU_SUBSTEP);
-		comm_.register_handler(bottom_up_substep_);
-#if !OVERLAP_WAVE_AND_PRED
-		comm_.pause(); // pause AlltoAll communication to avoid network congestion
-#endif
+				step_bitmap_width);
 
 		BottomUpSubstepData data;
 		int total_steps = (comm_size+1)*BU_SUBSTEP;
@@ -2119,18 +2119,13 @@ public:
 			{
 				PROF(profiling::TimeKeeper tk_all);
 				bottom_up_substep_->finish();
-				comm_.remove_handler(bottom_up_substep_);
 				PROF(comm_wait_time_ += tk_all);
-#if !OVERLAP_WAVE_AND_PRED
-				comm_.restart();
-#endif
 			}
 			thread_sync_.barrier();
 
 			// send the end packet and wait for the communication completion
 			bottom_up_finalize();
 		} // #pragma omp parallel
-		comm_sync_.barrier();
 	}
 
 	struct BottomUpBitmapParallelSection : public Runnable {
@@ -2147,12 +2142,9 @@ public:
 		int visited_count[comm_size*max_threads];
 		for(int i = 0; i < comm_size*max_threads; ++i) visited_count[i] = 0;
 
-		comm_.prepare(bottom_up_comm_idx_, &comm_sync_);
-		BottomUpBitmapParallelSection par_sec(this, visited_count);
-
-		// If mpi thread level is single, we have to call mpi function from the main thread.
-		compute_thread_.do_in_parallel(&par_sec, &comm_,
-				(mpi.thread_level == MPI_THREAD_SINGLE));
+		bu_comm_.prepare();
+		bottom_up_bmp_parallel_section(visited_count);
+		bu_comm_.run();
 
 		// gather visited_count
 		for(int tid = 1; tid < max_threads; ++tid)
@@ -2161,6 +2153,7 @@ public:
 
 		bottom_up_gather_nq_size(visited_count);
 		VERVOSE(botto_up_print_stt(0, 0, visited_count));
+		VERVOSE(bottom_up_substep_->print_stt());
 	}
 
 	void bottom_up_list_parallel_section(int *visited_count, int8_t* vertex_enabled,
@@ -2181,9 +2174,7 @@ public:
 
 		// the first 5 buffers are working buffer
 		bottom_up_substep_->begin(list_buffer + BU_SUBSTEP + 1, buffer_count - BU_SUBSTEP - 1,
-				buffer_size, comm_size*BU_SUBSTEP);
-		comm_.register_handler(bottom_up_substep_);
-		comm_.pause(); // pause AlltoAll communication to avoid network congestion
+				buffer_size);
 
 		TwodVertex* back_buffer = list_buffer[BU_SUBSTEP];
 		TwodVertex* write_buffer;
@@ -2266,17 +2257,14 @@ public:
 			{
 				PROF(profiling::TimeKeeper tk_all);
 				bottom_up_substep_->finish();
-				comm_.remove_handler(bottom_up_substep_);
 				PROF(comm_wait_time_ += tk_all);
-				comm_.restart();
 			}
 			thread_sync_.barrier();
 
 			bottom_up_finalize();
 		} // #pragma omp parallel
-		comm_sync_.barrier();
 	}
-
+/*
 	struct BottomUpListParallelSection : public Runnable {
 		ThisType* this_; int* visited_count; int8_t* vertex_enabled;
 		int64_t num_blocks; int64_t num_vertexes;
@@ -2284,10 +2272,10 @@ public:
 			: this_(this__), visited_count(visited_count_) , vertex_enabled(vertex_enabled_)
 			, num_blocks(0), num_vertexes(0) { }
 		virtual void run() {
-			this_->bottom_up_list_parallel_section(visited_count,vertex_enabled, num_blocks, num_vertexes);
+			this_->b;
 		}
 	};
-
+*/
 	void bottom_up_search_list() {
 		TRACER(bu_list);
 
@@ -2300,15 +2288,13 @@ public:
 		int visited_count[comm_size];
 		for(int i = 0; i < comm_size; ++i) visited_count[i] = 0;
 
-		comm_.prepare(bottom_up_comm_idx_, &comm_sync_);
-		BottomUpListParallelSection par_sec(this, visited_count, vertex_enabled);
-
-		// If mpi thread level is single, we have to call mpi function from the main thread.
-		compute_thread_.do_in_parallel(&par_sec, &comm_,
-				(mpi.thread_level == MPI_THREAD_SINGLE));
+		bu_comm_.prepare();
+		int64_t num_blocks; int64_t num_vertexes;
+		bottom_up_list_parallel_section(visited_count, vertex_enabled, num_blocks, num_vertexes);
+		bu_comm_.run();
 
 		bottom_up_gather_nq_size(visited_count);
-		VERVOSE(botto_up_print_stt(par_sec.num_blocks, par_sec.num_vertexes, visited_count));
+		VERVOSE(botto_up_print_stt(num_blocks, num_vertexes, visited_count));
 
 		free(vertex_enabled); vertex_enabled = NULL;
 	}
@@ -2449,18 +2435,18 @@ public:
 #endif // #if BF_DEEPER_ASYNC
 
 	struct BottomUpReceiver : public Runnable {
-		BottomUpReceiver(ThisType* this__, BFSCommBufferImpl<TwodVertex>* data__)
-			: this_(this__), data_(data__) 	{ }
+		BottomUpReceiver(ThisType* this_, TwodVertex* buffer_, int length_, int src_)
+			: this_(this_), buffer_(buffer_), length_(length_), src_(src_) { }
 		virtual void run() {
 			TRACER(bu_recv);
 			PROF(profiling::TimeKeeper tk_all);
 			int P = mpi.size_2d;
 			int lgl = this_->graph_.local_bits_;
 			TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
-			int64_t cshifted = data_->src_ * mpi.size_2dr;
+			int64_t cshifted = src_ * mpi.size_2dr;
 			int64_t levelshifted = int64_t(this_->current_level_) << 48;
-			TwodVertex* buffer = data_->buffer_;
-			int length = data_->length_ / 2;
+			TwodVertex* buffer = buffer_;
+			int length = length_ / 2;
 			int64_t* pred = this_->pred_;
 			for(int i = 0; i < length; ++i) {
 				SeparatedId pred_dst(buffer[i*2+0]);
@@ -2471,12 +2457,12 @@ public:
 				pred[tgt_local] = pred_v;
 			}
 
-			this_->bottom_up_comm_.free_buffer(data_);
 			PROF(this_->recv_proc_time_ += tk_all);
-			delete this;
 		}
 		ThisType* const this_;
-		BFSCommBufferImpl<TwodVertex>* data_;
+		TwodVertex* buffer_;
+		int length_;
+		int src_;
 	};
 
 	static void printInformation()
@@ -2488,6 +2474,7 @@ public:
 #define PRINT_VAL(fmt, val) print_with_prefix(#val " = " fmt ".", val)
 		PRINT_VAL("%d", NUM_BFS_ROOTS);
 		PRINT_VAL("%d", omp_get_max_threads());
+		PRINT_VAL("%d", omp_get_nested());
 		PRINT_VAL("%zd", sizeof(BitmapType));
 		PRINT_VAL("%zd", sizeof(TwodVertex));
 
@@ -2497,6 +2484,7 @@ public:
 		PRINT_VAL("%d", SHARED_MEMORY);
 
 		PRINT_VAL("%d", MPI_FUNNELED);
+		PRINT_VAL("%d", OPENMP_SUB_THREAD);
 
 		PRINT_VAL("%d", VERVOSE_MODE);
 		PRINT_VAL("%d", PROFILING_MODE);
@@ -2563,15 +2551,16 @@ public:
 	// members
 
 	FiberManager fiber_man_;
+#if !OPENMP_SUB_THREAD
 	BackgroundThread compute_thread_;
-	AlltoallCommType* alltoall_comm_;
+#endif
 	MpiBottomUpSubstepComm* bottom_up_substep_;
-	AsyncAlltoallManager comm_;
-	memory::SpinBarrier comm_sync_;
+	CommBufferPool a2a_comm_buf_;
 	TopDownCommHandler top_down_comm_;
 	BottomUpCommHandler bottom_up_comm_;
-	AlltoallSubCommunicator top_down_comm_idx_;
-	AlltoallSubCommunicator bottom_up_comm_idx_;
+	AsyncAlltoallManager td_comm_;
+	AsyncAlltoallManager bu_comm_;
+	memory::SpinBarrier comm_sync_;
 	ThreadLocalBuffer** thread_local_buffer_;
 	memory::ConcurrentPool<QueuedVertexes> nq_empty_buffer_;
 	memory::ConcurrentStack<QueuedVertexes*> nq_;
@@ -2731,12 +2720,12 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		}
 
 		global_visited_vertices += global_nq_size_;
-		assert(alltoall_comm_->check_num_send_buffer());
 
 #if VERVOSE_MODE
 		tmp = MPI_Wtime();
 		double cur_fold_time = tmp - prev_time;
 		fold_time += cur_fold_time; prev_time = tmp;
+		AsyncAlltoallManager* a2a_comm = forward_or_backward_ ? &td_comm_ : &bu_comm_;
 		total_edge_top_down += num_edge_top_down_;
 		total_edge_bottom_up += num_edge_bottom_up_;
 #if PROFILING_MODE
@@ -2759,8 +2748,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		recv_proc_time_.submit("recv proc", current_level_);
 		gather_nq_time_.submit("gather NQ info", current_level_);
 		seq_proc_time_.submit("sequential processing", current_level_);
-		comm_.submit_prof_info(current_level_);
-		alltoall_comm_->submit_prof_info(current_level_);
+		a2a_comm->submit_prof_info(current_level_);
 		fiber_man_.submit_wait_time("fiber man wait", current_level_);
 
 		if(forward_or_backward_) {
@@ -2830,7 +2818,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		}
 
 #if VERVOSE_MODE
-		int send_num_bufs[2] = { alltoall_comm_->get_allocator()->size(), nq_empty_buffer_.size() };
+		int send_num_bufs[2] = { a2a_comm->get_last_send_size(), nq_empty_buffer_.size() };
 		int sum_num_bufs[2], max_num_bufs[2];
 		MPI_Reduce(send_num_bufs, sum_num_bufs, 2, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 		MPI_Reduce(send_num_bufs, max_num_bufs, 2, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -2857,12 +2845,11 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 					to_mega(edge_relaxed) / time_of_level,
 					to_mega(edge_relaxed) / cur_fold_time);
 
-			int64_t total_cb_size = int64_t(sum_num_bufs[0]) * PRM::COMM_BUFFER_SIZE;
-			int64_t max_cb_size = int64_t(max_num_bufs[0]) * PRM::COMM_BUFFER_SIZE;
 			int64_t total_qb_size = int64_t(sum_num_bufs[1]) * BUCKET_UNIT_SIZE;
 			int64_t max_qb_size = int64_t(max_num_bufs[1]) * BUCKET_UNIT_SIZE;
-			print_with_prefix("Comm buffer: %f MB per node, Max %f %%+",
-					to_mega(total_cb_size / mpi.size_2d), diff_percent(max_cb_size, total_cb_size, mpi.size_2d));
+			print_with_prefix("A2A Send: %f MB per node, Max %f %%+",
+					to_mega(sum_num_bufs[0] / mpi.size_2d),
+					diff_percent((int64_t)max_num_bufs[0], (int64_t)sum_num_bufs[0], mpi.size_2d));
 			print_with_prefix("Queue buffer: %f MB per node, Max %f %%+",
 					to_mega(total_qb_size / mpi.size_2d), diff_percent(max_qb_size, total_qb_size, mpi.size_2d));
 

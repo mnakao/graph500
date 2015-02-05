@@ -1,6 +1,6 @@
 SW = FUJI3
 VAMP = false
-SCOREP = true
+SCOREP = false
 
 # default values
 LDFLAGS := -fopenmp -g # -pg
@@ -112,8 +112,8 @@ MPICC := vtcc -vt:cc $(MPICC) -vt:inst manual -vt:hyb -DVTRACE
 MPICPP := vtcc -vt:cc $(MPICPP) -vt:inst manual -vt:hyb -DVTRACE
 endif
 ifeq ($(SCOREP), true)
-MPICC := scorep --nocompiler --user --mpp=none $(MPICC)
-MPICPP := scorep --nocompiler --user --mpp=none $(MPICPP)
+MPICC := scorep --nocompiler --user --static $(MPICC) -DSCOREP
+MPICPP := scorep --nocompiler --user --static $(MPICPP) -DSCOREP
 endif
 
 CPPFLAGS := $(CFLAGS)

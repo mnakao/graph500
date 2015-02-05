@@ -10,7 +10,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
-#define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #include "mod_arith.h"
 #include "splittable_mrg.h"

@@ -201,17 +201,9 @@ public:
 			pthread_join(thread_, NULL);
 		}
 	}
-	void do_in_parallel(Runnable* main, Runnable* sub, bool inverse) {
-		if(!inverse) {
-			debug("before submit");
-			submit(sub, 0);
-			debug("after submit");
-			main->run();
-		}
-		else {
-			submit(main, 0);
-			sub->run();
-		}
+	void do_in_parallel(Runnable* main, Runnable* sub) {
+		submit(sub, 0);
+		main->run();
 	}
 private:
 	bool cleanup_;

@@ -19,11 +19,12 @@
 // 0: MPI is single mode: Main -> MPI, Sub: OpenMP
 // 1: MPI is funneled mode: Main -> OpenMP, Sub: MPI
 // Since communication and computation is overlapped, we cannot have main thread do both tasks.
-#define MPI_FUNNELED 1
+#define MPI_FUNNELED 0
+#define OPENMP_SUB_THREAD 1
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 1
+#define VALIDATION_LEVEL 0
 
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
@@ -33,9 +34,9 @@
 #define OVERLAP_WAVE_AND_PRED 0
 
 // for K computer
-#define ENABLE_FJMPI_RDMA 1
+#define ENABLE_FJMPI_RDMA 0
 #define ENABLE_MY_ALLGATHER 1
-#define ENABLE_INLINE_ATOMICS 1
+#define ENABLE_INLINE_ATOMICS 0
 #define ENABLE_FUJI_PROF 0
 
 // root switch to on/off debug print
@@ -69,7 +70,7 @@
 #define STREAM_UPDATE 1
 #define BF_DEEPER_ASYNC 1
 
-#define PRE_EXEC_TIME 5 // 300 seconds
+#define PRE_EXEC_TIME 0 // 300 seconds
 
 #define VERTEX_SORTING 0 // do not support backward search
 #define LOW_LEVEL_FUNCTION 1
@@ -123,6 +124,12 @@
 #	define DEGREE_ORDER 0
 #endif
 
+#ifndef _OPENMP
+// turn OFF when OpenMP is not enabled
+#	undef OPENMP_SUB_THREAD
+#	define OPENMP_SUB_THREAD 0
+#endif
+
 #define CACHE_LINE 128
 #define PAGE_SIZE 8192
 //#define PAGE_SIZE 16
@@ -140,7 +147,7 @@ namespace PRM { //
 #define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
-	NUM_BFS_ROOTS = 16, // spec: 64
+	NUM_BFS_ROOTS = 4, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,

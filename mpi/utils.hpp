@@ -479,8 +479,13 @@ int g_GpuIndex = -1;
 
 namespace numa {
 
-int num_omp_threads = 2;
-int num_bfs_threads = 1;
+int num_omp_threads = 2; // # of threads available
+int num_bfs_threads = 1; // # of threads for BFS
+#if OPENMP_SUB_THREAD
+bool is_extra_omp = true;
+#else
+bool is_extra_omp = false;
+#endif
 int next_base_thread_id = 0;
 int next_thread_id = 1;
 
@@ -892,9 +897,10 @@ void launch_dummy_thread(int num_dummy_threads) {
 
 /**
  * This function obtain the current core binding
- * and returns the cpu set the threads are bound to.
+ * and returns the cpu set the threads are bound to
+ * and also set the thread_id and the number of OpenMP threads
  */
-bool get_core_affinity(std::vector<int>& cpu_set) {
+bool detect_core_affinity(std::vector<int>& cpu_set) {
 	if(num_bfs_threads > num_omp_threads) {
 		print_with_prefix("BFS_NTHREADS must be equal or less than OMP_NUM_THREADS");
 		return false;
@@ -975,6 +981,7 @@ bool get_core_affinity(std::vector<int>& cpu_set) {
 		}
 		if(mpi.isRmaster()) print_with_prefix("Detect core affinity");
 	}
+	omp_set_num_threads(num_bfs_threads);
 	return true;
 }
 
@@ -1019,7 +1026,7 @@ void set_omp_core_affinity() {
 			do {
 				thread_id = __sync_fetch_and_add(&next_thread_id, 1);
 				core_id = (thread_id % core_binding->num_logical_CPUs());
-			} while(core_id == 0 || core_id >= num_bfs_threads);
+			} while(core_id == 0 || core_id >= num_bfs_threads+(is_extra_omp?1:0));
 			if(core_affinity_enabled) {
 				int cpu = core_binding->cpu(core_id);
 				internal_set_core_affinity(cpu);
@@ -1096,7 +1103,7 @@ void set_affinity()
 	if(mpi.isRmaster()) print_bind_mode();
 	if(affinity_mode == USE_EXISTING_AFFINITY) {
 		std::vector<int> cpu_set;
-		if(get_core_affinity(cpu_set) == false) {
+		if(detect_core_affinity(cpu_set) == false) {
 			affinity_mode = SIMPLE_AFFINITY;
 		}
 		else {
@@ -1199,7 +1206,7 @@ void set_affinity()
 	}
 	// set main thread's affinity
 	set_core_affinity();
-	next_base_thread_id = num_bfs_threads;
+	next_base_thread_id = num_bfs_threads+(is_extra_omp?1:0);
 	next_thread_id = 1;
 }
 
@@ -1245,6 +1252,41 @@ static int compute_rank_2d(int x, int y, int sx, int sy) {
 		return y * sx + x;
 }
 
+static void parse_row_dims(bool* rdim, const char* input) {
+	memset(rdim, 0x00, sizeof(bool)*6);
+	while(*input) {
+		switch(*(input++)) {
+		case 'x':
+			rdim[0] = true;
+			break;
+		case 'y':
+			rdim[1] = true;
+			break;
+		case 'z':
+			rdim[2] = true;
+			break;
+		case 'a':
+			rdim[3] = true;
+			break;
+		case 'b':
+			rdim[4] = true;
+			break;
+		case 'c':
+			rdim[5] = true;
+			break;
+		}
+	}
+}
+
+static void print_dims(const char* prefix, std::vector<int>& dims) {
+	print_prefix();
+	fprintf(IMD_OUT, "%s%d", prefix, dims[0]);
+	for(int i = 1; i < dims.size(); ++i) {
+		fprintf(IMD_OUT, "x%d", dims[i]);
+	}
+	fprintf(IMD_OUT, "\n");
+}
+
 static void setup_2dcomm()
 {
 	bool success = false;
@@ -1253,12 +1295,6 @@ static void setup_2dcomm()
 #if ENABLE_FJMPI
 	const char* tofu_6d = getenv("TOFU_6D");
 	if(!success && tofu_6d) {
-		int pdim = 0;
-		switch(*tofu_6d) {
-		case 'x': pdim = 0; break;
-		case 'y': pdim = 1; break;
-		case 'z': pdim = 2; break;
-		}
 		int rank6d[6];
 		int size6d[6];
 		FJMPI_Topology_rel_rank2xyzabc(mpi.rank, &rank6d[0], &rank6d[1], &rank6d[2], &rank6d[3], &rank6d[4], &rank6d[5]);
@@ -1272,26 +1308,24 @@ static void setup_2dcomm()
 			if(mpi.isMaster()) print_with_prefix("Mismatch error!");
 		}
 		else {
-			std::vector<int> ss, rs;
-			ss.push_back(size6d[pdim]);
-			rs.push_back(rank6d[pdim]);
-			for(int i = 3; i < 6; ++i) {
-				ss.push_back(size6d[i]);
-				rs.push_back(rank6d[i]);
-			}
-			compute_rank(ss, rs, mpi.comm_r);
-			if(mpi.isMaster()) print_with_prefix("C: %dx%dx%dx%d", ss[0], ss[1], ss[2], ss[3]);
-			ss.clear(); rs.clear();
-
-			for(int i = 0; i < 3; ++i) {
-				if(pdim != i) {
-					ss.push_back(size6d[i]);
-					rs.push_back(rank6d[i]);
+			bool rdim[6] = {0};
+			parse_row_dims(rdim, tofu_6d);
+			std::vector<int> ss_r, rs_r;
+			std::vector<int> ss_c, rs_c;
+			for(int i = 0; i < 6; ++i) {
+				if(rdim[i]) {
+					ss_r.push_back(size6d[i]);
+					rs_r.push_back(rank6d[i]);
+				}
+				else {
+					ss_c.push_back(size6d[i]);
+					rs_c.push_back(rank6d[i]);
 				}
 			}
-			compute_rank(ss, rs, mpi.comm_c);
-			if(mpi.isMaster()) print_with_prefix("R: %dx%d", ss[0], ss[1]);
-			ss.clear(); rs.clear();
+			compute_rank(ss_c, rs_c, mpi.comm_r);
+			if(mpi.isMaster()) print_dims("C: ", ss_r);
+			compute_rank(ss_r, rs_r, mpi.comm_c);
+			if(mpi.isMaster()) print_dims("R: ", ss_c);
 
 			mpi.size_2dr = mpi.comm_c.size;
 			mpi.size_2dc = mpi.comm_r.size;
@@ -1498,6 +1532,10 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 
 #if BACKTRACE_ON_SIGNAL
 	backtrace::start_thread();
+#endif
+
+#if OPENMP_SUB_THREAD
+	omp_set_nested(1);
 #endif
 
 	if(getenv("THREED_MAP")) {
@@ -1995,6 +2033,26 @@ public:
 	template <typename T>
 	void free(T* buffer) {
 		MPI_Free_mem(buffer);
+	}
+
+	void alltoallv(void* sendbuf, void* recvbuf, MPI_Datatype type, int recvbufsize)
+	{
+		recv_offsets_[0] = 0;
+		for(int r = 0; r < comm_size_; ++r) {
+			recv_offsets_[r + 1] = recv_offsets_[r] + recv_counts_[r];
+		}
+		MPI_Alltoall(send_counts_, 1, MPI_INT, recv_counts_, 1, MPI_INT, comm_);
+		// calculate offsets
+		recv_offsets_[0] = 0;
+		for(int r = 0; r < comm_size_; ++r) {
+			recv_offsets_[r + 1] = recv_offsets_[r] + recv_counts_[r];
+		}
+		if(recv_counts_[comm_size_] > recvbufsize) {
+			fprintf(IMD_OUT, "Error: recv_counts_[comm_size_] > recvbufsize");
+			throw "Error: buffer size not enough";
+		}
+		MPI_Alltoallv(sendbuf, send_counts_, send_offsets_, type,
+				recvbuf, recv_counts_, recv_offsets_, type, comm_);
 	}
 
 private:

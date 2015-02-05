@@ -26,7 +26,7 @@ struct BottomUpSubstepData {
 	void* data;
 };
 
-class BottomUpSubstepCommBase : public AsyncCommHandler {
+class BottomUpSubstepCommBase {
 public:
 	BottomUpSubstepCommBase() { }
 	virtual ~BottomUpSubstepCommBase() {
@@ -43,70 +43,64 @@ public:
 		MPI_Comm_size(mpi_comm__, &size);
 		MPI_Comm_rank(mpi_comm__, &rank);
 		// compute route
-		int left_rank = (rank + 1) % size;
-		int right_rank = (rank + size - 1) % size;
+		int right_rank = (rank + 1) % size;
+		int left_rank = (rank + size - 1) % size;
 		nodes(0).rank = left_rank;
 		nodes(1).rank = right_rank;
 		debug("left=%d, right=%d", left_rank, right_rank);
 	}
 	void send_first(BottomUpSubstepData* data) {
-		send_queue[send_filled] = *data;
-		send_queue[send_filled].tag.routed_count = 0;
-		send_queue[send_filled].tag.route = send_filled % 2;
+		data->tag.routed_count = 0;
+		data->tag.route = send_filled % 2;
 		debug("send_first length=%d, send_filled=%d", data->tag.length, send_filled);
-		__sync_synchronize();
-		++send_filled;
-		__sync_synchronize();
+		send_pair[send_filled++] = *data;
+		if(send_filled == 2) {
+			send_recv();
+			send_filled = 0;
+		}
 	}
 	void send(BottomUpSubstepData* data) {
-		send_queue[send_filled] = *data;
 		debug("send length=%d, send_filled=%d", data->tag.length, send_filled);
-		__sync_synchronize();
-		++send_filled;
-		__sync_synchronize();
+		send_pair[send_filled++] = *data;
+		if(send_filled == 2) {
+			send_recv();
+			send_filled = 0;
+		}
 	}
 	void recv(BottomUpSubstepData* data) {
-		while(recv_filled <= recv_tail) ;
-		__sync_synchronize();
-		*data = recv_queue[recv_tail];
-		debug("recv length=%d, recv_tail=%d", data->tag.length, recv_tail);
-		++recv_tail;
+		if(recv_tail >= recv_filled) {
+			fprintf(IMD_OUT, "recv_tail >= recv_filled\n");
+			throw "recv_filled >= recv_tail";
+		}
+		*data = recv_pair[recv_tail++ % NBUF];
+		debug("recv length=%d, recv_tail=%d", data->tag.length, recv_tail - 1);
 	}
 	void finish() {
-		TRACER(bu_comm_fin_wait);
-		while(!finished) sched_yield();
-		debug("user finished");
-	}
-	virtual void probe(void* comm_data) {
-		if(finished) return;
-
-		if(initialized == false) {
-			begin_comm();
-			initialized = true;
-		}
-
-		// pump send data
-		while(send_tail < send_filled) {
-			__sync_synchronize();
-			BottomUpSubstepData comm_buf = send_queue[send_tail];
-			int route = comm_buf.tag.route;
-			assert(route == 0 || route == 1);
-			nodes(route).send_queue.push_back(comm_buf);
-			++send_tail;
-		}
-
-		probe_comm(comm_data);
-
-		// finish ?
-		int total_send = nodes(0).send_complete_count + nodes(1).send_complete_count;
-		int total_recv = nodes(0).recv_complete_count + nodes(1).recv_complete_count;
-		if(total_steps == total_send && total_steps == total_recv) {
-			end_comm(comm_data);
-			debug("finished");
-			finished = true;
-		}
 	}
 
+	virtual void print_stt() {
+#if VERVOSE_MODE
+		int steps = compute_time_.size();
+		int64_t sum_compute[steps];
+		int64_t max_compute[steps];
+		int64_t sum_comm[steps];
+		int64_t max_comm[steps];
+		MPI_Reduce(&compute_time_[0], sum_compute, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&compute_time_[0], max_compute, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&comm_time_[0], sum_comm, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&comm_time_[0], max_comm, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
+		if(mpi.isMaster()) {
+			for(int i = 0; i < steps; ++i) {
+				double comp_avg = (double)sum_compute[i] / steps / 1000.0;
+				double comp_max = (double)max_compute[i] / 1000.0;
+				double comm_avg = (double)sum_comm[i] / steps / 1000.0;
+				double comm_max = (double)max_comm[i] / 1000.0;
+				print_with_prefix("step, %d, max-step, %d, avg-compute, %f, max-compute, %f, avg-comm, %f, max-comm, %f, (ms)",
+						i+1, steps, comp_avg, comp_max, comm_avg, comm_max);
+			}
+		}
+#endif
+	}
 protected:
 	enum {
 		NBUF = 4,
@@ -115,52 +109,26 @@ protected:
 
 	struct CommTargetBase {
 		int rank;
-		std::deque<BottomUpSubstepData> send_queue;
-
-		BottomUpSubstepData send_buf[NBUF];
-		BottomUpSubstepData recv_buf[NBUF];
-
-		unsigned int send_count; // the next buffer index is calculated from this value
-		unsigned int send_complete_count;
-		unsigned int recv_count; //   "
-		unsigned int recv_complete_count;
-
-		CommTargetBase() {
-			for(int i = 0; i < NBUF; ++i) {
-				send_buf[i].data = NULL;
-				recv_buf[i].data = NULL;
-			}
-			send_count = recv_count = recv_complete_count = 0;
-		}
-
-		void clear_state() {
-			send_count = send_complete_count = recv_count = recv_complete_count = 0;
-			for(int i = 0; i < NBUF; ++i) {
-				send_buf[i].data = NULL;
-				recv_buf[i].data = NULL;
-			}
-		}
 	};
 
 	MPI_Comm mpi_comm;
 	std::vector<void*> free_list;
-	std::vector<BottomUpSubstepData> send_queue;
-	std::vector<BottomUpSubstepData> recv_queue;
+	BottomUpSubstepData send_pair[2];
+	BottomUpSubstepData recv_pair[NBUF];
+	VERVOSE(profiling::TimeKeeper tk_);
+	VERVOSE(std::vector<int64_t> compute_time_);
+	VERVOSE(std::vector<int64_t> comm_time_);
 
 	int element_size;
-	int total_steps;
 	int buffer_width;
-	bool initialized;
-	volatile int send_filled;
-	int send_tail; // only comm thread modify
-	volatile int recv_filled;
-	int recv_tail; // only user thred modify
-	volatile bool finished;
+	int send_filled;
+	int recv_filled;
+	int recv_tail;
 
 	virtual CommTargetBase& nodes(int target) = 0;
 	virtual void begin_comm() = 0;
-	virtual void probe_comm(void* comm_data) = 0;
 	virtual void end_comm(void* comm_data) = 0;
+	virtual void send_recv() = 0;
 
 	int buffers_available() {
 		return (int)free_list.size();
@@ -177,16 +145,8 @@ protected:
 		free_list.push_back(buffer);
 	}
 
-	void recv_data(BottomUpSubstepData* data) {
-		// increment counter
-		data->tag.routed_count++;
-		recv_queue[recv_filled] = *data;
-		__sync_synchronize();
-		++recv_filled;
-	}
-
 	template <typename T>
-	void begin(T** recv_buffers__, int buffer_count__, int buffer_width__, int total_steps__) {
+	void begin(T** recv_buffers__, int buffer_count__, int buffer_width__) {
 		element_size = sizeof(T);
 		buffer_width = buffer_width__;
 
@@ -194,21 +154,16 @@ protected:
 		for(int i = 0; i < buffer_count__; ++i) {
 			free_list.push_back(recv_buffers__[i]);
 		}
-		total_steps = total_steps__;
-		send_queue.resize(total_steps, BottomUpSubstepData());
-		recv_queue.resize(total_steps, BottomUpSubstepData());
-		send_filled = send_tail = 0;
-		recv_filled = recv_tail = 0;
+		send_filled = recv_tail = recv_filled = 0;
 
-		nodes(0).clear_state();
-		nodes(1).clear_state();
-		finished = false;
-		initialized = false;
-		debug("begin buffer_count=%d, buffer_width=%d, total_steps=%d",
-				buffer_count__, buffer_width__, total_steps__);
+		debug("begin buffer_count=%d, buffer_width=%d",
+				buffer_count__, buffer_width__);
 #if VERVOSE_MODE
 		if(mpi.isMaster()) print_with_prefix("Bottom-up substep buffer count: %d", buffer_count__);
 #endif
+		VERVOSE(tk_.getSpanAndReset());
+		VERVOSE(compute_time_.clear());
+		VERVOSE(comm_time_.clear());
 	}
 };
 
@@ -218,70 +173,18 @@ public:
 	MpiBottomUpSubstepComm(MPI_Comm mpi_comm__)
 	{
 		init(mpi_comm__);
-		for(int i = 0; i < int(sizeof(req)/sizeof(req[0])); ++i) {
-			req[i] = MPI_REQUEST_NULL;
-		}
 	}
 	virtual ~MpiBottomUpSubstepComm() {
 	}
 	void register_memory(void* memory, int64_t size) {
 	}
 	template <typename T>
-	void begin(T** recv_buffers__, int buffer_count__, int buffer_width__, int total_steps__) {
-		super__::begin(recv_buffers__, buffer_count__, buffer_width__, total_steps__);
+	void begin(T** recv_buffers__, int buffer_count__, int buffer_width__) {
+		super__::begin(recv_buffers__, buffer_count__, buffer_width__);
 		type = MpiTypeOf<T>::type;
 	}
 	virtual void begin_comm() {
-		int send_per_node = total_steps / 2;
-		int n = std::min<int>(NBUF, send_per_node);
-		for(int i = 0; i < n && buffers_available(); ++i) {
-			for(int p = 0; p < 2 && buffers_available(); ++p) {
-				CommTarget& node = nodes_[p];
-				void* buffer = get_buffer();
-				node.recv_buf[i].data = buffer;
-				MPI_Irecv(buffer, buffer_width, type, node.rank, MPI_ANY_TAG, mpi_comm, recv_request(p, i));
-				debug("MPI_Irecv %srank=%d, buf_idx=%d", p ? ">" : "<", node.rank, i);
-				node.recv_count++;
-			}
-		}
 		debug("initialized");
-	}
-	virtual void probe_comm(void* comm_data) {
-		int index; int flag; MPI_Status status = {0};
-		MPI_Testany(sizeof(req)/sizeof(req[0]), req, &index, &flag, &status);
-		if(flag != 0 && index != MPI_UNDEFINED) {
-			int target; int buf_idx; bool b_send;
-			req_info(index, target, buf_idx, b_send);
-
-			CommTarget& node = nodes_[target];
-			if(b_send) {
-				free_buffer(node.send_buf[buf_idx].data);
-				node.send_buf[buf_idx].data = NULL;
-				node.send_complete_count++;
-
-				set_send_buffer(0);
-				set_send_buffer(1);
-			}
-			else {
-				BottomUpSubstepTag tag = make_tag(status);
-				node.recv_buf[buf_idx].tag = tag;
-				debug("recv %srank=%d, buf_idx=%d, length=%d, region_id=%d, routed=%d",
-						target ? ">" : "<", node.rank, buf_idx, tag.length, tag.region_id, tag.routed_count);
-				recv_data(&node.recv_buf[buf_idx]);
-				node.recv_buf[buf_idx].data = NULL;
-				node.recv_complete_count++;
-
-				set_recv_buffer(0);
-				set_recv_buffer(1);
-			}
-		}
-
-		// process receive completion
-		for(int p = 0; p < 2; ++p) {
-			set_recv_buffer(p);
-			set_send_buffer(p);
-		}
-
 	}
 	virtual void end_comm(void* comm_data) {
 		//
@@ -293,17 +196,8 @@ protected:
 
 	CommTarget nodes_[2];
 	MPI_Datatype type;
-	MPI_Request req[NBUF*4];
 
 	virtual CommTargetBase& nodes(int target) { return nodes_[target]; }
-
-	MPI_Request* send_request(int target, int buf_idx) {
-		return req + (target * NBUF + buf_idx) * 2;
-	}
-
-	MPI_Request* recv_request(int target, int buf_idx) {
-		return send_request(target, buf_idx) + 1;
-	}
 
 	int make_tag(BottomUpSubstepTag& tag) {
 		return (1 << 30) | (tag.route << 24) |
@@ -322,67 +216,30 @@ protected:
 		return tag;
 	}
 
-	void req_info(int index, int& target, int& buf_idx, bool& send) {
-		send = ((index % 2) == 0);
-		buf_idx = (index / 2) & BUFMASK;
-		target = (index / 2 / NBUF);
-	}
-
-	void set_send_buffer(int target) {
-		TRACER(set_send_buffer);
-		CommTarget& node = nodes_[target];
-		while(node.send_queue.size() > 0) {
-			int buf_idx = node.send_count % NBUF;
-			BottomUpSubstepData& comm_buf = node.send_buf[buf_idx];
-			if(comm_buf.data != NULL) {
-				break;
-			}
-			comm_buf = node.send_queue.front();
-			node.send_queue.pop_front();
-			int tag = make_tag(comm_buf.tag);
-			MPI_Isend(comm_buf.data, comm_buf.tag.length, type, node.rank, tag,
-					mpi_comm, send_request(target, buf_idx));
-			debug("MPI_Isend %srank=%d, buf_idx=%d, length=%d, region_id=%d, routed_c=%d",
-					target ? ">" : "<", node.rank, buf_idx, comm_buf.tag.length,
-							comm_buf.tag.region_id, comm_buf.tag.routed_count);
-#if VERVOSE_MODE
-			if(element_size == 8) {
-				g_bu_bitmap_comm += comm_buf.tag.length*element_size;
-			}
-			else {
-				g_bu_list_comm += comm_buf.tag.length*element_size;
-			}
-#endif
-			// increment counter
-			node.send_count++;
-		}
-	}
-
-	void set_recv_buffer(int target) {
-		TRACER(set_recv_buffer);
-		int send_per_node = total_steps / 2;
-		CommTarget& node = nodes_[target];
-		while(true) {
-			if((int)node.recv_count >= send_per_node) {
-				break;
-			}
-			int buf_idx = node.recv_count % NBUF;
-			BottomUpSubstepData& comm_buf = node.recv_buf[buf_idx];
-			if(comm_buf.data != NULL) {
-				break;
-			}
-			if(buffers_available() == 0) {
-				// no buffer
-				break;
-			}
-			void* buffer = get_buffer();
-			node.recv_buf[buf_idx].data = buffer;
-			MPI_Irecv(buffer, buffer_width, type, node.rank,
-					MPI_ANY_TAG, mpi_comm, recv_request(target, buf_idx));
-			debug("MPI_Irecv r%sank=%d, buf_idx=%d", target ? ">" : "<", node.rank, buf_idx);
-			// increment counter
-			node.recv_count++;
-		}
+	virtual void send_recv() {
+		VERVOSE(compute_time_.push_back(tk_.getSpanAndReset()));
+		VERVOSE(MPI_Barrier(mpi_comm));
+		MPI_Request req[4];
+		MPI_Status status[4];
+		int recv_0 = recv_filled++ % NBUF;
+		int recv_1 = recv_filled++ % NBUF;
+		recv_pair[recv_0].data = get_buffer();
+		recv_pair[recv_1].data = get_buffer();
+		MPI_Irecv(recv_pair[recv_0].data, buffer_width,
+				type, nodes_[0].rank, MPI_ANY_TAG, mpi_comm, &req[0]);
+		MPI_Irecv(recv_pair[recv_1].data, buffer_width,
+				type, nodes_[1].rank, MPI_ANY_TAG, mpi_comm, &req[1]);
+		MPI_Isend(send_pair[0].data, send_pair[0].tag.length,
+				type, nodes_[1].rank, make_tag(send_pair[0].tag), mpi_comm, &req[2]);
+		MPI_Isend(send_pair[1].data, send_pair[1].tag.length,
+				type, nodes_[0].rank, make_tag(send_pair[1].tag), mpi_comm, &req[3]);
+		MPI_Waitall(4, req, status);
+		recv_pair[recv_0].tag = make_tag(status[0]);
+		recv_pair[recv_1].tag = make_tag(status[1]);
+		free_buffer(send_pair[0].data);
+		free_buffer(send_pair[1].data);
+		VERVOSE(MPI_Barrier(mpi_comm));
+		VERVOSE(comm_time_.push_back(tk_.getSpanAndReset()));
 	}
 };
 
@@ -430,8 +287,8 @@ public:
 		}
 	}
 	template <typename T>
-	void begin(T** recv_buffers__, int buffer_count__, int buffer_width__, int total_steps__) {
-		begin(recv_buffers__, buffer_count__, buffer_width__, total_steps__);
+	void begin(T** recv_buffers__, int buffer_count__, int buffer_width__) {
+		begin(recv_buffers__, buffer_count__, buffer_width__);
 		++current_step;
 		debug("begin");
 	}
