@@ -386,6 +386,7 @@ struct MPI_INFO_ON_GPU {
 };
 
 int64_t get_time_in_microsecond();
+FILE* get_imd_out_file();
 
 #if ENABLE_FUJI_PROF
 extern "C" {

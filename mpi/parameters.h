@@ -24,7 +24,7 @@
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
-#define VALIDATION_LEVEL 0
+#define VALIDATION_LEVEL 1
 
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
@@ -134,7 +134,7 @@
 #define PAGE_SIZE 8192
 //#define PAGE_SIZE 16
 
-#define IMD_OUT stderr
+#define IMD_OUT get_imd_out_file()
 
 typedef uint8_t SortIdx;
 typedef uint64_t BitmapType;
@@ -147,7 +147,7 @@ namespace PRM { //
 #define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
-	NUM_BFS_ROOTS = 4, // spec: 64
+	NUM_BFS_ROOTS = 16, // spec: 64
 #if CUDA_ENABLED
 	PACKET_LENGTH = 256,
 	LOG_PACKET_LENGTH = 8,

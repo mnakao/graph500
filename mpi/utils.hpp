@@ -229,6 +229,31 @@ struct GLOBAL_CLOCK {
 GLOBAL_CLOCK global_clock;
 #endif // #if PRINT_WITH_TIME
 
+FILE* g_out_file = NULL;
+FILE* get_imd_out_file() {
+	if(mpi.size == 0) {
+		// before MPI_Init()
+		return stderr;
+	}
+	if(g_out_file == NULL) {
+		char buf[100];
+		sprintf(buf, "out.%d", mpi.rank);
+		g_out_file = fopen(buf, "w");
+		if(g_out_file == NULL) {
+			return stderr;
+		}
+	}
+	fflush(g_out_file);
+	return g_out_file;
+}
+
+void close_imd_out_file() {
+	if(g_out_file != NULL) {
+		fclose(g_out_file);
+		g_out_file = NULL;
+	}
+}
+
 //-------------------------------------------------------------//
 // Exception
 //-------------------------------------------------------------//
@@ -1468,6 +1493,7 @@ void cleanup_2dcomm()
 {
 	MPI_Comm_free(&mpi.comm_2dr);
 	MPI_Comm_free(&mpi.comm_2dc);
+	close_imd_out_file();
 }
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
@@ -3181,7 +3207,7 @@ private:
 
 		if(mpi.isMaster()) {
 			for(int i = 0; i < num_times; ++i) {
-				fprintf(stderr, "Time of %s, %d, Avg, %f, Max, %f, (ms)\n", times_[i].content,
+				fprintf(IMD_OUT, "Time of %s, %d, Avg, %f, Max, %f, (ms)\n", times_[i].content,
 						times_[i].number,
 						sum_times[i] / mpi.size_2d * 1000.0,
 						max_times[i] * 1000.0);
@@ -3235,7 +3261,7 @@ private:
 		if(mpi.isMaster()) {
 			for(int i = 0; i < num_times; ++i) {
 				int64_t sum = sum_times[i], avg = sum_times[i] / mpi.size_2d, maximum = max_times[i];
-				fprintf(stderr, "%s, %d, Sum, %ld, Avg, %ld, Max, %ld\n", counters_[i].content,
+				fprintf(IMD_OUT, "%s, %d, Sum, %ld, Avg, %ld, Max, %ld\n", counters_[i].content,
 						counters_[i].number, sum, avg, maximum);
 			}
 		}

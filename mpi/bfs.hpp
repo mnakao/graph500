@@ -1826,6 +1826,7 @@ public:
 		VERVOSE(__sync_fetch_and_add(&num_edge_bottom_up_, tmp_edge_relax));
 		USER_END(bu_bmp_step);
 		thread_sync_.barrier();
+		PROF(extract_thread_wait_ += tk_all);
 		return visited_count;
 	}
 
@@ -1936,8 +1937,8 @@ public:
 		th_offset[tid+1] = num_enabled;
 		PROF(extract_edge_time_ += tk_all);
 		USER_END(bu_list_proc);
-		// TODO: measure wait time
 		thread_sync_.barrier();
+		PROF(extract_thread_wait_ += tk_all);
 #pragma omp master
 		{
 			TRACER(bu_list_single);
@@ -2044,11 +2045,12 @@ public:
 			PROF(extract_edge_time_ += ts_all);
 			PROF(commit_time_ += ts_commit);
 		}// #pragma omp for nowait
-		PROF(parallel_reg_time_ += tk_all);
+		PROF(seq_proc_time_ += tk_all);
 	}
 
 #if BF_DEEPER_ASYNC
 	void bottom_up_bmp_parallel_section(int *visited_count) {
+		PROF(profiling::TimeKeeper tk_all);
 		int bitmap_width = get_bitmap_size_local();
 		int step_bitmap_width = bitmap_width / BU_SUBSTEP;
 		assert (work_buf_size_ >= bitmap_width * PRM::BOTTOM_UP_BUFFER);
@@ -2126,6 +2128,7 @@ public:
 			// send the end packet and wait for the communication completion
 			bottom_up_finalize();
 		} // #pragma omp parallel
+		PROF(parallel_reg_time_ += tk_all);
 	}
 
 	struct BottomUpBitmapParallelSection : public Runnable {
@@ -2159,6 +2162,7 @@ public:
 	void bottom_up_list_parallel_section(int *visited_count, int8_t* vertex_enabled,
 			int64_t& num_blocks, int64_t& num_vertexes)
 	{
+		PROF(profiling::TimeKeeper tk_all);
 		int bitmap_width = get_bitmap_size_local();
 		int step_bitmap_width = bitmap_width / BU_SUBSTEP;
 		assert (work_buf_size_ >= bitmap_width * PRM::BOTTOM_UP_BUFFER);
@@ -2263,6 +2267,7 @@ public:
 
 			bottom_up_finalize();
 		} // #pragma omp parallel
+		PROF(parallel_reg_time_ += tk_all);
 	}
 /*
 	struct BottomUpListParallelSection : public Runnable {
@@ -2621,13 +2626,14 @@ public:
 	} buffer_;
 	PROF(profiling::TimeSpan extract_edge_time_);
 	PROF(profiling::TimeSpan isolated_edge_time_);
+	PROF(profiling::TimeSpan extract_thread_wait_);
 	PROF(profiling::TimeSpan parallel_reg_time_);
+	PROF(profiling::TimeSpan seq_proc_time_);
 	PROF(profiling::TimeSpan commit_time_);
 	PROF(profiling::TimeSpan comm_wait_time_);
 	PROF(profiling::TimeSpan fold_competion_wait_);
 	PROF(profiling::TimeSpan recv_proc_time_);
 	PROF(profiling::TimeSpan gather_nq_time_);
-	PROF(profiling::TimeSpan seq_proc_time_);
 };
 
 void BfsBase::run_bfs(int64_t root, int64_t* pred)
@@ -2738,13 +2744,14 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 #endif
 			extract_edge_time_.submit("backward edge", current_level_);
 		}
+		extract_thread_wait_.submit("extract thread wait", current_level_);
 
 		parallel_reg_time_.submit("parallel region", current_level_);
 		commit_time_.submit("extract commit", current_level_);
 		if(!forward_or_backward_) { // backward
 			comm_wait_time_.submit("bottom-up communication wait", current_level_);
-			fold_competion_wait_.submit("fold completion wait", current_level_);
 		}
+		fold_competion_wait_.submit("fold completion wait", current_level_);
 		recv_proc_time_.submit("recv proc", current_level_);
 		gather_nq_time_.submit("gather NQ info", current_level_);
 		seq_proc_time_.submit("sequential processing", current_level_);

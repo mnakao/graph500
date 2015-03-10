@@ -82,21 +82,34 @@ public:
 #if VERVOSE_MODE
 		int steps = compute_time_.size();
 		int64_t sum_compute[steps];
-		int64_t max_compute[steps];
+		int64_t sum_wait_compute[steps];
 		int64_t sum_comm[steps];
+		int64_t sum_wait_comm[steps];
+		int64_t max_compute[steps];
+		int64_t max_wait_compute[steps];
 		int64_t max_comm[steps];
+		int64_t max_wait_comm[steps];
 		MPI_Reduce(&compute_time_[0], sum_compute, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&compute_time_[0], max_compute, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&compute_wait_time_[0], sum_wait_compute, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
 		MPI_Reduce(&comm_time_[0], sum_comm, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&comm_wait_time_[0], sum_wait_comm, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&compute_time_[0], max_compute, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&compute_wait_time_[0], max_wait_compute, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
 		MPI_Reduce(&comm_time_[0], max_comm, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&comm_wait_time_[0], max_wait_comm, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
 		if(mpi.isMaster()) {
 			for(int i = 0; i < steps; ++i) {
-				double comp_avg = (double)sum_compute[i] / steps / 1000.0;
+				double comp_avg = (double)sum_compute[i] / mpi.size_2d / 1000.0;
+				double comp_wait_avg = (double)sum_wait_compute[i] / mpi.size_2d / 1000.0;
+				double comm_avg = (double)sum_comm[i] / mpi.size_2d / 1000.0;
+				double comm_wait_avg = (double)sum_wait_comm[i] / mpi.size_2d / 1000.0;
 				double comp_max = (double)max_compute[i] / 1000.0;
-				double comm_avg = (double)sum_comm[i] / steps / 1000.0;
+				double comp_wait_max = (double)max_wait_compute[i] / 1000.0;
 				double comm_max = (double)max_comm[i] / 1000.0;
-				print_with_prefix("step, %d, max-step, %d, avg-compute, %f, max-compute, %f, avg-comm, %f, max-comm, %f, (ms)",
-						i+1, steps, comp_avg, comp_max, comm_avg, comm_max);
+				double comm_wait_max = (double)max_wait_comm[i] / 1000.0;
+				print_with_prefix("step, %d, max-step, %d, avg-compute, %f, max-compute, %f, avg-comm, %f, max-comm, %f, "
+						"avg-wait-compute, %f, max-wait-compute, %f, avg-wait-comm, %f, max-wait-comm, %f, (ms)",
+						i+1, steps, comp_avg, comp_max, comm_avg, comm_max, comp_wait_avg, comp_wait_max, comm_wait_avg, comm_wait_max);
 			}
 		}
 #endif
@@ -117,7 +130,9 @@ protected:
 	BottomUpSubstepData recv_pair[NBUF];
 	VERVOSE(profiling::TimeKeeper tk_);
 	VERVOSE(std::vector<int64_t> compute_time_);
+	VERVOSE(std::vector<int64_t> compute_wait_time_);
 	VERVOSE(std::vector<int64_t> comm_time_);
+	VERVOSE(std::vector<int64_t> comm_wait_time_);
 
 	int element_size;
 	int buffer_width;
@@ -219,6 +234,7 @@ protected:
 	virtual void send_recv() {
 		VERVOSE(compute_time_.push_back(tk_.getSpanAndReset()));
 		VERVOSE(MPI_Barrier(mpi_comm));
+		VERVOSE(compute_wait_time_.push_back(tk_.getSpanAndReset()));
 		MPI_Request req[4];
 		MPI_Status status[4];
 		int recv_0 = recv_filled++ % NBUF;
@@ -238,8 +254,9 @@ protected:
 		recv_pair[recv_1].tag = make_tag(status[1]);
 		free_buffer(send_pair[0].data);
 		free_buffer(send_pair[1].data);
-		VERVOSE(MPI_Barrier(mpi_comm));
 		VERVOSE(comm_time_.push_back(tk_.getSpanAndReset()));
+		VERVOSE(MPI_Barrier(mpi_comm));
+		VERVOSE(comm_wait_time_.push_back(tk_.getSpanAndReset()));
 	}
 };
 
