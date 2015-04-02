@@ -175,7 +175,7 @@ public:
 		 * - communication buffer for asynchronous communication:
 		 */
 
-		a2a_comm_buf_.allocate_memory(graph_.num_local_verts_ * sizeof(int32_t) * 4);
+		a2a_comm_buf_.allocate_memory(graph_.num_local_verts_ * sizeof(int32_t) * 16);
 
 		thread_local_buffer_ = (ThreadLocalBuffer**)malloc(sizeof(thread_local_buffer_[0])*max_threads);
 
@@ -2300,6 +2300,7 @@ public:
 
 		bottom_up_gather_nq_size(visited_count);
 		VERVOSE(botto_up_print_stt(num_blocks, num_vertexes, visited_count));
+		VERVOSE(bottom_up_substep_->print_stt());
 
 		free(vertex_enabled); vertex_enabled = NULL;
 	}
