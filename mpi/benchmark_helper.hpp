@@ -478,7 +478,7 @@ void find_roots(GraphType& g, int64_t* bfs_roots, int& num_bfs_roots)
 	using namespace PRM;
 	/* Find roots and max used vertex */
 	int64_t counter = 0;
-	const int64_t nglobalverts = int64_t(1) << g.log_actual_global_verts();
+	const int64_t nglobalverts = int64_t(1) << g.log_orig_global_verts_;
 	int bfs_root_idx;
 	for (bfs_root_idx = 0; bfs_root_idx < num_bfs_roots; ++bfs_root_idx) {
 		int64_t root;
@@ -511,7 +511,7 @@ template <typename GraphType>
 int64_t find_max_used_vertex(GraphType& g)
 {
 	int64_t max_used_vertex = 0;
-	const int64_t nlocal = g.num_local_verts_;
+	const int64_t nlocal = g.pred_size();
 	for (int64_t i = nlocal; (i > 0) && (max_used_vertex == 0); --i) {
 		int64_t local = i - 1;
 		for(int64_t j = mpi.size_2dr; (j > 0) && (max_used_vertex == 0); --j) {

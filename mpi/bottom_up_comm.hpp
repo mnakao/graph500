@@ -179,6 +179,8 @@ protected:
 		VERVOSE(tk_.getSpanAndReset());
 		VERVOSE(compute_time_.clear());
 		VERVOSE(comm_time_.clear());
+		VERVOSE(compute_wait_time_.clear());
+		VERVOSE(comm_wait_time_.clear());
 	}
 };
 

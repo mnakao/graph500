@@ -550,7 +550,8 @@ void print_current_binding(const char* message) {
 void initialize_num_threads() {
 	num_omp_threads = omp_get_max_threads();
 	const char* bfs_num_threads_str = getenv("BFS_NTHREADS");
-	num_bfs_threads = num_omp_threads - 1;
+	//num_bfs_threads = num_omp_threads - 1;
+	num_bfs_threads = num_omp_threads; // currently there are no background thread
 	if(bfs_num_threads_str != NULL) {
 		num_bfs_threads = atoi(bfs_num_threads_str);
 	}
@@ -930,7 +931,8 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 		print_with_prefix("BFS_NTHREADS must be equal or less than OMP_NUM_THREADS");
 		return false;
 	}
-	int total_threads = std::max(num_omp_threads, num_bfs_threads+1);
+	//int total_threads = std::max(num_omp_threads, num_bfs_threads+1);
+	int total_threads = std::max(num_omp_threads, num_bfs_threads); // currently there are no background thread
 	cpu_set.resize(total_threads, 0);
 	bool core_affinity = false, process_affinity = false;
 	int num_procs = sysconf(_SC_NPROCESSORS_CONF);
@@ -1277,6 +1279,7 @@ static int compute_rank_2d(int x, int y, int sx, int sy) {
 		return y * sx + x;
 }
 
+#if ENABLE_FJMPI
 static void parse_row_dims(bool* rdim, const char* input) {
 	memset(rdim, 0x00, sizeof(bool)*6);
 	while(*input) {
@@ -1306,11 +1309,12 @@ static void parse_row_dims(bool* rdim, const char* input) {
 static void print_dims(const char* prefix, std::vector<int>& dims) {
 	print_prefix();
 	fprintf(IMD_OUT, "%s%d", prefix, dims[0]);
-	for(int i = 1; i < dims.size(); ++i) {
+	for(int i = 1; i < int(dims.size()); ++i) {
 		fprintf(IMD_OUT, "x%d", dims[i]);
 	}
 	fprintf(IMD_OUT, "\n");
 }
+#endif
 
 static void setup_2dcomm()
 {
@@ -1908,6 +1912,7 @@ public:
 	T sum() {
 		const int width = buffer_width_;
 		// compute sum of thread local count values
+#pragma omp parallel for
 		for(int r = 0; r < num_partitions_; ++r) {
 			int sum = 0;
 			for(int t = 0; t < max_threads_; ++t) {
@@ -1922,6 +1927,7 @@ public:
 		}
 		// assert (send_counts[size] == bufsize*2);
 		// compute offset of each threads
+#pragma omp parallel for
 		for(int r = 0; r < num_partitions_; ++r) {
 			thread_offsets_[0*width + r] = partition_offsets_[r];
 			for(int t = 0; t < max_threads_; ++t) {
@@ -2115,11 +2121,12 @@ void scatter(const Mapping mapping, int data_count, MPI_Comm comm)
 		for (int i = 0; i < data_count; ++i) {
 			(counts[mapping.target(i)])++;
 		} // #pragma omp for schedule(static)
+	}
 
-#pragma omp master
-		{ scatter.sum(); } // #pragma omp master
-#pragma omp barrier
-		;
+	scatter.sum();
+
+#pragma omp parallel
+	{
 		int* restrict offsets = scatter.get_offsets();
 
 #pragma omp for schedule(static)
@@ -2165,11 +2172,12 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 		for (int i = 0; i < data_count; ++i) {
 			(counts[mapping.target(i)])++;
 		} // #pragma omp for schedule(static)
+	}
 
-#pragma omp master
-		{ scatter.sum(); } // #pragma omp master
-#pragma omp barrier
-		;
+	scatter.sum();
+
+#pragma omp parallel
+	{
 		int* restrict offsets = scatter.get_offsets();
 
 #pragma omp for schedule(static)

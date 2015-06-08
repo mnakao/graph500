@@ -85,7 +85,7 @@ public:
 	BfsBase()
 		: fiber_man_()
 #if !OPENMP_SUB_THREAD
-		, compute_thread_()
+		//, compute_thread_()
 #endif
 		, bottom_up_substep_(NULL)
 		, top_down_comm_(this)
@@ -241,7 +241,7 @@ public:
 
 	void initialize_memory(int64_t* pred)
 	{
-		int64_t num_local_vertices = graph_.num_local_verts_;
+		int64_t num_orig_local_vertices = graph_.pred_size();
 		int64_t bitmap_width = get_bitmap_size_local();
 		int64_t shared_vis_width = bitmap_width * mpi.size_2dr;
 
@@ -255,7 +255,7 @@ public:
 		{
 #if !INIT_PRED_ONCE	// Only Spec2010 needs this initialization
 #pragma omp for nowait
-			for(int64_t i = 0; i < num_local_vertices; ++i) {
+			for(int64_t i = 0; i < num_orig_local_vertices; ++i) {
 				pred[i] = -1;
 			}
 #endif
@@ -365,20 +365,20 @@ public:
 		CommBufferPool* pool_;
 	};
 
-	class TopDownCommHandler : public CommHandlerBase<uint32_t> {
+	class TopDownCommHandler : public CommHandlerBase<int64_t> {
 	public:
 		TopDownCommHandler(ThisType* this__)
-			: CommHandlerBase<uint32_t>(this__)
+			: CommHandlerBase<int64_t>(this__)
 			  { }
 
 		virtual void received(void* buf, int offset, int length, int src) {
-			VERVOSE(g_tp_comm += length * sizeof(uint32_t));
+			VERVOSE(g_tp_comm += length * sizeof(int64_t));
 			if(this_->growing_or_shrinking_) {
-				TopDownReceiver<true> recv(this->this_, (uint32_t*)buf + offset, length, src);
+				TopDownReceiver<true> recv(this->this_, (int64_t*)buf + offset, length, src);
 				recv.run();
 			}
 			else {
-				TopDownReceiver<false> recv(this->this_, (uint32_t*)buf + offset, length, src);
+				TopDownReceiver<false> recv(this->this_, (int64_t*)buf + offset, length, src);
 				recv.run();
 			}
 		}
@@ -397,6 +397,7 @@ public:
 		}
 	};
 
+	/*
 	void do_in_parallel(Runnable* main, Runnable* sub, bool inverse) {
 		if(inverse) {
 			std::swap(main, sub);
@@ -416,6 +417,7 @@ public:
 		compute_thread_.do_in_parallel(main, sub);
 #endif
 	}
+	*/
 
 	//-------------------------------------------------------------//
 	// expand phase
@@ -441,21 +443,40 @@ public:
 	}
 
 	void first_expand(int64_t root) {
-		// !!root is UNSWIZZLED.!!
+		// !!root is UNSWIZZLED and ORIGINAL ID!!
 		int root_owner = vertex_owner(root);
-		TwodVertex root_local = vertex_local(root);
-		SeparatedId root_src = graph_.VtoS(root);
 		int root_r = root_owner % mpi.size_2dr;
+		int root_c = root_owner / mpi.size_2dr;
 
 		cq_list_ = (TwodVertex*)work_buf_;
 
-		if(root_owner == mpi.rank_2d) {
-			pred_[root_local] = root;
-			int64_t word_idx = root_local >> LOG_NBPE;
-			int bit_idx = root_local & NBPE_MASK;
-			((BitmapType*)new_visited_)[word_idx] |= BitmapType(1) << bit_idx;
-		}
 		if(root_r == mpi.rank_2dr) {
+			// get reordered vertex id
+			int64_t root_reordered = 0;
+			if(root_owner == mpi.rank_2d) {
+				// yes, we have reordered id
+				int64_t root_local = vertex_local(root);
+				int64_t reordered = graph_.reorder_map_[root_local];
+				root_reordered = (reordered * mpi.size_2d) + root_owner;
+
+				MPI_Bcast(&root_reordered, 1, MpiTypeOf<int64_t>::type,
+						root_c, mpi.comm_2dr);
+
+				// update pred
+				pred_[root_local] = root;
+
+				// update visited
+				int64_t word_idx = reordered >> LOG_NBPE;
+				int bit_idx = reordered & NBPE_MASK;
+				((BitmapType*)new_visited_)[word_idx] |= BitmapType(1) << bit_idx;
+			}
+			else {
+				MPI_Bcast(&root_reordered, 1, MpiTypeOf<int64_t>::type,
+						root_c, mpi.comm_2dr);
+			}
+
+			// update CQ
+			SeparatedId root_src = graph_.VtoS(root_reordered);
 			cq_list_[0] = root_src.value;
 			cq_size_ = 1;
 		}
@@ -787,14 +808,15 @@ public:
 	void bottom_up_update_pred() {
 		ScatterContext scatter(mpi.comm_2dr);
 		int comm_size = comm_size;
+		int num_bufs = nq_.stack_.size();
+		int lgl = graph_.lgl_;
 
 		TwodVertex* send_buf, recv_buf;
 
 #pragma omp parallel
 		{
 			int* counts = scatter.get_counts();
-			int num_bufs = nq_.stack_.size();
-			int lgl = graph_.lgl_;
+
 #pragma omp for
 			for(int b = 0; b < num_bufs; ++b) {
 				int length = nq_.stack_[b]->length;
@@ -803,13 +825,15 @@ public:
 					counts[data[i+1] >> lgl] += 2;
 				}
 			} // implicit barrier
-#pragma omp single
-			{
-				scatter.sum();
-				send_buf = (TwodVertex*)page_aligned_xcalloc(scatter.get_send_count()*sizeof(TwodVertex));
-			} // implicit barrier
+		}
 
+		scatter.sum();
+		send_buf = (TwodVertex*)page_aligned_xcalloc(scatter.get_send_count()*sizeof(TwodVertex));
+
+#pragma omp parallel
+		{
 			int* offsets = scatter.get_offsets();
+
 #pragma omp for
 			for(int b = 0; b < num_bufs; ++b) {
 				int length = nq_.stack_[b]->length;
@@ -893,83 +917,58 @@ public:
 	// top-down search
 	//-------------------------------------------------------------//
 
-	void top_down_send(TwodVertex tgt, int lgl, uint32_t local_mask,
-			LocalPacket* packet_array, TwodVertex src, uint32_t pred[2]
+	void top_down_send(int64_t tgt, int lgl, int r_mask,
+			LocalPacket* packet_array, int64_t src_enc
 #if PROFILING_MODE
 			, profiling::TimeSpan& ts_commit
 #endif
 	) {
-		int dest = tgt >> lgl;
-		uint32_t tgt_local = tgt & local_mask;
+		int dest = (tgt >> lgl) & r_mask;
 		LocalPacket& pk = packet_array[dest];
 		if(pk.length > LocalPacket::TOP_DOWN_LENGTH-3) { // low probability
 			PROF(profiling::TimeKeeper tk_commit);
 			td_comm_.put(pk.data.t, pk.length, dest);
 			PROF(ts_commit += tk_commit);
-			pk.src = -1;
+			pk.src = 0;
 			pk.length = 0;
 		}
-		if(pk.src != int64_t(src)) { // TODO: use conditional branch
-			pk.src = src;
-			pk.data.t[pk.length+0] = pred[0];
-			pk.data.t[pk.length+1] = pred[1];
-			pk.length += 2;
+		if(pk.src != src_enc) { // TODO: use conditional branch
+			pk.src = src_enc;
+			pk.data.t[pk.length++] = src_enc;
 		}
-		pk.data.t[pk.length++] = tgt_local;
+		pk.data.t[pk.length++] = tgt;
 	}
 
-	struct TDProcBlock {
-		int64_t src;
-		int64_t start;
-		int64_t end;
-	};
-
-	void top_down_proc_blocks(std::deque<TDProcBlock>& pending_blocks, int lgl, uint32_t local_mask,
-			LocalPacket* packet_array
-#if PROFILING_MODE
-			, profiling::TimeSpan& ts_commit
-#endif
-			) {
-		TwodVertex* edge_array = graph_.edge_array_;
-		while(true) {
-			TDProcBlock block;
-			bool exit = false;
-#pragma omp critical
-			{
-				if(pending_blocks.size() == 0) {
-					exit = true;
+	void top_down_send_large(int64_t* edge_array, int64_t start, int64_t end,
+			int lgl, int r_mask, int64_t src_enc)
+	{
+		assert (end > start);
+		for(int i = 0; i < mpi.size_2dr; ++i) {
+			// search the destination change point with binary search
+			int64_t left = start;
+			int64_t right = end;
+			int64_t next = std::min(left + (right - left) / (mpi.size_2dr - i) * 2, end - 1);
+			do {
+				int dest = (edge_array[next] >> lgl) & r_mask;
+				if(dest > i) {
+					right = next;
 				}
 				else {
-					block = pending_blocks.front();
-					pending_blocks.pop_front();
+					left = next;
 				}
-			}
-			if(exit) return ;
-			int64_t src_enc = -((int64_t)block.src + 1);
-			uint32_t pred[2] = { src_enc >> 32, uint32_t(src_enc) };
-			for(int64_t e = block.start; e < block.end; ++e) {
-				top_down_send(edge_array[e], lgl, local_mask, packet_array, block.src, pred
-#if PROFILING_MODE
-			, ts_commit
-#endif
-				);
-			}
+				next = (left + right) / 2;
+			} while(left < next);
+			// start ... right -> i
+			td_comm_.put_ptr(edge_array + start, right - start, src_enc, i);
+			start = right;
 		}
+		assert(start == end);
 	}
 
 	void top_down_parallel_section() {
 		TRACER(td_par_sec);
-		struct {
-			volatile int step1;
-			volatile int step2;
-			volatile int timestamp;
-		} fin = {0};
 		bool clear_packet_buffer = packet_buffer_is_dirty_;
 		packet_buffer_is_dirty_ = false;
-
-		// to reduce load imbalance
-		//
-		std::deque<TDProcBlock> pending_blocks;
 
 		debug("begin parallel");
 #pragma omp parallel
@@ -979,40 +978,47 @@ public:
 			PROF(profiling::TimeSpan ts_commit);
 			VERVOSE(int64_t num_edge_relax = 0);
 			VERVOSE(int64_t num_large_edge = 0);
-			int max_threads = omp_get_num_threads();
+			//int max_threads = omp_get_num_threads();
 			TwodVertex* cq_list = (TwodVertex*)cq_list_;
-			TwodVertex* edge_array = graph_.edge_array_;
+			int64_t* edge_array = graph_.edge_array_;
 			LocalPacket* packet_array =
 					thread_local_buffer_[omp_get_thread_num()]->fold_packet;
 			if(clear_packet_buffer) {
 				for(int target = 0; target < mpi.size_2dr; ++target) {
 					packet_array[target].length = 0;
-					packet_array[target].src = -1;
+					packet_array[target].src = 0;
 				}
 			}
 			int lgl = graph_.local_bits_;
+			//int vertex_bits = graph_.r_bits_ + lgl;
+			int r_mask = (1 << graph_.r_bits_) - 1;
+			int P = mpi.size_2d;
+			int R = mpi.size_2dr;
+			int r = mpi.rank_2dr;
 			uint32_t local_mask = (uint32_t(1) << lgl) - 1;
 			int64_t L = graph_.num_local_verts_;
 
 			// count total edges
 
-#pragma omp for nowait
+#pragma omp for
 			for(int64_t i = 0; i < int64_t(cq_size_); ++i) {
 				SeparatedId src(cq_list[i]);
-				TwodVertex compact = (src.value >> lgl) * L + (src.value & local_mask);
+				TwodVertex src_c = src.value >> lgl;
+				TwodVertex compact = src_c * L + (src.value & local_mask);
 				TwodVertex word_idx = compact >> LOG_NBPE;
 				int bit_idx = compact & NBPE_MASK;
 				BitmapType row_bitmap_i = graph_.row_bitmap_[word_idx];
 				BitmapType mask = BitmapType(1) << bit_idx;
 				if(row_bitmap_i & mask) {
-					int64_t src_enc = -((int64_t)src.value + 1);
-					uint32_t pred[2] = { src_enc >> 32, uint32_t(src_enc) };
 					BitmapType low_mask = (BitmapType(1) << bit_idx) - 1;
 					TwodVertex non_zero_off = graph_.row_sums_[word_idx] +
 							__builtin_popcountl(graph_.row_bitmap_[word_idx] & low_mask);
+					int64_t src_orig =
+							graph_.orig_vertexes_[non_zero_off] * P + src_c * R + r;
+					int64_t src_enc = -(src_orig + 1);
 #if ISOLATE_FIRST_EDGE
-					top_down_send(graph_.isolated_edges_[non_zero_off],
-							lgl, local_mask, packet_array, src.value, pred
+					top_down_send(graph_.isolated_edges_[non_zero_off], lgl,
+							r_mask, packet_array, src_enc
 #if PROFILING_MODE
 					, ts_commit
 #endif
@@ -1022,59 +1028,41 @@ public:
 					int64_t e_end = graph_.row_starts_[non_zero_off+1];
 #if TOP_DOWN_LOAD_BALANCE
 					if(e_end - e_start > PRM::TOP_DOWN_PENDING_WIDTH) {
-#pragma omp critical
-						{
-							for(int64_t e = e_start; e < e_end; e += PRM::TOP_DOWN_PENDING_WIDTH) {
-								int64_t length = std::min<int64_t>(PRM::TOP_DOWN_PENDING_WIDTH, e_end - e);
-								TDProcBlock block = { src.value, e, e + length };
-								pending_blocks.push_back(block);
-							}
-							fin.timestamp += 1;
-						}
+						top_down_send_large(edge_array, e_start, e_end, lgl, r_mask, src_enc);
 						VERVOSE(num_large_edge += e_end - e_start);
 					}
 					else
 #endif // #if TOP_DOWN_LOAD_BALANCE
 					{
 						for(int64_t e = e_start; e < e_end; ++e) {
-							top_down_send(edge_array[e], lgl, local_mask, packet_array, src.value, pred
+							top_down_send(edge_array[e], lgl,
+									r_mask, packet_array, src_enc
 #if PROFILING_MODE
 							, ts_commit
 #endif
 								);
 						}
 					}
+					if(mpi.rank_2d == 0 && graph_.orig_vertexes_[non_zero_off] == 0x39F66 / 2) {
+						int64_t first_edge = graph_.isolated_edges_[non_zero_off];
+						SeparatedId tgt(first_edge);
+						TwodVertex tgt_orig = tgt.high(graph_.r_bits_ + lgl);
+						TwodVertex tgt_local = tgt.low(lgl);
+						int r = tgt.low(graph_.r_bits_ + lgl) >> lgl;
+						for(int64_t i = e_start; i < e_end; ++i) {
+							int64_t edge_v = edge_array[i];
+							SeparatedId tgt(edge_v);
+							TwodVertex tgt_orig = tgt.high(graph_.r_bits_ + lgl);
+							TwodVertex tgt_local = tgt.low(lgl);
+							int r = tgt.low(graph_.r_bits_ + lgl) >> lgl;
+						}
+					}
 					VERVOSE(num_edge_relax += e_end - e_start + 1);
 				} // if(row_bitmap_i & mask) {
 			} // #pragma omp for // implicit barrier
 
-			__sync_fetch_and_add(&fin.step1, 1);
-			int processed = 0;
-			while(fin.step1 != max_threads) {
-				// process pending blocks
-				if(processed != fin.timestamp) {
-					processed = fin.timestamp;
-					top_down_proc_blocks(pending_blocks, lgl, local_mask, packet_array
-#if PROFILING_MODE
-					, ts_commit
-#endif
-					);
-				}
-			}
-
-			// process pending blocks
-			top_down_proc_blocks(pending_blocks, lgl, local_mask, packet_array
-#if PROFILING_MODE
-			, ts_commit
-#endif
-			);
-
-			// wait for completion
-			__sync_fetch_and_add(&fin.step2, 1);
-			while(fin.step2 != max_threads) ;
-
 			// flush buffer
-#pragma omp for nowait
+#pragma omp for
 			for(int target = 0; target < mpi.size_2dr; ++target) {
 				for(int i = 0; i < omp_get_num_threads(); ++i) {
 					LocalPacket* packet_array =
@@ -1085,7 +1073,7 @@ public:
 						td_comm_.put(pk.data.t, pk.length, target);
 						PROF(ts_commit += tk_commit);
 						pk.length = 0;
-						pk.src = -1;
+						pk.src = 0;
 					}
 				}
 			} // #pragma omp for
@@ -1136,7 +1124,7 @@ public:
 
 	template <bool growing>
 	struct TopDownReceiver : public Runnable {
-		TopDownReceiver(ThisType* this_, uint32_t* stream_, int length_, int src_)
+		TopDownReceiver(ThisType* this_, int64_t* stream_, int length_, int src_)
 			: this_(this_), stream_(stream_), length_(length_), src_(src_) { }
 		virtual void run() {
 			TRACER(td_recv);
@@ -1148,35 +1136,38 @@ public:
 			BitmapType* visited = (BitmapType*)this_->new_visited_;
 			int64_t* restrict const pred = this_->pred_;
 			const int cur_level = this_->current_level_;
-			uint32_t* stream = stream_;
+			int64_t* stream = stream_;
 			int length = length_;
 			int64_t pred_v = -1;
 
 			// for id converter //
 			int lgl = this_->graph_.local_bits_;
-			int P = mpi.size_2d;
-			int R = mpi.size_2dr;
-			int r = src_;
+			int r_bits = this_->graph_.r_bits_;
+			//int P = mpi.size_2d;
+			//int R = mpi.size_2dr;
+			//int r = src_;
 			// ------------------- //
 
-			for(int i = 0; i < length; ) {
-				uint32_t v = stream[i];
-				if(int32_t(v) < 0) {
-					SeparatedId src( -((int64_t(v) << 32) | stream[i+1]) - 1 );
-					pred_v = (src.low(lgl) * P + src.high(lgl) * R + r) | (int64_t(cur_level) << 48);
-					i += 2;
+			for(int i = 0; i < length; ++i) {
+				int64_t v = stream[i];
+				if(v < 0) {
+					int64_t src( -v - 1 );
+					pred_v = src | (int64_t(cur_level) << 48);
 				}
 				else {
 					assert (pred_v != -1);
-					TwodVertex tgt_local = v;
+
+					SeparatedId tgt(v);
+					TwodVertex tgt_orig = tgt.high(r_bits + lgl);
+					TwodVertex tgt_local = tgt.low(lgl);
 					if(growing) {
 						const TwodVertex word_idx = tgt_local >> LOG_NBPE;
 						const int bit_idx = tgt_local & NBPE_MASK;
 						const BitmapType mask = BitmapType(1) << bit_idx;
 						if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
 							if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
-								assert (pred[tgt_local] == -1);
-								pred[tgt_local] = pred_v;
+								assert (pred[tgt_orig] == -1);
+								pred[tgt_orig] = pred_v;
 								if(buf->full()) {
 									this_->nq_.push(buf); buf = this_->nq_empty_buffer_.get();
 								}
@@ -1185,8 +1176,8 @@ public:
 						}
 					}
 					else {
-						if(pred[tgt_local] == -1) {
-							if(__sync_bool_compare_and_swap(&pred[tgt_local], -1, pred_v)) {
+						if(pred[tgt_orig] == -1) {
+							if(__sync_bool_compare_and_swap(&pred[tgt_orig], -1, pred_v)) {
 								if(buf->full()) {
 									this_->nq_.push(buf); buf = this_->nq_empty_buffer_.get();
 								}
@@ -1194,14 +1185,13 @@ public:
 							}
 						}
 					}
-					i += 1;
 				}
 			}
 			tlb->cur_buffer = buf;
 			PROF(this_->recv_proc_time_ += tk_all);
 		}
 		ThisType* const this_;
-		uint32_t* stream_;
+		int64_t* stream_;
 		int length_;
 		int src_;
 	};
@@ -1688,6 +1678,7 @@ public:
 		int phase_bmp_off = data.tag.region_id * step_bitmap_width;
 		int lgl = graph_.local_bits_;
 		TwodVertex L = graph_.num_local_verts_;
+		int vertex_bits = graph_.local_bits_ + graph_.r_bits_;
 		TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
 		int visited_count = 0;
 		VERVOSE(int tmp_edge_relax = 0);
@@ -1710,13 +1701,14 @@ public:
 		backward_isolated_edge(
 				step_bitmap_width,
 				phase_bmp_off,
-				phase_vertex_off, lgl, L,
+				phase_vertex_off, lgl, L, graph_.r_bits_,
 				phase_bitmap,
 				graph_.row_bitmap_,
 				shared_visited_,
 				graph_.row_sums_,
 				graph_.isolated_edges_,
 				graph_.row_starts_,
+				graph_.orig_vertexes_,
 				graph_.edge_array_,
 				buffer);
 #else // #if LOW_LEVEL_FUNCTION
@@ -1848,22 +1840,18 @@ public:
 		TwodVertex phase_bmp_off = data.tag.region_id * step_bitmap_width;
 
 		int lgl = graph_.local_bits_;
+		int r_bits = graph_.r_bits_;
 		TwodVertex L = graph_.num_local_verts_;
-		TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
+		//TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
 		VERVOSE(int tmp_num_blocks = 0);
 		VERVOSE(int tmp_edge_relax = 0);
 		PROF(profiling::TimeKeeper tk_all);
 		PROF(profiling::TimeSpan ts_commit);
 		int tid = omp_get_thread_num();
 		ThreadLocalBuffer* tlb = thread_local_buffer_[tid];
-#if STREAM_UPDATE
 		LocalPacket* buffer = tlb->fold_packet;
 		assert (buffer->length == 0);
 		int num_send = 0;
-#else
-		QueuedVertexes* buf = tlb->cur_buffer;
-		if(buf == NULL) buf = nq_empty_buffer_.get();
-#endif
 
 		int64_t begin, end;
 		get_partition(data.tag.length, phase_list, LOG_BFELL_SORT, max_threads, tid, begin, end);
@@ -1885,22 +1873,16 @@ public:
 				if(row_bitmap_i & vis_bit) { // I have edges for this vertex ?
 					TwodVertex non_zero_idx = phase_row_sums[word_idx] +
 							__builtin_popcountl(row_bitmap_i & (vis_bit-1));
+					TwodVertex tgt_orig = graph_.orig_vertexes_[non_zero_idx];
 #if ISOLATE_FIRST_EDGE
-					SeparatedId src(graph_.isolated_edges_[non_zero_idx]);
-					TwodVertex bit_idx = src.compact(lgl, L);
+					int64_t src = graph_.isolated_edges_[non_zero_idx];
+					TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
 					if(shared_visited_[bit_idx >> LOG_NBPE] & (BitmapType(1) << (bit_idx & NBPE_MASK))) {
 						// add to next queue
 						vertex_enabled[i] = 0; --num_enabled;
-#if STREAM_UPDATE
-						buffer->data.b[num_send+0] = src.value;
-						buffer->data.b[num_send+1] = phase_vertex_off + tgt;
+						buffer->data.b[num_send+0] = src >> lgl;
+						buffer->data.b[num_send+1] = tgt_orig;
 						num_send += 2;
-#else
-						if(buf->full()) {
-							nq_.push(buf); buf = nq_empty_buffer_.get();
-						}
-						buf->append_nocheck(src, blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
 						// end this row
 						VERVOSE(tmp_edge_relax += 1);
 						continue;
@@ -1909,21 +1891,14 @@ public:
 					int64_t e_start = graph_.row_starts_[non_zero_idx];
 					int64_t e_end = graph_.row_starts_[non_zero_idx+1];
 					for(int64_t e = e_start; e < e_end; ++e) {
-						SeparatedId src(graph_.edge_array_[e]);
-						TwodVertex bit_idx = src.compact(lgl, L);
+						int64_t src = graph_.edge_array_[e];
+						TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
 						if(shared_visited_[bit_idx >> LOG_NBPE] & (BitmapType(1) << (bit_idx & NBPE_MASK))) {
 							// add to next queue
 							vertex_enabled[i] = 0; --num_enabled;
-#if STREAM_UPDATE
-							buffer->data.b[num_send+0] = src.value;
-							buffer->data.b[num_send+1] = phase_vertex_off + tgt;
+							buffer->data.b[num_send+0] = src >> lgl;
+							buffer->data.b[num_send+1] = tgt_orig;
 							num_send += 2;
-#else
-							if(buf->full()) {
-								nq_.push(buf); buf = nq_empty_buffer_.get();
-							}
-							buf->append_nocheck(src, blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
 							// end this row
 							VERVOSE(tmp_edge_relax += e - e_start + 1);
 							break;
@@ -2447,18 +2422,20 @@ public:
 			TRACER(bu_recv);
 			PROF(profiling::TimeKeeper tk_all);
 			int P = mpi.size_2d;
-			int lgl = this_->graph_.local_bits_;
-			TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
+			//int lgl = this_->graph_.local_bits_;
+			int r_bits = this_->graph_.r_bits_;
+			int64_t r_mask = ((1 << r_bits) - 1);
+			//TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
 			int64_t cshifted = src_ * mpi.size_2dr;
 			int64_t levelshifted = int64_t(this_->current_level_) << 48;
 			TwodVertex* buffer = buffer_;
 			int length = length_ / 2;
 			int64_t* pred = this_->pred_;
 			for(int i = 0; i < length; ++i) {
-				SeparatedId pred_dst(buffer[i*2+0]);
-				TwodVertex tgt_local = buffer[i*2+1] & lmask;
-				int64_t pred_v = ((pred_dst.value & lmask) * P +
-						cshifted + (pred_dst.value >> lgl)) | levelshifted;
+				int64_t pred_dst(buffer[i*2+0]);
+				TwodVertex tgt_local = buffer[i*2+1];
+				int64_t pred_v = ((pred_dst >> r_bits) * P +
+						cshifted + (pred_dst & r_mask)) | levelshifted;
 				assert (this_->pred_[tgt_local] == -1);
 				pred[tgt_local] = pred_v;
 			}
@@ -2558,7 +2535,7 @@ public:
 
 	FiberManager fiber_man_;
 #if !OPENMP_SUB_THREAD
-	BackgroundThread compute_thread_;
+	//BackgroundThread compute_thread_; // currently there are no background thread
 #endif
 	MpiBottomUpSubstepComm* bottom_up_substep_;
 	CommBufferPool a2a_comm_buf_;

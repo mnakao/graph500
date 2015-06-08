@@ -377,6 +377,23 @@ void sort2(IterKey* begin_key, IterValue* begin_value, size_t count, Compare com
 // Other functions
 //-------------------------------------------------------------//
 
+struct SeparatedId {
+	uint64_t value;
+
+	explicit SeparatedId(uint64_t v) : value(v) { }
+	SeparatedId(int high, uint64_t low, int lgl)
+		: value((uint64_t(high) << lgl) | low) { }
+	uint64_t raw() const { return value; }
+	uint64_t compact(int lgl, int64_t L) const { return high(lgl) * L + low(lgl); }
+	int high(int lgl) const { return value >> lgl; }
+	uint64_t low(int lgl) const { return value & ((uint64_t(1) << lgl) - 1); }
+	int64_t swaplow(int mid, int lgl) {
+		int64_t low_v = value >> (mid + lgl);
+		int64_t mid_v = (value >> lgl) & ((1 << mid) - 1);
+		return (mid_v << lgl) | low_v;
+	}
+};
+
 struct MPI_INFO_ON_GPU {
 	int rank;
 	int size;

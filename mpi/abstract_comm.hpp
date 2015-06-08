@@ -33,6 +33,12 @@ class AsyncAlltoallManager : public Runnable {
 		int length;
 	};
 
+	struct PointerData {
+		void* ptr;
+		int length;
+		int64_t header;
+	};
+
 	struct CommTarget {
 		CommTarget()
 			: reserved_size_(0)
@@ -51,6 +57,7 @@ class AsyncAlltoallManager : public Runnable {
 		volatile int filled_size_;
 		Buffer cur_buf;
 		std::vector<Buffer> send_data;
+		std::vector<PointerData> send_ptr;
 	};
 public:
 	AsyncAlltoallManager(MPI_Comm comm_, AlltoallBufferHandler* buffer_provider_)
@@ -118,6 +125,15 @@ public:
 // #endif
 	}
 
+	void put_ptr(void* ptr, int length, int64_t header, int target) {
+		CommTarget& node = node_[target];
+		PointerData data = { ptr, length, header };
+
+		pthread_mutex_lock(&node.send_mutex);
+		node.send_ptr.push_back(data);
+		pthread_mutex_unlock(&node.send_mutex);
+	}
+
 	void run() {
 		// merge
 		PROF(profiling::TimeKeeper tk_all);
@@ -133,6 +149,9 @@ public:
 				for(int b = 0; b < (int)node.send_data.size(); ++b) {
 					counts[i] += node.send_data[b].length;
 				}
+				for(int b = 0; b < (int)node.send_ptr.size(); ++b) {
+					counts[i] += node.send_ptr[b].length + 1;
+				}
 			} // #pragma omp for schedule(static)
 		}
 
@@ -145,14 +164,24 @@ public:
 #pragma omp for schedule(static)
 			for(int i = 0; i < comm_size_; ++i) {
 				CommTarget& node = node_[i];
+				int& offset = offsets[i];
 				for(int b = 0; b < (int)node.send_data.size(); ++b) {
-					void* ptr = node.send_data[b].ptr;
-					int offset = offsets[i];
-					int length = node.send_data[b].length;
+					Buffer buffer = node.send_data[b];
+					void* ptr = buffer.ptr;
+					int length = buffer.length;
 					memcpy(dst + offset * es, ptr, length * es);
-					offsets[i] += length;
+					offset += length;
+				}
+				for(int b = 0; b < (int)node.send_ptr.size(); ++b) {
+					PointerData buffer = node.send_ptr[b];
+					void* ptr = buffer.ptr;
+					int length = buffer.length;
+					memcpy(dst + offset++ * es, &buffer.header, es);
+					memcpy(dst + offset * es, ptr, length * es);
+					offset += length;
 				}
 				node.send_data.clear();
+				node.send_ptr.clear();
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
 		USER_END(a2a_merge);

@@ -323,17 +323,5 @@ private:
 	int64_t *i64_;
 };
 
-struct SeparatedId {
-	uint64_t value;
-
-	explicit SeparatedId(uint64_t v) : value(v) { }
-	SeparatedId(int high, uint64_t low, int lgl)
-		: value((uint64_t(high) << lgl) | low) { }
-	uint64_t raw() const { return value; }
-	uint64_t compact(int lgl, int64_t L) const { return high(lgl) * L + low(lgl); }
-	int high(int lgl) const { return value >> lgl; }
-	uint64_t low(int lgl) const { return value & ((uint64_t(1) << lgl) - 1); }
-};
-
 
 #endif /* PRIMITIVES_HPP_ */

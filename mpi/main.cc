@@ -69,7 +69,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 	int num_bfs_roots = NUM_BFS_ROOTS;
 	find_roots(benchmark->graph_, bfs_roots, num_bfs_roots);
 	const int64_t max_used_vertex = find_max_used_vertex(benchmark->graph_);
-	const int64_t nlocalverts = benchmark->graph_.num_local_verts_;
+	const int64_t nlocalverts = benchmark->graph_.pred_size();
 
 	int64_t *pred = static_cast<int64_t*>(
 		cache_aligned_xmalloc(nlocalverts*sizeof(pred[0])));

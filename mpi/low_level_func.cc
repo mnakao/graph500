@@ -34,14 +34,15 @@ void backward_isolated_edge(
 	int half_bitmap_width,
 	int phase_bmp_off, // compact
 	int phase_vertex_off, // separated
-	int lgl, int L,
+	int lgl, int L, int r_bits,
 	BitmapType* __restrict__ phase_bitmap,
 	const BitmapType* __restrict__ row_bitmap,
 	const BitmapType* __restrict__ shared_visited,
 	const TwodVertex* __restrict__ row_sums,
-	const TwodVertex* __restrict__ isolated_edges,
+	const int64_t* __restrict__ isolated_edges,
 	const int64_t* __restrict__ row_starts,
-	const TwodVertex* __restrict__ edge_array,
+	const TwodVertex* __restrict__ orig_vertexes,
+	const int64_t* __restrict__ edge_array,
 	LocalPacket* buffer
 ) {
 	int tid = omp_get_thread_num();
@@ -49,7 +50,7 @@ void backward_isolated_edge(
 	int width_per_thread = (half_bitmap_width + num_threads - 1) / num_threads;
 	int off_start = std::min(half_bitmap_width, width_per_thread * tid);
 	int off_end = std::min(half_bitmap_width, off_start + width_per_thread);
-	TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
+	//TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
 	int num_send = 0;
 #if CONSOLIDATE_IFE_PROC
 	for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
@@ -63,14 +64,15 @@ void backward_isolated_edge(
 			bit_flags &= ~vis_bit;
 			int idx = __builtin_popcountl(mask);
 			TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
+			TwodVertex tgt_orig = orig_vertexes[non_zero_idx];
 			// short cut
-			TwodVertex separated_src = isolated_edges[non_zero_idx];
-			TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+			int64_t src = isolated_edges[non_zero_idx];
+			TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
 			if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 				// add to next queue
 				visited_i |= vis_bit;
-				buffer->data.b[num_send+0] = separated_src;
-				buffer->data.b[num_send+1] = phase_vertex_off + (blk_bmp_off * PRM::NBPE) + idx;
+				buffer->data.b[num_send+0] = src >> lgl;
+				buffer->data.b[num_send+1] = tgt_orig;
 				num_send += 2;
 				// end this row
 				continue;
@@ -78,13 +80,13 @@ void backward_isolated_edge(
 			int64_t e_start = row_starts[non_zero_idx];
 			int64_t e_end = row_starts[non_zero_idx+1];
 			for(int64_t e = e_start; e < e_end; ++e) {
-				TwodVertex separated_src = edge_array[e];
-				TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+				int64_t src = edge_array[e];
+				TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
 				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
-					buffer->data.b[num_send+0] = separated_src;
-					buffer->data.b[num_send+1] = phase_vertex_off + (blk_bmp_off * PRM::NBPE) + idx;
+					buffer->data.b[num_send+0] = src >> lgl;
+					buffer->data.b[num_send+1] = tgt_orig;
 					num_send += 2;
 					// end this row
 					break;
