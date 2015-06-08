@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdarg.h>
+#include <malloc.h>
 
 // for affinity setting //
 #include <unistd.h>
@@ -297,11 +298,39 @@ void print_with_prefix(const char* format, ...) {
 // Memory Allocation
 //-------------------------------------------------------------//
 
+////
+int64_t g_memory_usage = 0;
+void x_allocate_check(void* ptr) {
+	size_t nbytes = malloc_usable_size(ptr);
+	g_memory_usage += nbytes;
+	if(mpi.isMaster() && nbytes > 1024*1024) {
+		fprintf(IMD_OUT, "[MEM] %f MB (+ %f MB)\n", (double)g_memory_usage / (1024*1024), (double)nbytes / (1024*1024));
+	}
+}
+void x_free_check(void* ptr) {
+	size_t nbytes = malloc_usable_size(ptr);
+	g_memory_usage -= nbytes;
+	if(mpi.isMaster() && nbytes > 1024*1024) {
+		fprintf(IMD_OUT, "[MEM] %f MB (- %f MB)\n", (double)g_memory_usage / (1024*1024), (double)nbytes / (1024*1024));
+	}
+}
+void print_max_memory_usage() {
+	int64_t g_max = 0;
+	MPI_Reduce(&g_memory_usage, &g_max, 1, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
+	if(mpi.isMaster()) {
+		fprintf(IMD_OUT, "[MEM-MAX] %f MB\n", (double)g_max / (1024*1024));
+	}
+}
+////
+
 void* xMPI_Alloc_mem(size_t nbytes) {
   void* p = NULL;
   MPI_Alloc_mem(nbytes, MPI_INFO_NULL, &p);
   if (nbytes != 0 && !p) {
 	  throw_exception("MPI_Alloc_mem failed for size%zu (%"PRId64") byte(s)", nbytes, (int64_t)nbytes);
+  }
+  if(mpi.isMaster() && nbytes > 1024*1024) {
+    fprintf(IMD_OUT, "[MEM-MPI] + %f MB\n", (double)nbytes / (1024*1024));
   }
   return p;
 }
@@ -311,35 +340,43 @@ void* cache_aligned_xcalloc(const size_t size) {
 	if(posix_memalign(&p, CACHE_LINE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
+	x_allocate_check(p);
 	memset(p, 0, size);
 	return p;
 }
-void* cache_aligned_xmalloc(const size_t size)
-{
+void* cache_aligned_xmalloc(const size_t size) {
 	void* p = NULL;
 	if(posix_memalign(&p, CACHE_LINE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
+	x_allocate_check(p);
 	return p;
 }
 
-void* page_aligned_xcalloc(const size_t size)
-{
+void* page_aligned_xcalloc(const size_t size) {
 	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
+	x_allocate_check(p);
 	memset(p, 0, size);
 	return p;
 }
-void* page_aligned_xmalloc(const size_t size)
-{
+void* page_aligned_xmalloc(const size_t size) {
 	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
 	}
+	x_allocate_check(p);
 	return p;
 }
+
+void xfree(void* p) {
+	x_free_check(p);
+	free(p);
+}
+
+#define free(p) xfree(p)
 
 #if SHARED_MEMORY
 void* shared_malloc(size_t nbytes) {
@@ -2029,7 +2066,7 @@ public:
 	void sum() {
 		const int width = buffer_width_;
 		// compute sum of thread local count values
-#pragma omp parallel for
+#pragma omp parallel for if(comm_size_ > 1000)
 		for(int r = 0; r < comm_size_; ++r) {
 			int sum = 0;
 			for(int t = 0; t < max_threads_; ++t) {
@@ -2044,7 +2081,7 @@ public:
 		}
 		// assert (send_counts[size] == bufsize*2);
 		// compute offset of each threads
-#pragma omp parallel for
+#pragma omp parallel for if(comm_size_ > 1000)
 		for(int r = 0; r < comm_size_; ++r) {
 			thread_offsets_[0*width + r] = send_offsets_[r];
 			for(int t = 0; t < max_threads_; ++t) {

@@ -61,7 +61,8 @@ class AsyncAlltoallManager : public Runnable {
 	};
 public:
 	AsyncAlltoallManager(MPI_Comm comm_, AlltoallBufferHandler* buffer_provider_)
-		: buffer_provider_(buffer_provider_)
+		: comm_(comm_)
+		, buffer_provider_(buffer_provider_)
 		, scatter_(comm_)
 	{
 		CTRACER(AsyncA2A_construtor);
@@ -134,6 +135,128 @@ public:
 		pthread_mutex_unlock(&node.send_mutex);
 	}
 
+	void run_with_ptr() {
+		PROF(profiling::TimeKeeper tk_all);
+		int es = buffer_provider_->element_size();
+		int max_size = buffer_provider_->max_size() / (es * comm_size_);
+		VERVOSE(last_send_size_ = 0);
+		VERVOSE(last_recv_size_ = 0);
+
+		for(int loop = 0; ; ++loop) {
+			USER_START(a2a_merge);
+#pragma omp parallel
+			{
+				int* counts = scatter_.get_counts();
+#pragma omp for schedule(static)
+				for(int i = 0; i < comm_size_; ++i) {
+					CommTarget& node = node_[i];
+					flush(node);
+					for(int b = 0; b < (int)node.send_data.size(); ++b) {
+						counts[i] += node.send_data[b].length;
+					}
+					for(int b = 0; b < (int)node.send_ptr.size(); ++b) {
+						PointerData& buffer = node.send_ptr[b];
+						int length = buffer.length;
+						if(length == 0) continue;
+
+						int size = length + 1;
+						if(counts[i] + size >= max_size) {
+							counts[i] = max_size;
+							break;
+						}
+						else {
+							counts[i] += size;
+						}
+					}
+				} // #pragma omp for schedule(static)
+			}
+
+			scatter_.sum();
+
+			if(loop > 0) {
+				int has_data = (scatter_.get_send_count() > 0);
+				MPI_Allreduce(MPI_IN_PLACE, &has_data, 1, MPI_INT, MPI_LOR, comm_);
+				if(has_data == 0) break;
+			}
+
+#pragma omp parallel
+			{
+				int* offsets = scatter_.get_offsets();
+				uint8_t* dst = (uint8_t*)buffer_provider_->second_buffer();
+#pragma omp for schedule(static)
+				for(int i = 0; i < comm_size_; ++i) {
+					CommTarget& node = node_[i];
+					int& offset = offsets[i];
+					int count = 0;
+					for(int b = 0; b < (int)node.send_data.size(); ++b) {
+						Buffer buffer = node.send_data[b];
+						void* ptr = buffer.ptr;
+						int length = buffer.length;
+						memcpy(dst + offset * es, ptr, length * es);
+						offset += length;
+						count += length;
+					}
+					for(int b = 0; b < (int)node.send_ptr.size(); ++b) {
+						PointerData& buffer = node.send_ptr[b];
+						void* ptr = buffer.ptr;
+						int length = buffer.length;
+						if(length == 0) continue;
+
+						int size = length + 1;
+						if(count + size >= max_size) {
+							length = max_size - count - 1;
+							count = max_size;
+						}
+						else {
+							count += size;
+						}
+						memcpy(dst + offset++ * es, &buffer.header, es);
+						memcpy(dst + offset * es, ptr, length * es);
+						offset += length;
+
+						buffer.length -= length;
+						buffer.ptr = (uint8_t*)buffer.ptr + (length * es);
+
+						if(count == max_size) break;
+					}
+					node.send_data.clear();
+				} // #pragma omp for schedule(static)
+			} // #pragma omp parallel
+			USER_END(a2a_merge);
+
+			void* sendbuf = buffer_provider_->second_buffer();
+			void* recvbuf = buffer_provider_->clear_buffers();
+			MPI_Datatype type = buffer_provider_->data_type();
+			int recvbufsize = buffer_provider_->max_size();
+			PROF(merge_time_ += tk_all);
+			USER_START(a2a_comm);
+			VERVOSE(if(loop > 0 && mpi.isMaster()) print_with_prefix("Alltoall with pointer (Again)"));
+			scatter_.alltoallv(sendbuf, recvbuf, type, recvbufsize);
+			PROF(comm_time_ += tk_all);
+			USER_END(a2a_comm);
+
+			VERVOSE(last_send_size_ += scatter_.get_send_count() * es);
+			VERVOSE(last_recv_size_ += scatter_.get_recv_count() * es);
+
+			int* recv_offsets = scatter_.get_recv_offsets();
+
+#pragma omp parallel for schedule(dynamic,1)
+			for(int i = 0; i < comm_size_; ++i) {
+				int offset = recv_offsets[i];
+				int length = recv_offsets[i+1] - offset;
+				buffer_provider_->received(recvbuf, offset, length, i);
+			}
+		}
+
+		// clear
+		for(int i = 0; i < comm_size_; ++i) {
+			CommTarget& node = node_[i];
+			node.send_ptr.clear();
+		}
+
+		PROF(recv_proc_time_ += tk_all);
+	}
+
 	void run() {
 		// merge
 		PROF(profiling::TimeKeeper tk_all);
@@ -148,9 +271,6 @@ public:
 				flush(node);
 				for(int b = 0; b < (int)node.send_data.size(); ++b) {
 					counts[i] += node.send_data[b].length;
-				}
-				for(int b = 0; b < (int)node.send_ptr.size(); ++b) {
-					counts[i] += node.send_ptr[b].length + 1;
 				}
 			} // #pragma omp for schedule(static)
 		}
@@ -172,16 +292,7 @@ public:
 					memcpy(dst + offset * es, ptr, length * es);
 					offset += length;
 				}
-				for(int b = 0; b < (int)node.send_ptr.size(); ++b) {
-					PointerData buffer = node.send_ptr[b];
-					void* ptr = buffer.ptr;
-					int length = buffer.length;
-					memcpy(dst + offset++ * es, &buffer.header, es);
-					memcpy(dst + offset * es, ptr, length * es);
-					offset += length;
-				}
 				node.send_data.clear();
-				node.send_ptr.clear();
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
 		USER_END(a2a_merge);
@@ -228,6 +339,8 @@ private:
 		// FoldNode::send_mutex -> thread_sync_
 		pthread_mutex_t thread_sync_;
 	} *d_;
+
+	MPI_Comm comm_;
 
 	int buffer_size_;
 	int comm_size_;

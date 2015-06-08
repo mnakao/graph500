@@ -20,7 +20,7 @@
 // 1: MPI is funneled mode: Main -> OpenMP, Sub: MPI
 // Since communication and computation is overlapped, we cannot have main thread do both tasks.
 #define MPI_FUNNELED 0
-#define OPENMP_SUB_THREAD 1
+#define OPENMP_SUB_THREAD 0
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
@@ -139,7 +139,8 @@
 
 typedef uint8_t SortIdx;
 typedef uint64_t BitmapType;
-typedef uint64_t TwodVertex; // TODO:
+typedef uint64_t TwodVertex;
+typedef uint32_t LocalVertex;
 
 #ifdef __cplusplus
 namespace PRM { //

@@ -177,7 +177,7 @@ public:
 
 		a2a_comm_buf_.allocate_memory(graph_.num_local_verts_ * sizeof(int32_t) * 16);
 
-		thread_local_buffer_ = (ThreadLocalBuffer**)malloc(sizeof(thread_local_buffer_[0])*max_threads);
+		thread_local_buffer_ = (ThreadLocalBuffer**)cache_aligned_xmalloc(sizeof(thread_local_buffer_[0])*max_threads);
 
 		const int bottom_up_vertex_count_per_thread = (bitmap_width/BU_SUBSTEP + max_threads - 1) / max_threads * NBPE;
 		const int packet_buffer_length = std::max(
@@ -283,8 +283,8 @@ public:
 	class CommBufferPool {
 	public:
 		void allocate_memory(int size) {
-			first_buffer_ = malloc(size);
-			second_buffer_ = malloc(size);
+			first_buffer_ = cache_aligned_xmalloc(size);
+			second_buffer_ = cache_aligned_xmalloc(size);
 			current_index_ = 0;
 			pool_buffer_size_ = size;
 			num_buffers_ = size / PRM::COMM_BUFFER_SIZE;
@@ -590,7 +590,7 @@ public:
 		cq_size_ = recv_off[comm_size];
 		if(work_extra_buf_ != NULL) { free(work_extra_buf_); work_extra_buf_ = NULL; }
 		TwodVertex* recv_buf = (TwodVertex*)((int64_t(cq_size_)*int64_t(sizeof(TwodVertex)) > work_buf_size_) ?
-				(work_extra_buf_ = malloc(cq_size_*sizeof(TwodVertex))) :
+				(work_extra_buf_ = cache_aligned_xmalloc(cq_size_*sizeof(TwodVertex))) :
 				work_buf_);
 #if ENABLE_MY_ALLGATHER
 		MpiCol::my_allgatherv(nq, nq_size, recv_buf, recv_size, recv_off, mpi.comm_r);
@@ -1014,7 +1014,7 @@ public:
 					TwodVertex non_zero_off = graph_.row_sums_[word_idx] +
 							__builtin_popcountl(graph_.row_bitmap_[word_idx] & low_mask);
 					int64_t src_orig =
-							graph_.orig_vertexes_[non_zero_off] * P + src_c * R + r;
+							int64_t(graph_.orig_vertexes_[non_zero_off]) * P + src_c * R + r;
 					int64_t src_enc = -(src_orig + 1);
 #if ISOLATE_FIRST_EDGE
 					top_down_send(graph_.isolated_edges_[non_zero_off], lgl,
@@ -1041,20 +1041,6 @@ public:
 							, ts_commit
 #endif
 								);
-						}
-					}
-					if(mpi.rank_2d == 0 && graph_.orig_vertexes_[non_zero_off] == 0x39F66 / 2) {
-						int64_t first_edge = graph_.isolated_edges_[non_zero_off];
-						SeparatedId tgt(first_edge);
-						TwodVertex tgt_orig = tgt.high(graph_.r_bits_ + lgl);
-						TwodVertex tgt_local = tgt.low(lgl);
-						int r = tgt.low(graph_.r_bits_ + lgl) >> lgl;
-						for(int64_t i = e_start; i < e_end; ++i) {
-							int64_t edge_v = edge_array[i];
-							SeparatedId tgt(edge_v);
-							TwodVertex tgt_orig = tgt.high(graph_.r_bits_ + lgl);
-							TwodVertex tgt_local = tgt.low(lgl);
-							int r = tgt.low(graph_.r_bits_ + lgl) >> lgl;
 						}
 					}
 					VERVOSE(num_edge_relax += e_end - e_start + 1);
@@ -1098,7 +1084,7 @@ public:
 
 		td_comm_.prepare();
 		top_down_parallel_section();
-		td_comm_.run();
+		td_comm_.run_with_ptr();
 
 		PROF(parallel_reg_time_ += tk_all);
 		// flush NQ buffer and count NQ total
@@ -1873,7 +1859,7 @@ public:
 				if(row_bitmap_i & vis_bit) { // I have edges for this vertex ?
 					TwodVertex non_zero_idx = phase_row_sums[word_idx] +
 							__builtin_popcountl(row_bitmap_i & (vis_bit-1));
-					TwodVertex tgt_orig = graph_.orig_vertexes_[non_zero_idx];
+					LocalVertex tgt_orig = graph_.orig_vertexes_[non_zero_idx];
 #if ISOLATE_FIRST_EDGE
 					int64_t src = graph_.isolated_edges_[non_zero_idx];
 					TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);

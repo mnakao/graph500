@@ -41,7 +41,7 @@ void backward_isolated_edge(
 	const TwodVertex* __restrict__ row_sums,
 	const int64_t* __restrict__ isolated_edges,
 	const int64_t* __restrict__ row_starts,
-	const TwodVertex* __restrict__ orig_vertexes,
+	const LocalVertex* __restrict__ orig_vertexes,
 	const int64_t* __restrict__ edge_array,
 	LocalPacket* buffer
 ) {
@@ -64,7 +64,7 @@ void backward_isolated_edge(
 			bit_flags &= ~vis_bit;
 			int idx = __builtin_popcountl(mask);
 			TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
-			TwodVertex tgt_orig = orig_vertexes[non_zero_idx];
+			LocalVertex tgt_orig = orig_vertexes[non_zero_idx];
 			// short cut
 			int64_t src = isolated_edges[non_zero_idx];
 			TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);

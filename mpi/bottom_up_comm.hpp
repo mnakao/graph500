@@ -69,8 +69,11 @@ public:
 	}
 	void recv(BottomUpSubstepData* data) {
 		if(recv_tail >= recv_filled) {
-			fprintf(IMD_OUT, "recv_tail >= recv_filled\n");
-			throw "recv_filled >= recv_tail";
+			next_recv();
+			if(recv_tail >= recv_filled) {
+				fprintf(IMD_OUT, "recv_tail >= recv_filled\n");
+				throw "recv_filled >= recv_tail";
+			}
 		}
 		*data = recv_pair[recv_tail++ % NBUF];
 		debug("recv length=%d, recv_tail=%d", data->tag.length, recv_tail - 1);
@@ -82,34 +85,21 @@ public:
 #if VERVOSE_MODE
 		int steps = compute_time_.size();
 		int64_t sum_compute[steps];
-		int64_t sum_wait_compute[steps];
-		int64_t sum_comm[steps];
 		int64_t sum_wait_comm[steps];
 		int64_t max_compute[steps];
-		int64_t max_wait_compute[steps];
-		int64_t max_comm[steps];
 		int64_t max_wait_comm[steps];
 		MPI_Reduce(&compute_time_[0], sum_compute, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&compute_wait_time_[0], sum_wait_compute, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&comm_time_[0], sum_comm, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
 		MPI_Reduce(&comm_wait_time_[0], sum_wait_comm, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
 		MPI_Reduce(&compute_time_[0], max_compute, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&compute_wait_time_[0], max_wait_compute, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&comm_time_[0], max_comm, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
 		MPI_Reduce(&comm_wait_time_[0], max_wait_comm, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
 		if(mpi.isMaster()) {
 			for(int i = 0; i < steps; ++i) {
 				double comp_avg = (double)sum_compute[i] / mpi.size_2d / 1000.0;
-				double comp_wait_avg = (double)sum_wait_compute[i] / mpi.size_2d / 1000.0;
-				double comm_avg = (double)sum_comm[i] / mpi.size_2d / 1000.0;
 				double comm_wait_avg = (double)sum_wait_comm[i] / mpi.size_2d / 1000.0;
 				double comp_max = (double)max_compute[i] / 1000.0;
-				double comp_wait_max = (double)max_wait_compute[i] / 1000.0;
-				double comm_max = (double)max_comm[i] / 1000.0;
 				double comm_wait_max = (double)max_wait_comm[i] / 1000.0;
-				print_with_prefix("step, %d, max-step, %d, avg-compute, %f, max-compute, %f, avg-comm, %f, max-comm, %f, "
-						"avg-wait-compute, %f, max-wait-compute, %f, avg-wait-comm, %f, max-wait-comm, %f, (ms)",
-						i+1, steps, comp_avg, comp_max, comm_avg, comm_max, comp_wait_avg, comp_wait_max, comm_wait_avg, comm_wait_max);
+				print_with_prefix("step, %d, max-step, %d, avg-compute, %f, max-compute, %f, avg-wait-comm, %f, max-wait-comm, %f, (ms)",
+						i+1, steps, comp_avg, comp_max, comm_wait_avg, comm_wait_max);
 			}
 		}
 #endif
@@ -126,12 +116,10 @@ protected:
 
 	MPI_Comm mpi_comm;
 	std::vector<void*> free_list;
-	BottomUpSubstepData send_pair[2];
+	BottomUpSubstepData send_pair[NBUF];
 	BottomUpSubstepData recv_pair[NBUF];
 	VERVOSE(profiling::TimeKeeper tk_);
 	VERVOSE(std::vector<int64_t> compute_time_);
-	VERVOSE(std::vector<int64_t> compute_wait_time_);
-	VERVOSE(std::vector<int64_t> comm_time_);
 	VERVOSE(std::vector<int64_t> comm_wait_time_);
 
 	int element_size;
@@ -141,9 +129,8 @@ protected:
 	int recv_tail;
 
 	virtual CommTargetBase& nodes(int target) = 0;
-	virtual void begin_comm() = 0;
-	virtual void end_comm(void* comm_data) = 0;
 	virtual void send_recv() = 0;
+	virtual void next_recv() = 0;
 
 	int buffers_available() {
 		return (int)free_list.size();
@@ -178,8 +165,6 @@ protected:
 #endif
 		VERVOSE(tk_.getSpanAndReset());
 		VERVOSE(compute_time_.clear());
-		VERVOSE(comm_time_.clear());
-		VERVOSE(compute_wait_time_.clear());
 		VERVOSE(comm_wait_time_.clear());
 	}
 };
@@ -199,12 +184,10 @@ public:
 	void begin(T** recv_buffers__, int buffer_count__, int buffer_width__) {
 		super__::begin(recv_buffers__, buffer_count__, buffer_width__);
 		type = MpiTypeOf<T>::type;
+		recv_top = 0;
+		is_active = false;
 	}
-	virtual void begin_comm() {
-		debug("initialized");
-	}
-	virtual void end_comm(void* comm_data) {
-		//
+	void finish() {
 	}
 
 protected:
@@ -213,6 +196,9 @@ protected:
 
 	CommTarget nodes_[2];
 	MPI_Datatype type;
+	MPI_Request req[4];
+	int recv_top;
+	bool is_active;
 
 	virtual CommTargetBase& nodes(int target) { return nodes_[target]; }
 
@@ -233,14 +219,26 @@ protected:
 		return tag;
 	}
 
+	virtual void next_recv() {
+		if(is_active) {
+			MPI_Status status[4];
+			MPI_Waitall(4, req, status);
+			int recv_0 = recv_filled++ % NBUF;
+			int recv_1 = recv_filled++ % NBUF;
+			recv_pair[recv_0].tag = make_tag(status[0]);
+			recv_pair[recv_1].tag = make_tag(status[1]);
+			free_buffer(send_pair[2].data);
+			free_buffer(send_pair[3].data);
+			is_active = false;
+		}
+	}
+
 	virtual void send_recv() {
 		VERVOSE(compute_time_.push_back(tk_.getSpanAndReset()));
-		VERVOSE(MPI_Barrier(mpi_comm));
-		VERVOSE(compute_wait_time_.push_back(tk_.getSpanAndReset()));
-		MPI_Request req[4];
-		MPI_Status status[4];
-		int recv_0 = recv_filled++ % NBUF;
-		int recv_1 = recv_filled++ % NBUF;
+		next_recv();
+		VERVOSE(comm_wait_time_.push_back(tk_.getSpanAndReset()));
+		int recv_0 = recv_top++ % NBUF;
+		int recv_1 = recv_top++ % NBUF;
 		recv_pair[recv_0].data = get_buffer();
 		recv_pair[recv_1].data = get_buffer();
 		MPI_Irecv(recv_pair[recv_0].data, buffer_width,
@@ -251,14 +249,10 @@ protected:
 				type, nodes_[1].rank, make_tag(send_pair[0].tag), mpi_comm, &req[2]);
 		MPI_Isend(send_pair[1].data, send_pair[1].tag.length,
 				type, nodes_[0].rank, make_tag(send_pair[1].tag), mpi_comm, &req[3]);
-		MPI_Waitall(4, req, status);
-		recv_pair[recv_0].tag = make_tag(status[0]);
-		recv_pair[recv_1].tag = make_tag(status[1]);
-		free_buffer(send_pair[0].data);
-		free_buffer(send_pair[1].data);
-		VERVOSE(comm_time_.push_back(tk_.getSpanAndReset()));
-		VERVOSE(MPI_Barrier(mpi_comm));
-		VERVOSE(comm_wait_time_.push_back(tk_.getSpanAndReset()));
+
+		send_pair[2] = send_pair[0];
+		send_pair[3] = send_pair[1];
+		is_active = true;
 	}
 };
 

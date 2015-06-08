@@ -34,7 +34,7 @@ void backward_isolated_edge(
 	const TwodVertex* __restrict__ row_sums,
 	const int64_t* __restrict__ isolated_edges,
 	const int64_t* __restrict__ row_starts,
-	const TwodVertex* __restrict__ orig_vertexes,
+	const LocalVertex* __restrict__ orig_vertexes,
 	const int64_t* __restrict__ edge_array,
 	LocalPacket* buffer
 );

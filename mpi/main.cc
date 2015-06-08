@@ -42,7 +42,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 	if(mpi.isMaster() && root_start != 0)
 		print_with_prefix("Resume from %d th run", root_start);
 
-	EdgeListStorage<UnweightedPackedEdge, 32*1024*1024> edge_list(
+	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
 //	EdgeListStorage<UnweightedPackedEdge, 512*1024> edge_list(
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
@@ -104,6 +104,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 /////////////////////
 //	for(int i = root_start; i < num_bfs_roots; ++i) {
 	for(int i = 0; i < num_bfs_roots; ++i) {
+		print_max_memory_usage();
 
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
 #if ENABLE_FUJI_PROF

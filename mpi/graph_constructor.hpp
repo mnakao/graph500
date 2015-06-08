@@ -119,8 +119,8 @@ public:
 	BitmapType* row_bitmap_; // Index: SBI
 	TwodVertex* row_sums_; // Index: SBI
 	BitmapType* has_edge_bitmap_; // for every local vertices, Index: SBI
-	int* reorder_map_; // Index: Pred
-	TwodVertex* orig_vertexes_; // Index: CSI
+	LocalVertex* reorder_map_; // Index: Pred
+	LocalVertex* orig_vertexes_; // Index: CSI
 
 	int64_t* edge_array_;
 	int64_t* row_starts_; // Index: CSI
@@ -160,14 +160,14 @@ enum {
 struct GraphConstructionData {
 	int64_t num_local_verts_;
 
-	int* reordre_map_;
+	LocalVertex* reordre_map_;
 
 	int64_t* wide_row_starts_;
 	int64_t* row_starts_sup_;
 
 	BitmapType* row_bitmap_;
 	TwodVertex* row_sums_;
-	TwodVertex* orig_vertexes_; // free with MPI_Free_mem
+	LocalVertex* orig_vertexes_; // free with MPI_Free_mem
 };
 
 struct DegreeCalculation {
@@ -195,7 +195,7 @@ struct DegreeCalculation {
 	int64_t* wide_row_length_;
 	BitmapType* row_bitmap_;
 	TwodVertex* row_sums_;
-	TwodVertex* orig_vertexes_;
+	LocalVertex* orig_vertexes_;
 	int* num_vertexes_;
 
 	int64_t max_local_verts_;
@@ -204,7 +204,7 @@ struct DegreeCalculation {
 	int64_t* row_length_;
 	int64_t* row_offset_;
 	std::vector<DWideRowEdge>* dwide_row_data_;
-	TwodVertex* vertexes_;
+	LocalVertex* vertexes_;
 
 	DegreeCalculation(int orig_local_bits, int log_local_verts_unit) {
 		org_local_bits_ = orig_local_bits;
@@ -220,7 +220,7 @@ struct DegreeCalculation {
 	}
 
 	~DegreeCalculation() {
-		delete [] dwide_row_data_; dwide_row_data_ = NULL;
+		if(dwide_row_data_ != NULL) { delete [] dwide_row_data_; dwide_row_data_ = NULL; }
 		if(wide_row_length_ != NULL) { free(wide_row_length_); wide_row_length_ = NULL; }
 		if(row_bitmap_ != NULL) { free(row_bitmap_); row_bitmap_ = NULL; }
 		if(row_sums_ != NULL) { free(row_sums_); row_sums_ = NULL; }
@@ -275,18 +275,18 @@ struct DegreeCalculation {
 	}
 
 	GraphConstructionData process() {
-		int* reorder_map = calc_degree();
+		LocalVertex* reorder_map = calc_degree();
 		make_construct_data(reorder_map);
 		return gather_data(reorder_map);
 	}
 
 private:
-	int* calc_degree() {
+	LocalVertex* calc_degree() {
 		if(mpi.isMaster()) print_with_prefix("Counting degree.");
 
 		int64_t num_verts = num_orig_local_verts();
 		int64_t* degree = static_cast<int64_t*>(cache_aligned_xcalloc(num_verts*sizeof(int64_t)));
-		vertexes_ = static_cast<TwodVertex*>(cache_aligned_xcalloc(num_verts*sizeof(TwodVertex)));
+		vertexes_ = static_cast<LocalVertex*>(cache_aligned_xcalloc(num_verts*sizeof(LocalVertex)));
 
 #pragma omp parallel for
 		for(int r = 0; r < num_rows_; ++r) {
@@ -298,7 +298,7 @@ private:
 			}
 		}
 
-		for(int64_t i = 0; i < num_verts; ++i) {
+		for(LocalVertex i = 0; i < num_verts; ++i) {
 			vertexes_[i] = i;
 		}
 
@@ -319,12 +319,14 @@ private:
 		MPI_Allreduce(
 				MPI_IN_PLACE, &max_local_verts_, 1,
 				MpiTypeOf<int64_t>::type, MPI_MAX, mpi.comm_2d);
-		if(mpi.isMaster()) print_with_prefix("Max local vertex %f M", to_mega(max_local_verts_));
+		if(mpi.isMaster()) print_with_prefix("Max local vertex %f M / %f M = %f %%",
+				to_mega(max_local_verts_), to_mega(num_verts), (double)max_local_verts_ / num_verts * 100.0);
 
 		free(degree); degree = NULL;
 
 		// store mapping to degree
-		int* reorde_map = static_cast<int*>(cache_aligned_xcalloc(num_verts*sizeof(int)));
+		LocalVertex* reorde_map = static_cast<LocalVertex*>(
+				cache_aligned_xcalloc(num_verts*sizeof(LocalVertex)));
 #pragma omp parallel for
 		for(int64_t i = 0; i < num_verts; ++i) {
 			reorde_map[vertexes_[i]] = int(i);
@@ -333,18 +335,13 @@ private:
 		return reorde_map;
 	}
 
-	void make_construct_data(int* reorder_map) {
+	void make_construct_data(LocalVertex* reorder_map) {
 		int64_t src_bitmap_size = local_bitmap_size() * mpi.size_2dc;
 		int64_t num_wide_rows = local_wide_row_size() * mpi.size_2dc;
 
-		wide_row_length_ = static_cast<int64_t*>(
-				cache_aligned_xcalloc(num_wide_rows*sizeof(int64_t)));
+		// allocate 1
 		row_bitmap_ = static_cast<BitmapType*>(
 				cache_aligned_xcalloc(src_bitmap_size*sizeof(BitmapType)));
-		row_sums_ = static_cast<TwodVertex*>(
-				cache_aligned_xcalloc((src_bitmap_size + 1)*sizeof(TwodVertex)));
-		num_vertexes_ = static_cast<int*>(
-				cache_aligned_xcalloc(mpi.size_2dc*sizeof(int)));
 
 		ParallelPartitioning<int64_t> row_length_counter(num_wide_rows);
 
@@ -359,7 +356,7 @@ private:
 					DWideRowEdge& edge = row_data[c];
 					int c = edge.c;
 					TwodVertex local = r * BLOCK_SIZE + edge.src_vertex;
-					int reordred = reorder_map[local];
+					LocalVertex reordred = reorder_map[local];
 
 					int64_t wide_row_offset = local_wide_row_size() * c + (reordred >> LOG_EDGE_PART_SIZE);
 					counts[wide_row_offset]++;
@@ -372,6 +369,17 @@ private:
 				}
 			}
 		}
+
+		// free memory
+		delete [] dwide_row_data_; dwide_row_data_ = NULL;
+
+		// allocate 2
+		wide_row_length_ = static_cast<int64_t*>(
+				cache_aligned_xcalloc(num_wide_rows*sizeof(int64_t)));
+		row_sums_ = static_cast<TwodVertex*>(
+				cache_aligned_xcalloc((src_bitmap_size + 1)*sizeof(TwodVertex)));
+		num_vertexes_ = static_cast<int*>(
+				cache_aligned_xcalloc(mpi.size_2dc*sizeof(int)));
 
 		// compute sum
 		row_length_counter.sum();
@@ -392,8 +400,22 @@ private:
 			total_vertexes_ += num_vertexes_[i];
 		}
 
-		orig_vertexes_ = static_cast<TwodVertex*>(
-				cache_aligned_xcalloc(total_vertexes_*sizeof(TwodVertex)));
+#if VERVOSE_MODE
+		int64_t send_rowbmp[3] = { total_vertexes_, src_bitmap_size*NBPE, 0 };
+		int64_t max_rowbmp[3];
+		int64_t sum_rowbmp[3];
+		MPI_Reduce(send_rowbmp, sum_rowbmp, 3, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
+		MPI_Reduce(send_rowbmp, max_rowbmp, 3, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
+		if(mpi.isMaster()) {
+			print_with_prefix("DC total vertexes. Total %f M / %f M = %f %% Avg %f M / %f M Max %f %%+",
+					to_mega(sum_rowbmp[0]), to_mega(sum_rowbmp[1]), to_mega(sum_rowbmp[0]) / to_mega(sum_rowbmp[1]) * 100,
+					to_mega(sum_rowbmp[0]) / mpi.size_2d, to_mega(sum_rowbmp[1]) / mpi.size_2d,
+					diff_percent(max_rowbmp[0], sum_rowbmp[0], mpi.size_2d));
+		}
+#endif // #if VERVOSE_MODE
+
+		orig_vertexes_ = static_cast<LocalVertex*>(
+				cache_aligned_xcalloc(total_vertexes_*sizeof(LocalVertex)));
 
 #pragma omp parallel for
 		for(int c = 0; c < mpi.size_2dc; ++c) {
@@ -412,7 +434,7 @@ private:
 		}
 	}
 
-	GraphConstructionData gather_data(int* reorder_map) {
+	GraphConstructionData gather_data(LocalVertex* reorder_map) {
 		GraphConstructionData data = {0};
 
 		int64_t num_wide_rows_ = local_wide_row_size() * mpi.size_2dc;
@@ -426,7 +448,6 @@ private:
 			(cache_aligned_xmalloc((num_wide_rows_+1)*sizeof(int64_t)));
 		data.row_starts_sup_ = static_cast<int64_t*>(
 				cache_aligned_xmalloc((num_wide_rows_+1)*sizeof(int64_t)));
-
 		data.row_bitmap_ = static_cast<BitmapType*>(
 				cache_aligned_xmalloc(src_bitmap_size*sizeof(BitmapType)));
 		data.row_sums_ = static_cast<TwodVertex*>(
@@ -447,6 +468,7 @@ private:
 		for(int64_t i = 1; i < num_wide_rows_; ++i) {
 			data.wide_row_starts_[i+1] += data.wide_row_starts_[i];
 		}
+
 #ifndef NDEBUG
 		if(mpi.isMaster()) print_with_prefix("Copying edge_counts for debugging.");
 		memcpy(data.row_starts_sup_, data.wide_row_starts_,
@@ -476,7 +498,7 @@ private:
 		return data;
 	}
 
-	TwodVertex* gather_orig_vertexes(TwodVertex num_non_zero_rows) {
+	LocalVertex* gather_orig_vertexes(TwodVertex num_non_zero_rows) {
 		int sendoffset[mpi.size_2dc+1];
 		int recvcount[mpi.size_2dc];
 		int recvoffset[mpi.size_2dc+1];
@@ -521,7 +543,7 @@ public:
 		makeWideRowStarts(g);
 		scatterAndStore(edge_list, g);
 		sortEdges(g);
-		free(row_starts_sup_); row_starts_sup_ = NULL;
+		if(row_starts_sup_ != NULL) { free(row_starts_sup_); row_starts_sup_ = NULL; }
 
 		if(mpi.isMaster()) print_with_prefix("Wide CSR creation complete.");
 
@@ -1069,7 +1091,7 @@ private:
 		typedef TwodVertex send_type;
 		typedef TwodVertex recv_type;
 
-		SourceConverter(EdgeType* edges, int64_t* converted, int* reorder_map, int org_local_bits, int local_bits)
+		SourceConverter(EdgeType* edges, int64_t* converted, LocalVertex* reorder_map, int org_local_bits, int local_bits)
 			: edges_(edges)
 			, reorder_map_(reorder_map)
 			, converted_(converted)
@@ -1093,7 +1115,7 @@ private:
 		}
 	private:
 		EdgeType* const edges_;
-		int* reorder_map_;
+		LocalVertex* reorder_map_;
 		int64_t* converted_;
 		const int org_local_bits_;
 		const int local_bits_;
@@ -1105,7 +1127,7 @@ private:
 		typedef TwodVertex send_type;
 		typedef TwodVertex recv_type;
 
-		TargetConverter(EdgeType* edges, int64_t* converted, int* reorder_map, int org_local_bits, int local_bits, int vertex_bits)
+		TargetConverter(EdgeType* edges, int64_t* converted, LocalVertex* reorder_map, int org_local_bits, int local_bits, int vertex_bits)
 			: edges_(edges)
 			, reorder_map_(reorder_map)
 			, converted_(converted)
@@ -1131,7 +1153,7 @@ private:
 		}
 	private:
 		EdgeType* const edges_;
-		int* reorder_map_;
+		LocalVertex* reorder_map_;
 		int64_t* converted_;
 		const int org_local_bits_;
 		const int local_bits_;
