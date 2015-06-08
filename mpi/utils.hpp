@@ -1909,7 +1909,7 @@ public:
 		free(thread_counts_);
 		free(partition_size_);
 	}
-	T sum() {
+	T sum(T* base_offset = NULL) {
 		const int width = buffer_width_;
 		// compute sum of thread local count values
 #pragma omp parallel for
@@ -1921,21 +1921,38 @@ public:
 			partition_size_[r] = sum;
 		}
 		// compute offsets
-		partition_offsets_[0] = 0;
-		for(int r = 0; r < num_partitions_; ++r) {
-			partition_offsets_[r + 1] = partition_offsets_[r] + partition_size_[r];
-		}
-		// assert (send_counts[size] == bufsize*2);
-		// compute offset of each threads
+		if(base_offset != NULL) {
 #pragma omp parallel for
-		for(int r = 0; r < num_partitions_; ++r) {
-			thread_offsets_[0*width + r] = partition_offsets_[r];
-			for(int t = 0; t < max_threads_; ++t) {
-				thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
+			for(int r = 0; r < num_partitions_; ++r) {
+				partition_offsets_[r] = base_offset[r];
+				base_offset[r] += partition_size_[r];
 			}
-			assert (thread_offsets_[max_threads_*width + r] == partition_offsets_[r + 1]);
+#pragma omp parallel for
+			for(int r = 0; r < num_partitions_; ++r) {
+				thread_offsets_[0*width + r] = partition_offsets_[r];
+				for(int t = 0; t < max_threads_; ++t) {
+					thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
+				}
+			}
+			return T(0);
 		}
-		return partition_offsets_[num_partitions_];
+		else {
+			partition_offsets_[0] = 0;
+			for(int r = 0; r < num_partitions_; ++r) {
+				partition_offsets_[r + 1] = partition_offsets_[r] + partition_size_[r];
+			}
+			// assert (send_counts[size] == bufsize*2);
+			// compute offset of each threads
+	#pragma omp parallel for
+			for(int r = 0; r < num_partitions_; ++r) {
+				thread_offsets_[0*width + r] = partition_offsets_[r];
+				for(int t = 0; t < max_threads_; ++t) {
+					thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
+				}
+				assert (thread_offsets_[max_threads_*width + r] == partition_offsets_[r + 1]);
+			}
+			return partition_offsets_[num_partitions_];
+		}
 	}
 	T* get_counts() {
 		T* counts = &thread_counts_[buffer_width_*omp_get_thread_num()];
@@ -1945,6 +1962,7 @@ public:
 	T* get_offsets() { return &thread_offsets_[buffer_width_*omp_get_thread_num()]; }
 
 	const T* get_partition_offsets() const { return partition_offsets_; }
+	const T* get_partition_size() const { return partition_size_; }
 
 	bool check() const {
 #ifndef	NDEBUG
@@ -2011,6 +2029,7 @@ public:
 	void sum() {
 		const int width = buffer_width_;
 		// compute sum of thread local count values
+#pragma omp parallel for
 		for(int r = 0; r < comm_size_; ++r) {
 			int sum = 0;
 			for(int t = 0; t < max_threads_; ++t) {
@@ -2025,6 +2044,7 @@ public:
 		}
 		// assert (send_counts[size] == bufsize*2);
 		// compute offset of each threads
+#pragma omp parallel for
 		for(int r = 0; r < comm_size_; ++r) {
 			thread_offsets_[0*width + r] = send_offsets_[r];
 			for(int t = 0; t < max_threads_; ++t) {
