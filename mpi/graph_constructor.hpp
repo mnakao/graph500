@@ -53,6 +53,7 @@ public:
 		free(row_bitmap_); row_bitmap_ = NULL;
 		free(row_sums_); row_sums_ = NULL;
 		free(reorder_map_); reorder_map_ = NULL;
+		free(invert_map_); invert_map_ = NULL;
 		MPI_Free_mem(orig_vertexes_); orig_vertexes_ = NULL;
 		free(has_edge_bitmap_); has_edge_bitmap_ = NULL;
 		free(edge_array_); edge_array_ = NULL;
@@ -120,6 +121,7 @@ public:
 	TwodVertex* row_sums_; // Index: SBI
 	BitmapType* has_edge_bitmap_; // for every local vertices, Index: SBI
 	LocalVertex* reorder_map_; // Index: Pred
+	LocalVertex* invert_map_; // Index: Reordered Pred
 	LocalVertex* orig_vertexes_; // Index: CSI
 
 	int64_t* edge_array_;
@@ -162,6 +164,7 @@ struct GraphConstructionData {
 	int64_t num_local_verts_;
 
 	LocalVertex* reordre_map_;
+	LocalVertex* invert_map_;
 
 	int64_t* wide_row_starts_;
 	int64_t* row_starts_sup_;
@@ -205,7 +208,7 @@ struct DegreeCalculation {
 	int64_t* row_length_;
 	int64_t* row_offset_;
 	std::vector<DWideRowEdge>* dwide_row_data_;
-	LocalVertex* vertexes_;
+	LocalVertex* vertexes_; // passed to ConstructionData
 
 	DegreeCalculation(int orig_local_bits, int log_local_verts_unit) {
 		org_local_bits_ = orig_local_bits;
@@ -228,7 +231,6 @@ struct DegreeCalculation {
 		if(orig_vertexes_ != NULL) { free(orig_vertexes_); orig_vertexes_ = NULL; }
 		if(row_length_ != NULL) { free(row_length_); row_length_ = NULL; }
 		if(row_offset_ != NULL) { free(row_offset_); row_offset_ = NULL; }
-		if(vertexes_ != NULL) { free(vertexes_); vertexes_ = NULL; }
 	}
 
 	int64_t num_orig_local_verts() const {
@@ -443,6 +445,7 @@ private:
 
 		data.num_local_verts_ = max_local_verts_;
 		data.reordre_map_ = reorder_map;
+		data.invert_map_ = vertexes_;
 
 		// allocate memory
 		data.wide_row_starts_ = static_cast<int64_t*>
@@ -623,6 +626,7 @@ private:
 		GraphConstructionData data = degree_calc_->process();
 
 		g.reorder_map_ = data.reordre_map_;
+		g.invert_map_ = data.invert_map_;
 		g.num_local_verts_ = data.num_local_verts_;
 		local_bits_ = g.local_bits_ = get_msb_index(g.num_local_verts_ - 1) + 1;
 		g.r_bits_ = (mpi.size_2dr == 1) ? 0 : (get_msb_index(mpi.size_2dr - 1) + 1);

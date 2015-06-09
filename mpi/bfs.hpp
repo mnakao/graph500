@@ -365,34 +365,34 @@ public:
 		CommBufferPool* pool_;
 	};
 
-	class TopDownCommHandler : public CommHandlerBase<int64_t> {
+	class TopDownCommHandler : public CommHandlerBase<uint32_t> {
 	public:
 		TopDownCommHandler(ThisType* this__)
-			: CommHandlerBase<int64_t>(this__)
+			: CommHandlerBase<uint32_t>(this__)
 			  { }
 
 		virtual void received(void* buf, int offset, int length, int src) {
-			VERVOSE(g_tp_comm += length * sizeof(int64_t));
+			VERVOSE(g_tp_comm += length * sizeof(uint32_t));
 			if(this_->growing_or_shrinking_) {
-				TopDownReceiver<true> recv(this->this_, (int64_t*)buf + offset, length, src);
+				TopDownReceiver<true> recv(this->this_, (uint32_t*)buf + offset, length, src);
 				recv.run();
 			}
 			else {
-				TopDownReceiver<false> recv(this->this_, (int64_t*)buf + offset, length, src);
+				TopDownReceiver<false> recv(this->this_, (uint32_t*)buf + offset, length, src);
 				recv.run();
 			}
 		}
 	};
 
-	class BottomUpCommHandler : public CommHandlerBase<TwodVertex> {
+	class BottomUpCommHandler : public CommHandlerBase<int64_t> {
 	public:
 		BottomUpCommHandler(ThisType* this__)
-			: CommHandlerBase<TwodVertex>(this__)
+			: CommHandlerBase<int64_t>(this__)
 			  { }
 
 		virtual void received(void* buf, int offset, int length, int src) {
-			VERVOSE(g_bu_pred_comm += length * sizeof(TwodVertex));
-			BottomUpReceiver recv(this->this_, (TwodVertex*)buf + offset, length, src);
+			VERVOSE(g_bu_pred_comm += length * sizeof(int64_t));
+			BottomUpReceiver recv(this->this_, (int64_t*)buf + offset, length, src);
 			recv.run();
 		}
 	};
@@ -924,7 +924,7 @@ public:
 	//-------------------------------------------------------------//
 
 	void top_down_send(int64_t tgt, int lgl, int r_mask,
-			LocalPacket* packet_array, int64_t src_enc
+			LocalPacket* packet_array, int64_t src
 #if PROFILING_MODE
 			, profiling::TimeSpan& ts_commit
 #endif
@@ -935,18 +935,19 @@ public:
 			PROF(profiling::TimeKeeper tk_commit);
 			td_comm_.put(pk.data.t, pk.length, dest);
 			PROF(ts_commit += tk_commit);
-			pk.src = 0;
+			pk.src = -1;
 			pk.length = 0;
 		}
-		if(pk.src != src_enc) { // TODO: use conditional branch
-			pk.src = src_enc;
-			pk.data.t[pk.length++] = src_enc;
+		if(pk.src != src) { // TODO: use conditional branch
+			pk.src = src;
+			pk.data.t[pk.length++] = (src >> 32) | 0x80000000u;
+			pk.data.t[pk.length++] = (uint32_t)src;
 		}
-		pk.data.t[pk.length++] = tgt;
+		pk.data.t[pk.length++] = tgt & ((uint32_t(1) << lgl) - 1);
 	}
 
 	void top_down_send_large(int64_t* edge_array, int64_t start, int64_t end,
-			int lgl, int r_mask, int64_t src_enc)
+			int lgl, int r_mask, int64_t src)
 	{
 		assert (end > start);
 		for(int i = 0; i < mpi.size_2dr; ++i) {
@@ -965,7 +966,7 @@ public:
 				next = (left + right) / 2;
 			} while(left < next);
 			// start ... right -> i
-			td_comm_.put_ptr(edge_array + start, right - start, src_enc, i);
+			td_comm_.put_ptr(edge_array + start, right - start, src, i);
 			start = right;
 		}
 		assert(start == end);
@@ -991,8 +992,8 @@ public:
 					thread_local_buffer_[omp_get_thread_num()]->fold_packet;
 			if(clear_packet_buffer) {
 				for(int target = 0; target < mpi.size_2dr; ++target) {
+					packet_array[target].src = -1;
 					packet_array[target].length = 0;
-					packet_array[target].src = 0;
 				}
 			}
 			int lgl = graph_.local_bits_;
@@ -1021,10 +1022,9 @@ public:
 							__builtin_popcountl(graph_.row_bitmap_[word_idx] & low_mask);
 					int64_t src_orig =
 							int64_t(graph_.orig_vertexes_[non_zero_off]) * P + src_c * R + r;
-					int64_t src_enc = -(src_orig + 1);
 #if ISOLATE_FIRST_EDGE
 					top_down_send(graph_.isolated_edges_[non_zero_off], lgl,
-							r_mask, packet_array, src_enc
+							r_mask, packet_array, src_orig
 #if PROFILING_MODE
 					, ts_commit
 #endif
@@ -1034,7 +1034,7 @@ public:
 					int64_t e_end = graph_.row_starts_[non_zero_off+1];
 #if TOP_DOWN_LOAD_BALANCE
 					if(e_end - e_start > PRM::TOP_DOWN_PENDING_WIDTH) {
-						top_down_send_large(edge_array, e_start, e_end, lgl, r_mask, src_enc);
+						top_down_send_large(edge_array, e_start, e_end, lgl, r_mask, src_orig);
 						VERVOSE(num_large_edge += e_end - e_start);
 					}
 					else
@@ -1042,7 +1042,7 @@ public:
 					{
 						for(int64_t e = e_start; e < e_end; ++e) {
 							top_down_send(edge_array[e], lgl,
-									r_mask, packet_array, src_enc
+									r_mask, packet_array, src_orig
 #if PROFILING_MODE
 							, ts_commit
 #endif
@@ -1064,8 +1064,8 @@ public:
 						PROF(profiling::TimeKeeper tk_commit);
 						td_comm_.put(pk.data.t, pk.length, target);
 						PROF(ts_commit += tk_commit);
+						pk.src = -1;
 						pk.length = 0;
-						pk.src = 0;
 					}
 				}
 			} // #pragma omp for
@@ -1116,7 +1116,7 @@ public:
 
 	template <bool growing>
 	struct TopDownReceiver : public Runnable {
-		TopDownReceiver(ThisType* this_, int64_t* stream_, int length_, int src_)
+		TopDownReceiver(ThisType* this_, uint32_t* stream_, int length_, int src_)
 			: this_(this_), stream_(stream_), length_(length_), src_(src_) { }
 		virtual void run() {
 			TRACER(td_recv);
@@ -1128,36 +1128,74 @@ public:
 			BitmapType* visited = (BitmapType*)this_->new_visited_;
 			int64_t* restrict const pred = this_->pred_;
 			const int cur_level = this_->current_level_;
-			int64_t* stream = stream_;
+			uint32_t* stream = stream_;
 			int length = length_;
 			int64_t pred_v = -1;
+			LocalVertex* invert_map = this_->graph_.invert_map_;
 
 			// for id converter //
 			int lgl = this_->graph_.local_bits_;
-			int r_bits = this_->graph_.r_bits_;
-			//int P = mpi.size_2d;
-			//int R = mpi.size_2dr;
-			//int r = src_;
+			LocalVertex lmask = (LocalVertex(1) << lgl) - 1;
 			// ------------------- //
 
 			for(int i = 0; i < length; ++i) {
-				int64_t v = stream[i];
-				if(v < 0) {
-					int64_t src( -v - 1 );
+				uint32_t v = stream[i];
+				if(v & 0x80000000u) {
+					int64_t src = (int64_t(v & 0xFFFF) << 32) | stream[i+1];
 					pred_v = src | (int64_t(cur_level) << 48);
+					if(v & 0x40000000u) {
+						int length_i = stream[i+2];
+						for(int c = 0; c < length_i; ++c) {
+							LocalVertex tgt_local = stream[i+3+c] & lmask;
+							if(growing) {
+								// TODO: which is better ?
+								//LocalVertex tgt_orig = invert_map[tgt_local];
+								const TwodVertex word_idx = tgt_local >> LOG_NBPE;
+								const int bit_idx = tgt_local & NBPE_MASK;
+								const BitmapType mask = BitmapType(1) << bit_idx;
+								if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
+									if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
+										LocalVertex tgt_orig = invert_map[tgt_local];
+										assert (pred[tgt_orig] == -1);
+										pred[tgt_orig] = pred_v;
+										if(buf->full()) {
+											this_->nq_.push(buf); buf = this_->nq_empty_buffer_.get();
+										}
+										buf->append_nocheck(tgt_local);
+									}
+								}
+							}
+							else {
+								LocalVertex tgt_orig = invert_map[tgt_local];
+								if(pred[tgt_orig] == -1) {
+									if(__sync_bool_compare_and_swap(&pred[tgt_orig], -1, pred_v)) {
+										if(buf->full()) {
+											this_->nq_.push(buf); buf = this_->nq_empty_buffer_.get();
+										}
+										buf->append_nocheck(tgt_local);
+									}
+								}
+							}
+						}
+						i += 2 + length_i;
+					}
+					else {
+						i += 1;
+					}
 				}
 				else {
 					assert (pred_v != -1);
 
-					SeparatedId tgt(v);
-					TwodVertex tgt_orig = tgt.high(r_bits + lgl);
-					TwodVertex tgt_local = tgt.low(lgl);
+					LocalVertex tgt_local = v & lmask;
 					if(growing) {
+						// TODO: which is better ?
+						//LocalVertex tgt_orig = invert_map[tgt_local];
 						const TwodVertex word_idx = tgt_local >> LOG_NBPE;
 						const int bit_idx = tgt_local & NBPE_MASK;
 						const BitmapType mask = BitmapType(1) << bit_idx;
 						if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
 							if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
+								LocalVertex tgt_orig = invert_map[tgt_local];
 								assert (pred[tgt_orig] == -1);
 								pred[tgt_orig] = pred_v;
 								if(buf->full()) {
@@ -1168,6 +1206,7 @@ public:
 						}
 					}
 					else {
+						LocalVertex tgt_orig = invert_map[tgt_local];
 						if(pred[tgt_orig] == -1) {
 							if(__sync_bool_compare_and_swap(&pred[tgt_orig], -1, pred_v)) {
 								if(buf->full()) {
@@ -1183,7 +1222,7 @@ public:
 			PROF(this_->recv_proc_time_ += tk_all);
 		}
 		ThisType* const this_;
-		int64_t* stream_;
+		uint32_t* stream_;
 		int length_;
 		int src_;
 	};
@@ -2453,7 +2492,7 @@ public:
 #endif // #if BF_DEEPER_ASYNC
 
 	struct BottomUpReceiver : public Runnable {
-		BottomUpReceiver(ThisType* this_, TwodVertex* buffer_, int length_, int src_)
+		BottomUpReceiver(ThisType* this_, int64_t* buffer_, int length_, int src_)
 			: this_(this_), buffer_(buffer_), length_(length_), src_(src_) { }
 		virtual void run() {
 			TRACER(bu_recv);
@@ -2465,7 +2504,7 @@ public:
 			LocalVertex lmask = (LocalVertex(1) << orig_lgl) - 1;
 			int64_t cshifted = src_ * mpi.size_2dr;
 			int64_t levelshifted = int64_t(this_->current_level_) << 48;
-			TwodVertex* buffer = buffer_;
+			int64_t* buffer = buffer_;
 			int length = length_;
 			int64_t* pred = this_->pred_;
 			for(int i = 0; i < length; ++i) {
@@ -2481,7 +2520,7 @@ public:
 			PROF(this_->recv_proc_time_ += tk_all);
 		}
 		ThisType* const this_;
-		TwodVertex* buffer_;
+		int64_t* buffer_;
 		int length_;
 		int src_;
 	};

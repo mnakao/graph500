@@ -142,6 +142,8 @@ public:
 		VERVOSE(last_send_size_ = 0);
 		VERVOSE(last_recv_size_ = 0);
 
+		const int MINIMUM_POINTER_SPACE = 40;
+
 		for(int loop = 0; ; ++loop) {
 			USER_START(a2a_merge);
 #pragma omp parallel
@@ -159,13 +161,16 @@ public:
 						int length = buffer.length;
 						if(length == 0) continue;
 
-						int size = length + 1;
+						int size = length + 3;
 						if(counts[i] + size >= max_size) {
 							counts[i] = max_size;
 							break;
 						}
-						else {
-							counts[i] += size;
+
+						counts[i] += size;
+						if(counts[i] + MINIMUM_POINTER_SPACE >= max_size) {
+							// too small space
+							break;
 						}
 					}
 				} // #pragma omp for schedule(static)
@@ -198,26 +203,32 @@ public:
 					}
 					for(int b = 0; b < (int)node.send_ptr.size(); ++b) {
 						PointerData& buffer = node.send_ptr[b];
-						void* ptr = buffer.ptr;
+						int64_t* ptr = (int64_t*)buffer.ptr;
 						int length = buffer.length;
 						if(length == 0) continue;
 
-						int size = length + 1;
+						int size = length + 3;
 						if(count + size >= max_size) {
-							length = max_size - count - 1;
+							length = max_size - count - 3;
 							count = max_size;
 						}
 						else {
 							count += size;
 						}
-						memcpy(dst + offset++ * es, &buffer.header, es);
-						memcpy(dst + offset * es, ptr, length * es);
-						offset += length;
+						uint32_t* dst_ptr = (uint32_t*)&dst[offset * es];
+						dst_ptr[0] = (buffer.header >> 32) | 0x80000000u | 0x40000000u;
+						dst_ptr[1] = (uint32_t)buffer.header;
+						dst_ptr[2] = length;
+						dst_ptr += 3;
+						for(int i = 0; i < length; ++i) {
+							dst_ptr[i] = ptr[i] & 0x8FFFFFFF;
+						}
+						offset += 3 + length;
 
 						buffer.length -= length;
 						buffer.ptr = (uint8_t*)buffer.ptr + (length * es);
 
-						if(count == max_size) break;
+						if(count + MINIMUM_POINTER_SPACE >= max_size) break;
 					}
 					node.send_data.clear();
 				} // #pragma omp for schedule(static)
