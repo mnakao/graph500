@@ -35,6 +35,7 @@
 
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
+// 0: disable, 1: 1D, 2: 2D
 #define ENABLE_MY_ALLGATHER 1
 #define ENABLE_INLINE_ATOMICS 0
 #define ENABLE_FUJI_PROF 0
@@ -184,7 +185,8 @@ enum {
 	TOP_DOWN_FOLD_TAG = 0,
 	BOTTOM_UP_WAVE_TAG = 1,
 	BOTTOM_UP_PRED_TAG = 2,
-	MY_EXPAND_TAG = 3,
+	MY_EXPAND_TAG1 = 3,
+	MY_EXPAND_TAG2 = 4,
 };
 
 #ifdef __cplusplus

@@ -124,6 +124,7 @@ struct COMM_2D {
 	MPI_Comm comm;
 	int rank, rank_x, rank_y;
 	int size, size_x, size_y;
+	int* rank_map; // Index: rank_x + rank_y * size_x
 };
 
 static void swap(COMM_2D& a, COMM_2D& b) {
@@ -1316,6 +1317,16 @@ static int compute_rank_2d(int x, int y, int sx, int sy) {
 		return y * sx + x;
 }
 
+static void setup_rank_map(COMM_2D& comm) {
+	int send_rank = comm.rank_x + comm.rank_y * comm.size_x;
+	int recv_rank[comm.size];
+	MPI_Allgather(&send_rank, 1, MPI_INT, recv_rank, 1, MPI_INT, comm.comm);
+	comm.rank_map = (int*)malloc(comm.size*sizeof(int));
+	for(int i = 0; i < comm.size; ++i) {
+		comm.rank_map[recv_rank[i]] = i;
+	}
+}
+
 #if ENABLE_FJMPI
 static void parse_row_dims(bool* rdim, const char* input) {
 	memset(rdim, 0x00, sizeof(bool)*6);
@@ -1411,7 +1422,7 @@ static void setup_2dcomm()
 	if(!success && virt_4d) {
 		int RX, RY, CX, CY;
 		sscanf(virt_4d, "%dx%dx%dx%d", &RX, &RY, &CX, &CY);
-		if(mpi.isMaster()) print_with_prefix("Provided dimension %dx%dx%dx%d = %d", RX, RY, CX, CY, mpi.size);
+		if(mpi.isMaster()) print_with_prefix("Provided dimension (RXxRYxCXxCY) = %dx%dx%dx%d = %d", RX, RY, CX, CY, mpi.size);
 		if(RX*RY*CX*CY != mpi.size) {
 			if(mpi.isMaster()) print_with_prefix("Mismatch error!");
 		}
@@ -1491,6 +1502,11 @@ static void setup_2dcomm()
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
 	mpi.comm_r.comm = mpi.comm_2dr;
 	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
+
+	if(mpi.isMultiDimAvailable) {
+		setup_rank_map(mpi.comm_r);
+		setup_rank_map(mpi.comm_c);
+	}
 }
 
 // assume rank = XYZ
@@ -1532,6 +1548,10 @@ static void setup_2dcomm_on_3d()
 
 void cleanup_2dcomm()
 {
+	if(mpi.isMultiDimAvailable) {
+		free(mpi.comm_r.rank_map);
+		free(mpi.comm_c.rank_map);
+	}
 	MPI_Comm_free(&mpi.comm_2dr);
 	MPI_Comm_free(&mpi.comm_2dc);
 	close_imd_out_file();
@@ -1788,10 +1808,10 @@ void my_allgatherv(T *buffer, int* count, int* offset, MPI_Comm comm, int rank, 
 		int r_recv_cnt = count[r_recvidx] - count[r_recvidx] / 2;
 
 		MPI_Request req[4];
-		MPI_Irecv(&buffer[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
-		MPI_Irecv(&buffer[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
-		MPI_Isend(&buffer[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
-		MPI_Isend(&buffer[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
+		MPI_Irecv(&buffer[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG1, comm, &req[2]);
+		MPI_Irecv(&buffer[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG1, comm, &req[3]);
+		MPI_Isend(&buffer[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG1, comm, &req[0]);
+		MPI_Isend(&buffer[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG1, comm, &req[1]);
 		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
 	}
 }

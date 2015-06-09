@@ -499,7 +499,11 @@ public:
 			if(mpi.isYdimAvailable()) {
 				if(mpi.isMaster()) print_with_prefix("Error: MY_ALLGATHER does not support shared memory Y dimension.");
 			}
-			MpiCol::my_allgather(bitmap, shared_bitmap_width, recv_buffer, mpi.comm_c);
+#if ENABLE_MY_ALLGATHER == 1
+		MpiCol::my_allgather(bitmap, shared_bitmap_width, recv_buffer, mpi.comm_c);
+#else
+		my_allgather_2d(bitmap, shared_bitmap_width, recv_buffer, mpi.comm_c);
+#endif // #if ENABLE_MY_ALLGATHER == 1
 #else
 			MPI_Allgather(bitmap, shared_bitmap_width, get_mpi_type(bitmap[0]),
 					recv_buffer, shared_bitmap_width, get_mpi_type(bitmap[0]), mpi.comm_y);
@@ -592,8 +596,10 @@ public:
 		TwodVertex* recv_buf = (TwodVertex*)((int64_t(cq_size_)*int64_t(sizeof(TwodVertex)) > work_buf_size_) ?
 				(work_extra_buf_ = cache_aligned_xmalloc(cq_size_*sizeof(TwodVertex))) :
 				work_buf_);
-#if ENABLE_MY_ALLGATHER
+#if ENABLE_MY_ALLGATHER == 1
 		MpiCol::my_allgatherv(nq, nq_size, recv_buf, recv_size, recv_off, mpi.comm_r);
+#elif ENABLE_MY_ALLGATHER == 2
+		my_allgatherv_2d(nq, nq_size, recv_buf, recv_size, recv_off, mpi.comm_r);
 #else
 		MPI_Allgatherv(nq, nq_size, MpiTypeOf<TwodVertex>::type,
 				recv_buf, recv_size, recv_off, MpiTypeOf<TwodVertex>::type, mpi.comm_r.comm);

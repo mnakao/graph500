@@ -187,6 +187,9 @@ public:
 		recv_top = 0;
 		is_active = false;
 	}
+	void probe() {
+		next_recv_probe(false);
+	}
 	void finish() {
 	}
 
@@ -219,10 +222,19 @@ protected:
 		return tag;
 	}
 
-	virtual void next_recv() {
+	void next_recv_probe(bool blocking) {
 		if(is_active) {
 			MPI_Status status[4];
-			MPI_Waitall(4, req, status);
+			if(blocking) {
+				MPI_Waitall(4, req, status);
+			}
+			else {
+				int flag;
+				MPI_Testall(4, req, &flag, status);
+				if(flag == false) {
+					return ;
+				}
+			}
 			int recv_0 = recv_filled++ % NBUF;
 			int recv_1 = recv_filled++ % NBUF;
 			recv_pair[recv_0].tag = make_tag(status[0]);
@@ -233,9 +245,13 @@ protected:
 		}
 	}
 
+	virtual void next_recv() {
+		next_recv_probe(true);
+	}
+
 	virtual void send_recv() {
 		VERVOSE(compute_time_.push_back(tk_.getSpanAndReset()));
-		next_recv();
+		next_recv_probe(true);
 		VERVOSE(comm_wait_time_.push_back(tk_.getSpanAndReset()));
 		int recv_0 = recv_top++ % NBUF;
 		int recv_1 = recv_top++ % NBUF;

@@ -27,7 +27,7 @@ public:
 	virtual void received(void* buf, int offset, int length, int from) = 0;
 };
 
-class AsyncAlltoallManager : public Runnable {
+class AsyncAlltoallManager {
 	struct Buffer {
 		void* ptr;
 		int length;
@@ -372,6 +372,406 @@ private:
 		return ret;
 	}
 };
+
+// Allgather
+
+class MpiCompletionHandler {
+public:
+	virtual ~MpiCompletionHandler() { }
+	virtual void complete(MPI_Status* status) = 0;
+};
+
+class MpiRequestManager {
+public:
+	MpiRequestManager(int MAX_REQUESTS)
+		: MAX_REQUESTS(MAX_REQUESTS)
+		, finish_count(0)
+		, reqs(new MPI_Request[MAX_REQUESTS])
+		, handlers(new MpiCompletionHandler*[MAX_REQUESTS])
+	{
+		for(int i = 0; i < MAX_REQUESTS; ++i) {
+			reqs[i] = MPI_REQUEST_NULL;
+			empty_list.push_back(i);
+		}
+	}
+	~MpiRequestManager() {
+		delete [] reqs; reqs = NULL;
+		delete [] handlers; handlers = NULL;
+	}
+	MPI_Request* submit_handler(MpiCompletionHandler* handler) {
+		if(empty_list.size() == 0) {
+			fprintf(IMD_OUT, "No more empty MPI requests...\n");
+			throw "No more empty MPI requests...";
+		}
+		int empty = empty_list.back();
+		empty_list.pop_back();
+		handlers[empty] = handler;
+		return &reqs[empty];
+	}
+	void finished() {
+		--finish_count;
+	}
+	void run(int finish_count__) {
+		finish_count += finish_count__;
+
+		while(finish_count > 0) {
+			if(empty_list.size() == MAX_REQUESTS) {
+				fprintf(IMD_OUT, "Error: No active request\n");
+				throw "Error: No active request";
+			}
+			int index;
+			MPI_Status status;
+			MPI_Waitany(MAX_REQUESTS, reqs, &index, &status);
+			if(index == MPI_UNDEFINED) {
+				fprintf(IMD_OUT, "MPI_Waitany returns MPI_UNDEFINED ...\n");
+				throw "MPI_Waitany returns MPI_UNDEFINED ...";
+			}
+			MpiCompletionHandler* handler = handlers[index];
+			reqs[index] = MPI_REQUEST_NULL;
+			empty_list.push_back(index);
+
+			handler->complete(&status);
+		}
+	}
+
+private:
+	int MAX_REQUESTS;
+	int finish_count;
+	MPI_Request *reqs;
+	MpiCompletionHandler** handlers;
+	std::vector<int> empty_list;
+};
+
+template <typename T>
+class AllgatherHandler : public MpiCompletionHandler {
+public:
+	AllgatherHandler() { }
+	virtual ~AllgatherHandler() { }
+
+	void start(MpiRequestManager* req_man_, T *buffer_, int* count_, int* offset_, MPI_Comm comm_,
+			int rank_, int size_, int left_, int right_, int tag_)
+	{
+		req_man = req_man_;
+		buffer = buffer_;
+		count = count_;
+		offset = offset_;
+		comm = comm_;
+		rank = rank_;
+		size = size_;
+		left = left_;
+		right = right_;
+		tag = tag_;
+
+		current = 1;
+		l_sendidx = rank;
+		l_recvidx = (rank + size + 1) % size;
+		r_sendidx = rank;
+		r_recvidx = (rank + size - 1) % size;
+
+		next();
+	}
+
+	virtual void complete(MPI_Status* status) {
+		if(++complete_count == 4) {
+			next();
+		}
+	}
+
+private:
+	MpiRequestManager* req_man;
+
+	T *buffer;
+	int *count;
+	int *offset;
+	MPI_Comm comm;
+	int rank;
+	int size;
+	int left;
+	int right;
+	int tag;
+
+	int current;
+	int l_sendidx;
+	int l_recvidx;
+	int r_sendidx;
+	int r_recvidx;
+	int complete_count;
+
+	void next() {
+		if(current >= size) {
+			req_man->finished();
+			return ;
+		}
+
+		if(l_sendidx >= size) l_sendidx -= size;
+		if(l_recvidx >= size) l_recvidx -= size;
+		if(r_sendidx < 0) r_sendidx += size;
+		if(r_recvidx < 0) r_recvidx += size;
+
+		int l_send_off = offset[l_sendidx];
+		int l_send_cnt = count[l_sendidx] / 2;
+		int l_recv_off = offset[l_recvidx];
+		int l_recv_cnt = count[l_recvidx] / 2;
+
+		int r_send_off = offset[r_sendidx] + count[r_sendidx] / 2;
+		int r_send_cnt = count[r_sendidx] - count[r_sendidx] / 2;
+		int r_recv_off = offset[r_recvidx] + count[r_recvidx] / 2;
+		int r_recv_cnt = count[r_recvidx] - count[r_recvidx] / 2;
+
+		MPI_Irecv(&buffer[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type,
+				right, tag, comm, req_man->submit_handler(this));
+		MPI_Irecv(&buffer[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type,
+				left, tag, comm, req_man->submit_handler(this));
+		MPI_Isend(&buffer[l_send_off], l_send_cnt, MpiTypeOf<T>::type,
+				left, tag, comm, req_man->submit_handler(this));
+		MPI_Isend(&buffer[r_send_off], r_send_cnt, MpiTypeOf<T>::type,
+				right, tag, comm, req_man->submit_handler(this));
+
+		++current;
+		++l_sendidx;
+		++l_recvidx;
+		--r_sendidx;
+		--r_recvidx;
+
+		complete_count = 0;
+	}
+};
+
+template <typename T>
+class AllgatherStep1Handler : public MpiCompletionHandler {
+public:
+	AllgatherStep1Handler() { }
+	virtual ~AllgatherStep1Handler() { }
+
+	void start(MpiRequestManager* req_man_, T *buffer_, int* count_, int* offset_,
+			COMM_2D comm_, int unit_x_, int unit_y_, int steps_, int tag_)
+	{
+		req_man = req_man_;
+		buffer = buffer_;
+		count = count_;
+		offset = offset_;
+		comm = comm_;
+		unit_x = unit_x_;
+		unit_y = unit_y_;
+		steps = steps_;
+		tag = tag_;
+
+		current = 1;
+
+		send_to = get_rank(-1);
+		recv_from = get_rank(1);
+
+		next();
+	}
+
+	virtual void complete(MPI_Status* status) {
+		if(++complete_count == 2) {
+			next();
+		}
+	}
+
+private:
+	MpiRequestManager* req_man;
+
+	T *buffer;
+	int *count;
+	int *offset;
+	COMM_2D comm;
+	int unit_x;
+	int unit_y;
+	int steps;
+	int tag;
+
+	int send_to;
+	int recv_from;
+
+	int current;
+	int complete_count;
+
+	int get_rank(int diff) {
+		int pos_x = (comm.rank_x + unit_x * diff + comm.size_x) % comm.size_x;
+		int pos_y = (comm.rank_y + unit_y * diff + comm.size_y) % comm.size_y;
+		return comm.rank_map[pos_x + pos_y * comm.size_x];
+	}
+
+	void next() {
+		if(current >= steps) {
+			req_man->finished();
+			return ;
+		}
+
+		int sendidx = get_rank(current - 1);
+		int recvidx = get_rank(current);
+
+		int send_off = offset[sendidx];
+		int send_cnt = count[sendidx];
+		int recv_off = offset[recvidx];
+		int recv_cnt = count[recvidx];
+
+		MPI_Irecv(&buffer[recv_off], recv_cnt, MpiTypeOf<T>::type,
+				recv_from, tag, comm.comm, req_man->submit_handler(this));
+		MPI_Isend(&buffer[send_off], send_cnt, MpiTypeOf<T>::type,
+				send_to, tag, comm.comm, req_man->submit_handler(this));
+
+		++current;
+		complete_count = 0;
+	}
+};
+
+template <typename T>
+class AllgatherStep2Handler : public MpiCompletionHandler {
+public:
+	AllgatherStep2Handler() { }
+	virtual ~AllgatherStep2Handler() { }
+
+	void start(MpiRequestManager* req_man_, T *buffer_, int* count_, int* offset_,
+			COMM_2D comm_, int unit_x_, int unit_y_, int steps_, int width_, int tag_)
+	{
+		req_man = req_man_;
+		buffer = buffer_;
+		count = count_;
+		offset = offset_;
+		comm = comm_;
+		unit_x = unit_x_;
+		unit_y = unit_y_;
+		steps = steps_;
+		width = width_;
+		tag = tag_;
+
+		current = 1;
+
+		send_to = get_rank(-1, 0);
+		recv_from = get_rank(1, 0);
+
+		next();
+	}
+
+	virtual void complete(MPI_Status* status) {
+		if(++complete_count == width*2) {
+			next();
+		}
+	}
+
+private:
+	MpiRequestManager* req_man;
+
+	T *buffer;
+	int *count;
+	int *offset;
+	COMM_2D comm;
+	int unit_x;
+	int unit_y;
+	int steps;
+	int width;
+	int tag;
+
+	int send_to;
+	int recv_from;
+
+	int current;
+	int complete_count;
+
+	int get_rank(int step_diff, int idx) {
+		int pos_x = (comm.rank_x + unit_x * step_diff + (!unit_x * idx) + comm.size_x) % comm.size_x;
+		int pos_y = (comm.rank_y + unit_y * step_diff + (!unit_y * idx) + comm.size_y) % comm.size_y;
+		return comm.rank_map[pos_x + pos_y * comm.size_x];
+	}
+
+	void next() {
+		if(current >= steps) {
+			req_man->finished();
+			return ;
+		}
+
+		for(int i = 0; i < width; ++i) {
+			int sendidx = get_rank(current - 1, i);
+			int recvidx = get_rank(current, i);
+
+			int send_off = offset[sendidx];
+			int send_cnt = count[sendidx];
+			int recv_off = offset[recvidx];
+			int recv_cnt = count[recvidx];
+
+			MPI_Irecv(&buffer[recv_off], recv_cnt, MpiTypeOf<T>::type,
+					recv_from, tag, comm.comm, req_man->submit_handler(this));
+			MPI_Isend(&buffer[send_off], send_cnt, MpiTypeOf<T>::type,
+					send_to, tag, comm.comm, req_man->submit_handler(this));
+		}
+
+		++current;
+		complete_count = 0;
+	}
+};
+
+template <typename T>
+void my_allgatherv_2d(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, COMM_2D comm)
+{
+	// copy own data
+	memcpy(&recvbuf[recv_offset[comm.rank]], sendbuf, sizeof(T) * send_count);
+
+	if(mpi.isMultiDimAvailable == false) {
+		MpiRequestManager req_man(8);
+		AllgatherHandler<T> handler;
+		int size; MPI_Comm_size(comm.comm, &size);
+		int rank; MPI_Comm_rank(comm.comm, &rank);
+		int left = (rank + size - 1) % size;
+		int right = (rank + size + 1) % size;
+		handler.start(&req_man, recvbuf, recv_count, recv_offset, comm.comm,
+				rank, size, left, right, PRM::MY_EXPAND_TAG1);
+		req_man.run(1);
+		return ;
+	}
+
+	//MPI_Allgatherv(sendbuf, send_count, MpiTypeOf<T>::type, recvbuf, recv_count, recv_offset, MpiTypeOf<T>::type, comm.comm);
+	//return;
+
+	MpiRequestManager req_man((comm.size_x + comm.size_y)*4);
+	int split_count[4][comm.size];
+	int split_offset[4][comm.size];
+
+	for(int s = 0; s < 4; ++s) {
+		for(int i = 0; i < comm.size; ++i) {
+			int max = recv_count[i];
+			int split = (max + 3) / 4;
+			int start = recv_offset[i] + std::min(max, split * s);
+			int end = recv_offset[i] + std::min(max, split * (s+1));
+			split_count[s][i] = end - start;
+			split_offset[s][i] = start;
+		}
+	}
+
+	{
+		AllgatherStep1Handler<T> handler[4];
+		handler[0].start(&req_man, recvbuf, split_count[0], split_offset[0], comm, 1, 0, comm.size_x, PRM::MY_EXPAND_TAG1);
+		handler[1].start(&req_man, recvbuf, split_count[1], split_offset[1], comm,-1, 0, comm.size_x, PRM::MY_EXPAND_TAG1);
+		handler[2].start(&req_man, recvbuf, split_count[2], split_offset[2], comm, 0, 1, comm.size_y, PRM::MY_EXPAND_TAG2);
+		handler[3].start(&req_man, recvbuf, split_count[3], split_offset[3], comm, 0,-1, comm.size_y, PRM::MY_EXPAND_TAG2);
+		req_man.run(4);
+	}
+	{
+		AllgatherStep2Handler<T> handler[4];
+		handler[0].start(&req_man, recvbuf, split_count[0], split_offset[0], comm, 0, 1, comm.size_y, comm.size_x, PRM::MY_EXPAND_TAG1);
+		handler[1].start(&req_man, recvbuf, split_count[1], split_offset[1], comm, 0,-1, comm.size_y, comm.size_x, PRM::MY_EXPAND_TAG1);
+		handler[2].start(&req_man, recvbuf, split_count[2], split_offset[2], comm, 1, 0, comm.size_x, comm.size_y, PRM::MY_EXPAND_TAG2);
+		handler[3].start(&req_man, recvbuf, split_count[3], split_offset[3], comm,-1, 0, comm.size_x, comm.size_y, PRM::MY_EXPAND_TAG2);
+		req_man.run(4);
+	}
+}
+
+template <typename T>
+void my_allgather_2d(T *sendbuf, int count, T *recvbuf, COMM_2D comm)
+{
+	memcpy(&recvbuf[count * comm.rank], sendbuf, sizeof(T) * count);
+	int recv_count[comm.size];
+	int recv_offset[comm.size+1];
+	recv_offset[0] = 0;
+	for(int i = 0; i < comm.size; ++i) {
+		recv_count[i] = count;
+		recv_offset[i+1] = recv_offset[i] + count;
+	}
+	my_allgatherv_2d(sendbuf, count, recvbuf, recv_count, recv_offset, comm);
+}
+
 #undef debug
 
 #endif /* ABSTRACT_COMM_HPP_ */
