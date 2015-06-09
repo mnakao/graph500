@@ -19,7 +19,7 @@ struct LocalPacket {
 	int64_t src;
 	union {
 		int64_t t[TOP_DOWN_LENGTH];
-		TwodVertex b[BOTTOM_UP_LENGTH];
+		int64_t b[BOTTOM_UP_LENGTH];
 	} data;
 };
 

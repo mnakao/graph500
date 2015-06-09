@@ -135,6 +135,7 @@ public:
 	int64_t num_global_verts_; // number of vertices that have at least one edge
 
 	int local_bits_; // local bits for computation
+	int orig_local_bits_; // local bits for original vertex id
 	int r_bits_;
 	int64_t num_local_verts_; // number of local vertices for computation
 };
@@ -610,8 +611,8 @@ private:
 		// estimated SCALE parameter
 		g.log_orig_global_verts_ = log_max_vertex;
 		g.num_orig_local_verts_ = num_local_verts;
+		g.orig_local_bits_ = org_local_bits_ = get_msb_index(num_local_verts - 1) + 1;
 
-		org_local_bits_ = get_msb_index(num_local_verts - 1) + 1;
 		degree_calc_ = new DegreeCalculation(org_local_bits_, log_local_verts_unit_);
 	}
 

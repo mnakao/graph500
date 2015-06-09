@@ -1673,6 +1673,7 @@ public:
 		int lgl = graph_.local_bits_;
 		TwodVertex L = graph_.num_local_verts_;
 		int r_bits = graph_.r_bits_;
+		int orig_lgl = graph_.orig_local_bits_;
 
 		const BitmapType* __restrict__ row_bitmap = graph_.row_bitmap_;
 		const BitmapType* __restrict__ shared_visited = shared_visited_;
@@ -1703,9 +1704,7 @@ public:
 				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
-					buffer->data.b[num_send+0] = src >> lgl;
-					buffer->data.b[num_send+1] = tgt_orig;
-					num_send += 2;
+					buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 					// end this row
 					VERVOSE(tmp_edge_relax += 1);
 					continue;
@@ -1718,9 +1717,7 @@ public:
 					if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 						// add to next queue
 						visited_i |= vis_bit;
-						buffer->data.b[num_send+0] = src >> lgl;
-						buffer->data.b[num_send+1] = tgt_orig;
-						num_send += 2;
+						buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 						// end this row
 						VERVOSE(tmp_edge_relax += e - e_start + 1);
 						break;
@@ -1838,7 +1835,7 @@ public:
 				bottom_up_substep_->probe();
 			}
 
-			visited_count += buffer->length / 2;
+			visited_count += buffer->length;
 			flush_bottom_up_send_buffer(buffer, target_rank);
 
 			PROF(commit_time_ += tk_all);
@@ -1885,6 +1882,7 @@ public:
 		int lgl = graph_.local_bits_;
 		int r_bits = graph_.r_bits_;
 		TwodVertex L = graph_.num_local_verts_;
+		int orig_lgl = graph_.orig_local_bits_;
 		//TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
 		VERVOSE(int tmp_num_blocks = 0);
 		VERVOSE(int tmp_edge_relax = 0);
@@ -1923,9 +1921,7 @@ public:
 					if(shared_visited_[bit_idx >> LOG_NBPE] & (BitmapType(1) << (bit_idx & NBPE_MASK))) {
 						// add to next queue
 						vertex_enabled[i] = 0; --num_enabled;
-						buffer->data.b[num_send+0] = src >> lgl;
-						buffer->data.b[num_send+1] = tgt_orig;
-						num_send += 2;
+						buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 						// end this row
 						VERVOSE(tmp_edge_relax += 1);
 						continue;
@@ -1939,9 +1935,7 @@ public:
 						if(shared_visited_[bit_idx >> LOG_NBPE] & (BitmapType(1) << (bit_idx & NBPE_MASK))) {
 							// add to next queue
 							vertex_enabled[i] = 0; --num_enabled;
-							buffer->data.b[num_send+0] = src >> lgl;
-							buffer->data.b[num_send+1] = tgt_orig;
-							num_send += 2;
+							buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 							// end this row
 							VERVOSE(tmp_edge_relax += e - e_start + 1);
 							break;
@@ -2465,18 +2459,19 @@ public:
 			TRACER(bu_recv);
 			PROF(profiling::TimeKeeper tk_all);
 			int P = mpi.size_2d;
-			//int lgl = this_->graph_.local_bits_;
 			int r_bits = this_->graph_.r_bits_;
 			int64_t r_mask = ((1 << r_bits) - 1);
-			//TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
+			int orig_lgl = this_->graph_.orig_local_bits_;
+			LocalVertex lmask = (LocalVertex(1) << orig_lgl) - 1;
 			int64_t cshifted = src_ * mpi.size_2dr;
 			int64_t levelshifted = int64_t(this_->current_level_) << 48;
 			TwodVertex* buffer = buffer_;
-			int length = length_ / 2;
+			int length = length_;
 			int64_t* pred = this_->pred_;
 			for(int i = 0; i < length; ++i) {
-				int64_t pred_dst(buffer[i*2+0]);
-				TwodVertex tgt_local = buffer[i*2+1];
+				int64_t v = buffer[i];
+				int64_t pred_dst = v >> orig_lgl;
+				LocalVertex tgt_local = v & lmask;
 				int64_t pred_v = ((pred_dst >> r_bits) * P +
 						cshifted + (pred_dst & r_mask)) | levelshifted;
 				assert (this_->pred_[tgt_local] == -1);
