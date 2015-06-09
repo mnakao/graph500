@@ -31,7 +31,7 @@
 #if LOW_LEVEL_FUNCTION
 
 void backward_isolated_edge(
-	int half_bitmap_width,
+	int step_bitmap_width,
 	int phase_bmp_off, // compact
 	int phase_vertex_off, // separated
 	int lgl, int L, int r_bits,
@@ -47,9 +47,9 @@ void backward_isolated_edge(
 ) {
 	int tid = omp_get_thread_num();
 	int num_threads = omp_get_num_threads();
-	int width_per_thread = (half_bitmap_width + num_threads - 1) / num_threads;
-	int off_start = std::min(half_bitmap_width, width_per_thread * tid);
-	int off_end = std::min(half_bitmap_width, off_start + width_per_thread);
+	int width_per_thread = (step_bitmap_width + num_threads - 1) / num_threads;
+	int off_start = std::min(step_bitmap_width, width_per_thread * tid);
+	int off_end = std::min(step_bitmap_width, off_start + width_per_thread);
 	//TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
 	int num_send = 0;
 #if CONSOLIDATE_IFE_PROC

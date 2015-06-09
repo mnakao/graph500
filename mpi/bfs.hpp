@@ -1661,128 +1661,66 @@ public:
 
 #else // #if BFELL
 
-	// returns the number of vertices found in this step.
-	int bottom_up_search_bitmap_process_step(
-			BottomUpSubstepData& data, int step_bitmap_width, int target_rank)
+	void bottom_up_search_bitmap_process_block(
+			BitmapType* __restrict__ phase_bitmap,
+			int off_start,
+			int off_end,
+			int phase_bmp_off,
+			LocalPacket* buffer)
 	{
-		USER_START(bu_bmp_step);
-		BitmapType* phase_bitmap = (BitmapType*)data.data;
-		int phase_bmp_off = data.tag.region_id * step_bitmap_width;
+		VERVOSE(int tmp_edge_relax = 0);
+
 		int lgl = graph_.local_bits_;
 		TwodVertex L = graph_.num_local_verts_;
-		int vertex_bits = graph_.local_bits_ + graph_.r_bits_;
-		TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
-		int visited_count = 0;
-		VERVOSE(int tmp_edge_relax = 0);
-		PROF(profiling::TimeKeeper tk_all);
-		PROF(profiling::TimeSpan ts_commit);
-		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
-#if STREAM_UPDATE
-		LocalPacket* buffer = tlb->fold_packet;
-#ifndef NDEBUG
-		assert (buffer->length == 0);
-		thread_sync_.barrier();
-#endif
-#else
-		QueuedVertexes* buf = tlb->cur_buffer;
-		if(buf == NULL) buf = nq_empty_buffer_.get();
-		visited_count -= buf->length;
-#endif
+		int r_bits = graph_.r_bits_;
 
-#if LOW_LEVEL_FUNCTION
-		backward_isolated_edge(
-				step_bitmap_width,
-				phase_bmp_off,
-				phase_vertex_off, lgl, L, graph_.r_bits_,
-				phase_bitmap,
-				graph_.row_bitmap_,
-				shared_visited_,
-				graph_.row_sums_,
-				graph_.isolated_edges_,
-				graph_.row_starts_,
-				graph_.orig_vertexes_,
-				graph_.edge_array_,
-				buffer);
-#else // #if LOW_LEVEL_FUNCTION
-#if ISOLATE_FIRST_EDGE
-#pragma omp for
-		for(int64_t blk_bmp_off = 0; blk_bmp_off < int64_t(half_bitmap_width); ++blk_bmp_off) {
-			BitmapType row_bmp_i = *(graph_.row_bitmap_ + phase_bmp_off + blk_bmp_off);
+		const BitmapType* __restrict__ row_bitmap = graph_.row_bitmap_;
+		const BitmapType* __restrict__ shared_visited = shared_visited_;
+		const TwodVertex* __restrict__ row_sums = graph_.row_sums_;
+		const int64_t* __restrict__ isolated_edges = graph_.isolated_edges_;
+		const int64_t* __restrict__ row_starts = graph_.row_starts_;
+		const LocalVertex* __restrict__ orig_vertexes = graph_.orig_vertexes_;
+		const int64_t* __restrict__ edge_array = graph_.edge_array_;
+
+		//TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
+		int num_send = 0;
+#if CONSOLIDATE_IFE_PROC
+		for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
+			BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
 			BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
-			TwodVertex bmp_row_sums = *(graph_.row_sums_ + phase_bmp_off + blk_bmp_off);
+			TwodVertex bmp_row_sums = *(row_sums + phase_bmp_off + blk_bmp_off);
 			BitmapType bit_flags = (~visited_i) & row_bmp_i;
 			while(bit_flags != BitmapType(0)) {
-				BitmapType vis_bit, mask; int idx;
-				NEXT_BIT(bit_flags, vis_bit, mask, idx);
+				BitmapType vis_bit = bit_flags & (-bit_flags);
+				BitmapType mask = vis_bit - 1;
+				bit_flags &= ~vis_bit;
+				int idx = __builtin_popcountl(mask);
 				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
+				LocalVertex tgt_orig = orig_vertexes[non_zero_idx];
 				// short cut
-				TwodVertex src = graph_.isolated_edges_[non_zero_idx];
-				if(shared_visited_[src >> LOG_NBPE] & (BitmapType(1) << (src & NBPE_MASK))) {
+				int64_t src = isolated_edges[non_zero_idx];
+				TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
+				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
-#if STREAM_UPDATE
-					if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
-						visited_count += packet.length;
-						PROF(profiling::TimeKeeper tk_commit);
-						comm_.send<false>(packet.data.b, packet.length, target_rank);
-						PROF(ts_commit += tk_commit);
-						packet.length = 0;
-					}
-					packet.data.b[packet.length+0] = src;
-					packet.data.b[packet.length+1] = (phase_bmp_off + blk_bmp_off) * NBPE + idx;
-					packet.length += 2;
-#else
-					if(buf->full()) {
-						nq_.push(buf); buf = nq_empty_buffer_.get();
-					}
-					buf->append_nocheck(src, blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
+					buffer->data.b[num_send+0] = src >> lgl;
+					buffer->data.b[num_send+1] = tgt_orig;
+					num_send += 2;
 					// end this row
 					VERVOSE(tmp_edge_relax += 1);
 					continue;
 				}
-			} // while(bit_flags != BitmapType(0)) {
-			// write back
-			*(phase_bitmap + blk_bmp_off) = visited_i;
-		} // #pragma omp for
-		PROF(profiling::TimeSpan ts_ife(tk_all); ts_ife -= ts_commit; ts_commit.reset());
-		PROF(isolated_edge_time_ += ts_ife);
-#endif // #if ISOLATE_FIRST_EDGE
-
-#pragma omp for nowait
-		for(int64_t blk_bmp_off = 0; blk_bmp_off < int64_t(half_bitmap_width); ++blk_bmp_off) {
-			BitmapType row_bmp_i = *(graph_.row_bitmap_ + phase_bmp_off + blk_bmp_off);
-			BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
-			TwodVertex bmp_row_sums = *(graph_.row_sums_ + phase_bmp_off + blk_bmp_off);
-			BitmapType bit_flags = (~visited_i) & row_bmp_i;
-			while(bit_flags != BitmapType(0)) {
-				BitmapType vis_bit, mask; int idx;
-				NEXT_BIT(bit_flags, vis_bit, mask, idx);
-				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
-				int64_t e_start = graph_.row_starts_[non_zero_idx];
-				int64_t e_end = graph_.row_starts_[non_zero_idx+1];
+				int64_t e_start = row_starts[non_zero_idx];
+				int64_t e_end = row_starts[non_zero_idx+1];
 				for(int64_t e = e_start; e < e_end; ++e) {
-					TwodVertex src = graph_.edge_array_[e];
-					if(shared_visited_[src >> LOG_NBPE] & (BitmapType(1) << (src & NBPE_MASK))) {
+					int64_t src = edge_array[e];
+					TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
+					if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 						// add to next queue
 						visited_i |= vis_bit;
-#if STREAM_UPDATE
-						if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
-							visited_count += packet.length;
-							PROF(profiling::TimeKeeper tk_commit);
-							comm_.send<false>(packet.data.b, packet.length, target_rank);
-							PROF(ts_commit += tk_commit);
-							packet.length = 0;
-						}
-						packet.data.b[packet.length+0] = src;
-						packet.data.b[packet.length+1] = (phase_bmp_off + blk_bmp_off) * NBPE + idx;
-						packet.length += 2;
-#else
-						if(buf->full()) {
-							nq_.push(buf); buf = nq_empty_buffer_.get();
-						}
-						buf->append_nocheck(src, blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
+						buffer->data.b[num_send+0] = src >> lgl;
+						buffer->data.b[num_send+1] = tgt_orig;
+						num_send += 2;
 						// end this row
 						VERVOSE(tmp_edge_relax += e - e_start + 1);
 						break;
@@ -1791,25 +1729,138 @@ public:
 			} // while(bit_flags != BitmapType(0)) {
 			// write back
 			*(phase_bitmap + blk_bmp_off) = visited_i;
-		} // #pragma omp for nowait
-#endif // #if LOW_LEVEL_FUNCTION
+		} // #pragma omp for
 
-		PROF(extract_edge_time_ += tk_all);
-#if STREAM_UPDATE
-		visited_count += buffer->length / 2;
-		flush_bottom_up_send_buffer(buffer, target_rank);
-#else
-		tlb->cur_buffer = buf;
-		visited_count += buf->length;
-		int num_bufs_nq_after = nq_.stack_.size();
-		for(int i = num_bufs_nq_before; i < num_bufs_nq_after; ++i) {
-			visited_count += nq_.stack_[i]->length;
-		}
-#endif
-		PROF(commit_time_ += tk_all);
+#else // #if CONSOLIDATE_IFE_PROC
+		for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
+			BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
+			BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
+			TwodVertex bmp_row_sums = *(row_sums + phase_bmp_off + blk_bmp_off);
+			BitmapType bit_flags = (~visited_i) & row_bmp_i;
+			while(bit_flags != BitmapType(0)) {
+				BitmapType vis_bit = bit_flags & (-bit_flags);
+				BitmapType mask = vis_bit - 1;
+				bit_flags &= ~vis_bit;
+				int idx = __builtin_popcountl(mask);
+				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
+				// short cut
+				TwodVertex separated_src = isolated_edges[non_zero_idx];
+				TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
+					// add to next queue
+					visited_i |= vis_bit;
+					buffer->data.b[num_send+0] = separated_src;
+					buffer->data.b[num_send+1] = (phase_bmp_off + blk_bmp_off) * PRM::NBPE + idx;
+					num_send += 2;
+				}
+			} // while(bit_flags != BitmapType(0)) {
+			// write back
+			*(phase_bitmap + blk_bmp_off) = visited_i;
+		} // #pragma omp for
+
+		for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
+			BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
+			BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
+			TwodVertex bmp_row_sums = *(row_sums + phase_bmp_off + blk_bmp_off);
+			BitmapType bit_flags = (~visited_i) & row_bmp_i;
+			while(bit_flags != BitmapType(0)) {
+				BitmapType vis_bit = bit_flags & (-bit_flags);
+				BitmapType mask = vis_bit - 1;
+				bit_flags &= ~vis_bit;
+				int idx = __builtin_popcountl(mask);
+				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
+				int64_t e_start = row_starts[non_zero_idx];
+				int64_t e_end = row_starts[non_zero_idx+1];
+				for(int64_t e = e_start; e < e_end; ++e) {
+					TwodVertex separated_src = edge_array[e];
+					TwodVertex bit_idx = (separated_src >> lgl) * L + (separated_src & lmask);
+					if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
+						// add to next queue
+						visited_i |= vis_bit;
+						buffer->data.b[num_send+0] = separated_src;
+						buffer->data.b[num_send+1] = (phase_bmp_off + blk_bmp_off) * PRM::NBPE + idx;
+						num_send += 2;
+						// end this row
+						break;
+					}
+				}
+			} // while(bit_flags != BitmapType(0)) {
+			// write back
+			*(phase_bitmap + blk_bmp_off) = visited_i;
+		} // #pragma omp for
+#endif // #if CONSOLIDATE_IFE_PROC
+
+		buffer->length = num_send;
 		VERVOSE(__sync_fetch_and_add(&num_edge_bottom_up_, tmp_edge_relax));
-		USER_END(bu_bmp_step);
+	}
+
+	// returns the number of vertices found in this step.
+	int bottom_up_search_bitmap_process_step(
+			BottomUpSubstepData& data,
+			int step_bitmap_width,
+			volatile int* process_counter,
+			int target_rank)
+	{
+		USER_START(bu_bmp_step);
+
+		BitmapType* phase_bitmap = (BitmapType*)data.data;
+		int phase_bmp_off = data.tag.region_id * step_bitmap_width;
+		//TwodVertex L = graph_.num_local_verts_;
+		//TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
+		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
+		LocalPacket* buffer = tlb->fold_packet;
+
+		PROF(profiling::TimeKeeper tk_all);
+		PROF(profiling::TimeSpan ts_commit);
+
+#ifndef NDEBUG
+		assert (buffer->length == 0);
+		assert (*process_counter == 0);
 		thread_sync_.barrier();
+#endif
+		int tid = omp_get_thread_num();
+		int num_threads = omp_get_num_threads();
+
+#if 1 // dynamic partitioning
+		int visited_count = 0;
+		int block_width = step_bitmap_width / 40 + 1;
+		while(true) {
+			int off_start = __sync_fetch_and_add(process_counter, block_width);
+			if(off_start >= step_bitmap_width) break; // finish
+			int off_end = std::min(step_bitmap_width, off_start + block_width);
+
+			bottom_up_search_bitmap_process_block(phase_bitmap,
+					off_start, off_end, phase_bmp_off, buffer);
+			PROF(extract_edge_time_ += tk_all);
+
+			if(tid == 0) {
+				// process async communication
+				bottom_up_substep_->probe();
+			}
+
+			visited_count += buffer->length / 2;
+			flush_bottom_up_send_buffer(buffer, target_rank);
+
+			PROF(commit_time_ += tk_all);
+		}
+#else // static partitioning
+		int width_per_thread = (step_bitmap_width + num_threads - 1) / num_threads;
+		int off_start = std::min(step_bitmap_width, width_per_thread * tid);
+		int off_end = std::min(step_bitmap_width, off_start + width_per_thread);
+
+		bottom_up_search_bitmap_process_block(phase_bitmap,
+				off_start, off_end, phase_bmp_off, buffer);
+		PROF(extract_edge_time_ += tk_all);
+
+		int visited_count = buffer->length / 2;
+		flush_bottom_up_send_buffer(buffer, target_rank);
+
+		PROF(commit_time_ += tk_all);
+#endif
+		USER_END(bu_bmp_step);
+
+		thread_sync_.barrier();
+
 		PROF(extract_thread_wait_ += tk_all);
 		return visited_count;
 	}
@@ -2027,6 +2078,7 @@ public:
 		BitmapType *new_vis[BU_SUBSTEP];
 		get_visited_pointers(new_vis, BU_SUBSTEP, new_visited_, BU_SUBSTEP);
 		int comm_size = mpi.size_2dc;
+		volatile int process_counter = 0;
 
 		// since the first 4 buffer contains initial data, skip this region
 		bottom_up_substep_->begin(bitmap_buffer + BU_SUBSTEP, buffer_count - BU_SUBSTEP,
@@ -2040,8 +2092,7 @@ public:
 			SET_OMP_AFFINITY;
 			int tid = omp_get_thread_num();
 			for(int step = 0; step < total_steps; ++step) {
-#pragma omp master
-				{
+				if(tid == 0) {
 					if(step < BU_SUBSTEP) {
 						data.data = bitmap_buffer[step];
 						data.tag.length = step_bitmap_width;
@@ -2055,6 +2106,7 @@ public:
 						bottom_up_substep_->recv(&data);
 						PROF(comm_wait_time_ += tk_all);
 					}
+					process_counter = 0;
 				}
 				thread_sync_.barrier();
 
@@ -2071,9 +2123,9 @@ public:
 				}
 				else {
 					visited_count[data.tag.routed_count + tid * comm_size] +=
-							bottom_up_search_bitmap_process_step(data, step_bitmap_width, target_rank);
-#pragma omp master
-					{
+							bottom_up_search_bitmap_process_step(
+									data, step_bitmap_width, &process_counter, target_rank);
+					if(tid == 0) {
 						if(step < BU_SUBSTEP) {
 							bottom_up_substep_->send_first(&data);
 						}
@@ -2084,8 +2136,7 @@ public:
 				}
 			}
 			// wait for local_visited is received.
-#pragma omp master
-			{
+			if(tid == 0) {
 				PROF(profiling::TimeKeeper tk_all);
 				bottom_up_substep_->finish();
 				PROF(comm_wait_time_ += tk_all);
