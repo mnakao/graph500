@@ -227,7 +227,7 @@ public:
 						offset += 3 + length;
 
 						buffer.length -= length;
-						buffer.ptr = (uint8_t*)buffer.ptr + (length * es);
+						buffer.ptr = (int64_t*)buffer.ptr + length;
 
 						if(count + MINIMUM_POINTER_SPACE >= max_size) break;
 					}

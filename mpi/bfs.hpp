@@ -174,7 +174,7 @@ public:
 
 		top_down_comm_.max_num_rows = graph_.num_local_verts_ * 16 / PRM::TOP_DOWN_PENDING_WIDTH + 1000;
 		top_down_comm_.tmp_rows = (TopDownRow*)cache_aligned_xmalloc(
-				top_down_comm_.max_num_rows*sizeof(TopDownRow));
+				top_down_comm_.max_num_rows*2*sizeof(TopDownRow)); // for debug
 
 		thread_local_buffer_ = (ThreadLocalBuffer**)cache_aligned_xmalloc(sizeof(thread_local_buffer_[0])*max_threads);
 
@@ -1250,18 +1250,54 @@ public:
 			uint32_t v = stream[i];
 			if(v & 0x80000000u) {
 				int64_t src = (int64_t(v & 0xFFFF) << 32) | stream[i+1];
+				pred_v = src | (int64_t(cur_level) << 48);
 				if(v & 0x40000000u) {
 					int length_i = stream[i+2];
-
-					int put_off = __sync_fetch_and_add(num_rows, 1);
-					rows[put_off].length = length_i;
-					rows[put_off].ptr = &stream[i+3];
-					rows[put_off].src = src;
+					if(length_i < PRM::TOP_DOWN_PENDING_WIDTH) {
+						assert (pred_v != -1);
+						for(int c = 0; c < length_i; ++c) {
+							LocalVertex tgt_local = stream[i+3+c] & lmask;
+							if(growing) {
+								// TODO: which is better ?
+								//LocalVertex tgt_orig = invert_map[tgt_local];
+								const TwodVertex word_idx = tgt_local >> LOG_NBPE;
+								const int bit_idx = tgt_local & NBPE_MASK;
+								const BitmapType mask = BitmapType(1) << bit_idx;
+								if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
+									if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
+										LocalVertex tgt_orig = invert_map[tgt_local];
+										assert (pred[tgt_orig] == -1);
+										pred[tgt_orig] = pred_v;
+										if(buf->full()) {
+											nq_.push(buf); buf = nq_empty_buffer_.get();
+										}
+										buf->append_nocheck(tgt_local);
+									}
+								}
+							}
+							else {
+								LocalVertex tgt_orig = invert_map[tgt_local];
+								if(pred[tgt_orig] == -1) {
+									if(__sync_bool_compare_and_swap(&pred[tgt_orig], -1, pred_v)) {
+										if(buf->full()) {
+											nq_.push(buf); buf = nq_empty_buffer_.get();
+										}
+										buf->append_nocheck(tgt_local);
+									}
+								}
+							}
+						}
+					}
+					else {
+						int put_off = __sync_fetch_and_add(num_rows, 1);
+						rows[put_off].length = length_i;
+						rows[put_off].ptr = &stream[i+3];
+						rows[put_off].src = src;
+					}
 
 					i += 2 + length_i;
 				}
 				else {
-					pred_v = src | (int64_t(cur_level) << 48);
 					i += 1;
 				}
 			}
