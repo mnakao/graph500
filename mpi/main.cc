@@ -104,7 +104,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 /////////////////////
 //	for(int i = root_start; i < num_bfs_roots; ++i) {
 	for(int i = 0; i < num_bfs_roots; ++i) {
-		print_max_memory_usage();
+		VERVOSE(print_max_memory_usage());
 
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
 #if ENABLE_FUJI_PROF

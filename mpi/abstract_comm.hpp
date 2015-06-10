@@ -25,6 +25,7 @@ public:
 	virtual MPI_Datatype data_type() = 0;
 	virtual int element_size() = 0;
 	virtual void received(void* buf, int offset, int length, int from) = 0;
+	virtual void finish() = 0;
 };
 
 class AsyncAlltoallManager {
@@ -251,12 +252,16 @@ public:
 
 			int* recv_offsets = scatter_.get_recv_offsets();
 
-#pragma omp parallel for schedule(dynamic,1)
+#pragma omp parallel for
 			for(int i = 0; i < comm_size_; ++i) {
 				int offset = recv_offsets[i];
 				int length = recv_offsets[i+1] - offset;
 				buffer_provider_->received(recvbuf, offset, length, i);
 			}
+			PROF(recv_proc_time_ += tk_all);
+
+			buffer_provider_->finish();
+			PROF(recv_proc_large_time_ += tk_all);
 		}
 
 		// clear
@@ -265,7 +270,6 @@ public:
 			node.send_ptr.clear();
 		}
 
-		PROF(recv_proc_time_ += tk_all);
 	}
 
 	void run() {
@@ -332,10 +336,13 @@ public:
 		PROF(recv_proc_time_ += tk_all);
 	}
 #if PROFILING_MODE
-	void submit_prof_info(int level) {
+	void submit_prof_info(int level, bool with_ptr) {
 		merge_time_.submit("merge a2a data", level);
 		comm_time_.submit("a2a comm", level);
 		recv_proc_time_.submit("proc recv data", level);
+		if(with_ptr) {
+			recv_proc_large_time_.submit("proc recv large data", level);
+		}
 		profiling::g_pis.submitCounter(last_send_size_, "a2a send data", level);
 		profiling::g_pis.submitCounter(last_recv_size_, "a2a recv data", level);
 	}
@@ -364,6 +371,7 @@ private:
 	PROF(profiling::TimeSpan merge_time_);
 	PROF(profiling::TimeSpan comm_time_);
 	PROF(profiling::TimeSpan recv_proc_time_);
+	PROF(profiling::TimeSpan recv_proc_large_time_);
 	VERVOSE(int last_send_size_);
 	VERVOSE(int last_recv_size_);
 
