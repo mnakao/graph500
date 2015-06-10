@@ -330,7 +330,7 @@ void* xMPI_Alloc_mem(size_t nbytes) {
   if (nbytes != 0 && !p) {
 	  throw_exception("MPI_Alloc_mem failed for size%zu (%"PRId64") byte(s)", nbytes, (int64_t)nbytes);
   }
-#ifdef VERVOSE_MODE
+#if VERVOSE_MODE
   if(mpi.isMaster() && nbytes > 1024*1024) {
     fprintf(IMD_OUT, "[MEM-MPI] + %f MB\n", (double)nbytes / (1024*1024));
   }
@@ -1405,9 +1405,9 @@ static void setup_2dcomm()
 				}
 			}
 			compute_rank(ss_c, rs_c, mpi.comm_r);
-			if(mpi.isMaster()) print_dims("C: ", ss_r);
+			if(mpi.isMaster()) print_dims("R: ", ss_r);
 			compute_rank(ss_r, rs_r, mpi.comm_c);
-			if(mpi.isMaster()) print_dims("R: ", ss_c);
+			if(mpi.isMaster()) print_dims("C: ", ss_c);
 
 			mpi.size_2dr = mpi.comm_c.size;
 			mpi.size_2dc = mpi.comm_r.size;
