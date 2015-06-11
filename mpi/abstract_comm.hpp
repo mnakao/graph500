@@ -222,7 +222,7 @@ public:
 						dst_ptr[2] = length;
 						dst_ptr += 3;
 						for(int i = 0; i < length; ++i) {
-							dst_ptr[i] = ptr[i] & 0x8FFFFFFF;
+							dst_ptr[i] = ptr[i] & 0x7FFFFFFF;
 						}
 						offset += 3 + length;
 
@@ -276,6 +276,8 @@ public:
 		// merge
 		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
+		VERVOSE(last_send_size_ = 0);
+		VERVOSE(last_recv_size_ = 0);
 		USER_START(a2a_merge);
 #pragma omp parallel
 		{
