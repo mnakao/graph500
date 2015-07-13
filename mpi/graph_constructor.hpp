@@ -284,6 +284,15 @@ struct DegreeCalculation {
 	}
 
 private:
+
+	template <typename T> struct ZeroOrElseComparator {
+		bool operator()(const T& x, const T& y) {
+			int xx = (x != 0);
+			int yy = (y != 0);
+			return xx > yy;
+		}
+	};
+
 	LocalVertex* calc_degree() {
 		if(mpi.isMaster()) print_with_prefix("Counting degree.");
 
@@ -306,12 +315,16 @@ private:
 		}
 
 		// sort by degree
+#if VERTEX_REORDERING == 2
 		sort2(degree, vertexes_, num_verts, std::greater<int64_t>());
+#elif VERTEX_REORDERING == 1
+		sort2(degree, vertexes_, num_verts, ZeroOrElseComparator<int64_t>());
+#endif
 
-		max_local_verts_ = num_verts;
-		for(int64_t i = 0; i < num_verts; ++i) {
-			if(degree[i] == 0) {
-				max_local_verts_ = i;
+		max_local_verts_ = 0;
+		for(int64_t i = num_verts-1; i >= 0; --i) {
+			if(degree[i] != 0) {
+				max_local_verts_ = i+1;
 				break;
 			}
 		}

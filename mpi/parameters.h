@@ -26,12 +26,19 @@
 // Note: To conform to the specification, you must set 2
 #define VALIDATION_LEVEL 2
 
+// General Settings
 #define PRINT_WITH_TIME 1
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define REPORT_GEN_RPGRESS 0
-#define TOP_DOWN_LOAD_BALANCE 1
-#define OVERLAP_WAVE_AND_PRED 0
+
+// General Optimizations
+// 0: completely off, 1: only reduce isolated vertices, 2: sort by degree and reduce isolated vertices
+#define VERTEX_REORDERING 0
+// 0: put all edges to temporally buffer, 1: count first, 2: hybrid
+#define TOP_DOWN_SEND_LB 2
+#define TOP_DOWN_RECV_LB 1
+#define BOTTOM_UP_OVERLAP_PFS 1
 
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
@@ -67,14 +74,7 @@
 // But this is not true in the general case. BFS may generate wrong answer in some situation.
 #define INIT_PRED_ONCE 0
 
-// Optimization for backward communication sub steps.
-#define STREAM_UPDATE 1
-#define BF_DEEPER_ASYNC 1
-
 #define PRE_EXEC_TIME 0 // 300 seconds
-
-#define VERTEX_SORTING 0 // do not support backward search
-#define LOW_LEVEL_FUNCTION 1
 
 #define BACKTRACE_ON_SIGNAL 0
 #define PRINT_BT_SIGNAL SIGTRAP

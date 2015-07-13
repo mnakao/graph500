@@ -269,6 +269,9 @@ protected:
 		send_pair[2] = send_pair[0];
 		send_pair[3] = send_pair[1];
 		is_active = true;
+#if !BOTTOM_UP_OVERLAP_PFS // if overlapping is disabled
+		next_recv_probe(true);
+#endif
 	}
 };
 

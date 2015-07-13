@@ -866,92 +866,8 @@ public:
 		if(mpi.isYdimAvailable()) s_.sync->barrier();
 	}
 
-#if !STREAM_UPDATE
-	void bottom_up_update_pred() {
-		ScatterContext scatter(mpi.comm_2dr);
-		int comm_size = comm_size;
-		int num_bufs = nq_.stack_.size();
-		int lgl = graph_.lgl_;
-
-		TwodVertex* send_buf, recv_buf;
-
-#pragma omp parallel
-		{
-			int* counts = scatter.get_counts();
-
-#pragma omp for
-			for(int b = 0; b < num_bufs; ++b) {
-				int length = nq_.stack_[b]->length;
-				TwodVertex* data = nq_.stack_[b]->v;
-				for(int i = 0; i < length; i += 2) {
-					counts[data[i+1] >> lgl] += 2;
-				}
-			} // implicit barrier
-		}
-
-		scatter.sum();
-		send_buf = (TwodVertex*)page_aligned_xcalloc(scatter.get_send_count()*sizeof(TwodVertex));
-
-#pragma omp parallel
-		{
-			int* offsets = scatter.get_offsets();
-
-#pragma omp for
-			for(int b = 0; b < num_bufs; ++b) {
-				int length = nq_.stack_[b]->length;
-				TwodVertex* data = nq_.stack_[b]->v;
-				for(int i = 0; i < length; i += 2) {
-					int dest = data[i+1] >> lgl;
-					int off = offsets[dest]; offsets[dest] += 2;
-					send_buf[off+0] = data[i+0]; // pred
-					send_buf[off+1] = data[i+1]; // tgt
-				}
-			} // implicit barrier
-#pragma omp single
-			{
-				recv_buf = scatter.scatter(send_buf);
-				int *recv_offsets = scatter.get_recv_offsets();
-				for(int i = 0; i < comm_size; ++i) {
-					recv_offsets[i+1] /= 2;
-				}
-			} // implicit barrier
-
-			int parts_per_blk = (omp_get_num_threads() * 4 + comm_size - 1) / comm_size;
-			int num_parts = comm_size * parts_per_blk;
-
-#pragma omp for
-			for(int p = 0; p < num_parts; ++p) {
-				int begin, end;
-				get_partition(scatter.get_recv_offsets(), comm_size, p, parts_per_blk, begin, end);
-				int lgl = graph_.lgl_;
-				int lgsize = graph_.lgr_ + graph_.lgc_;
-				TwodVertex lmask = (TwodVertex(1) << lgl) - 1;
-				int64_t cshifted = int64_t(p / parts_per_blk) << graph_.lgr_;
-				int64_t levelshifted = int64_t(current_level_) << 48;
-				int64_t const_mask = cshifted | levelshifted;
-				for(int i = begin; i < end; ++i) {
-					TwodVertex pred_dst = recv_buf[i*2+0];
-					TwodVertex tgt_local = recv_buf[i*2+1] & lmask;
-					int64_t pred_v = (int64_t(pred_dst & lmask) << lgsize) | const_mask | (pred_dst >> lgl);
-					assert (pred_[tgt_local] == -1);
-					pred_[tgt_local] = pred_v;
-				}
-			} // implicit barrier
-
-#pragma omp single nowait
-			{
-				scatter.free(recv_buf);
-				free(send_buf);
-			}
-		}
-	}
-#endif
-
 	void bottom_up_expand(bool bitmap_or_list) {
 		TRACER(bu_expand);
-#if !STREAM_UPDATE
-		bottom_up_update_pred();
-#endif
 		if(bitmap_or_list) {
 			// bitmap
 			assert (bitmap_or_list_);
@@ -965,9 +881,6 @@ public:
 
 	void bottom_up_switch_expand(bool bitmap_or_list) {
 		TRACER(bu_sw_expand);
-#if !STREAM_UPDATE
-		bottom_up_update_pred();
-#endif
 		if(bitmap_or_list) {
 			// new_visited - old_visited = nq
 			const int bitmap_width = get_bitmap_size_local();
@@ -1052,6 +965,14 @@ public:
 		bool clear_packet_buffer = packet_buffer_is_dirty_;
 		packet_buffer_is_dirty_ = false;
 
+#if TOP_DOWN_SEND_LB == 2
+#define IF_LARGE_EDGE if(e_end - e_start > PRM::TOP_DOWN_PENDING_WIDTH/10)
+#define ELSE else
+#else
+#define IF_LARGE_EDGE
+#define ELSE
+#endif
+
 		debug("begin parallel");
 #pragma omp parallel
 		{
@@ -1111,23 +1032,26 @@ public:
 	#endif // #if ISOLATE_FIRST_EDGE
 						int64_t e_start = graph_.row_starts_[non_zero_off];
 						int64_t e_end = graph_.row_starts_[non_zero_off+1];
-	#if TOP_DOWN_LOAD_BALANCE
-						if(e_end - e_start > PRM::TOP_DOWN_PENDING_WIDTH) {
+						IF_LARGE_EDGE
+#if TOP_DOWN_SEND_LB > 0
+						{
 							top_down_send_large(edge_array, e_start, e_end, lgl, r_mask, src_orig);
 							VERVOSE(num_large_edge += e_end - e_start);
 						}
-						else
-	#endif // #if TOP_DOWN_LOAD_BALANCE
+#endif // #if TOP_DOWN_SEND_LB > 0
+						ELSE
+#if TOP_DOWN_SEND_LB != 1
 						{
 							for(int64_t e = e_start; e < e_end; ++e) {
 								top_down_send(edge_array[e], lgl,
 										r_mask, packet_array, src_orig
-	#if PROFILING_MODE
+#if PROFILING_MODE
 								, ts_commit
-	#endif
+#endif
 									);
 							}
 						}
+#endif // #if TOP_DOWN_SEND_LB != 1
 						VERVOSE(num_edge_relax += e_end - e_start + 1);
 					} // while(bit_flags != BitmapType(0)) {
 				} // #pragma omp for // implicit barrier
@@ -1159,23 +1083,26 @@ public:
 	#endif // #if ISOLATE_FIRST_EDGE
 						int64_t e_start = graph_.row_starts_[non_zero_off];
 						int64_t e_end = graph_.row_starts_[non_zero_off+1];
-	#if TOP_DOWN_LOAD_BALANCE
-						if(e_end - e_start > PRM::TOP_DOWN_PENDING_WIDTH/10) {
+						IF_LARGE_EDGE
+#if TOP_DOWN_SEND_LB > 0
+						{
 							top_down_send_large(edge_array, e_start, e_end, lgl, r_mask, src_orig);
 							VERVOSE(num_large_edge += e_end - e_start);
 						}
-						else
-	#endif // #if TOP_DOWN_LOAD_BALANCE
+#endif // #if TOP_DOWN_SEND_LB > 0
+						ELSE
+#if TOP_DOWN_SEND_LB != 1
 						{
 							for(int64_t e = e_start; e < e_end; ++e) {
 								top_down_send(edge_array[e], lgl,
 										r_mask, packet_array, src_orig
-	#if PROFILING_MODE
+#if PROFILING_MODE
 								, ts_commit
-	#endif
+#endif
 									);
 							}
 						}
+#endif // #if TOP_DOWN_SEND_LB != 1
 						VERVOSE(num_edge_relax += e_end - e_start + 1);
 					} // if(row_bitmap_i & mask) {
 				} // #pragma omp for // implicit barrier
@@ -1203,6 +1130,8 @@ public:
 			VERVOSE(__sync_fetch_and_add(&num_edge_top_down_, num_edge_relax));
 			VERVOSE(__sync_fetch_and_add(&num_td_large_edge_, num_large_edge));
 		} // #pragma omp parallel reduction(+:num_edge_relax)
+#undef IF_LARGE_EDGE
+#undef ELSE
 		PROF(parallel_reg_time_ += tk_all);
 		debug("finished parallel");
 	}
@@ -1342,7 +1271,10 @@ public:
 				pred_v = src | (int64_t(cur_level) << 48);
 				if(v & 0x40000000u) {
 					int length_i = stream[i+2];
-					if(length_i < PRM::TOP_DOWN_PENDING_WIDTH) {
+#if TOP_DOWN_RECV_LB
+					if(length_i < PRM::TOP_DOWN_PENDING_WIDTH)
+#endif // #if TOP_DOWN_RECV_LB
+					{
 						assert (pred_v != -1);
 						for(int c = 0; c < length_i; ++c) {
 							LocalVertex tgt_local = stream[i+3+c] & lmask;
@@ -1377,12 +1309,14 @@ public:
 							}
 						}
 					}
+#if TOP_DOWN_RECV_LB
 					else {
 						int put_off = __sync_fetch_and_add(num_rows, 1);
 						rows[put_off].length = length_i;
 						rows[put_off].ptr = &stream[i+3];
 						rows[put_off].src = src;
 					}
+#endif // #if TOP_DOWN_RECV_LB
 
 					i += 2 + length_i;
 				}
@@ -2214,11 +2148,7 @@ public:
 		}
 
 		USER_END(bu_list_write);
-#if STREAM_UPDATE
 		flush_bottom_up_send_buffer(buffer, target_rank);
-#else
-		tlb->cur_buffer = buf;
-#endif
 		PROF(commit_time_ += tk_all);
 		VERVOSE(__sync_fetch_and_add(&num_blocks, tmp_num_blocks));
 		VERVOSE(__sync_fetch_and_add(&num_edge_bottom_up_, tmp_edge_relax));
@@ -2272,36 +2202,6 @@ public:
 		PROF(gather_nq_time_ += tk_all);
 	}
 
-	void bottom_up_finalize() {
-		TRACER(bu_finalize);
-		PROF(profiling::TimeKeeper tk_all);
-
-#pragma omp for nowait
-		for(int target = 0; target < mpi.size_2dc; ++target) {
-			TRACER(bu_fin_ps);
-			PROF(profiling::TimeKeeper tk_all);
-			PROF(profiling::TimeSpan ts_commit);
-#if !LOW_LEVEL_FUNCTION
-			for(int i = 0; i < omp_get_num_threads(); ++i) {
-				LocalPacket* packet_array =
-						thread_local_buffer_[i]->fold_packet;
-				LocalPacket& pk = packet_array[target];
-				if(pk.length > 0) {
-					PROF(profiling::TimeKeeper tk_commit);
-					comm_.send<false>(pk.data.b, pk.length, target);
-					PROF(ts_commit += tk_commit);
-					packet_array[target].length = 0;
-				}
-			}
-#endif // #if !LOW_LEVEL_FUNCTION
-			PROF(profiling::TimeSpan ts_all(tk_all); ts_all -= ts_commit);
-			PROF(extract_edge_time_ += ts_all);
-			PROF(commit_time_ += ts_commit);
-		}// #pragma omp for nowait
-		PROF(seq_proc_time_ += tk_all);
-	}
-
-#if BF_DEEPER_ASYNC
 	void bottom_up_bmp_parallel_section(int *visited_count) {
 		PROF(profiling::TimeKeeper tk_all);
 		int bitmap_width = get_bitmap_size_local();
@@ -2378,8 +2278,6 @@ public:
 			}
 			thread_sync_.barrier();
 
-			// send the end packet and wait for the communication completion
-			bottom_up_finalize();
 		} // #pragma omp parallel
 		PROF(parallel_reg_time_ += tk_all);
 	}
@@ -2518,7 +2416,6 @@ public:
 			}
 			thread_sync_.barrier();
 
-			bottom_up_finalize();
 		} // #pragma omp parallel
 		PROF(parallel_reg_time_ += tk_all);
 	}
@@ -2557,141 +2454,6 @@ public:
 
 		free(vertex_enabled); vertex_enabled = NULL;
 	}
-#else // #if BF_DEEPER_ASYNC
-	struct BottomUpBitmapComm :  public bfs_detail::BfsAsyncCommumicator::Communicatable {
-		virtual void comm() {
-			MPI_Request req[2];
-			MPI_Isend(send, half_bitmap_width, MpiTypeOf<BitmapType>::type, send_to, 0, mpi.comm_2dr, &req[0]);
-			MPI_Irecv(recv, half_bitmap_width, MpiTypeOf<BitmapType>::type, recv_from, 0, mpi.comm_2dr, &req[1]);
-			MPI_Waitall(2, req, NULL);
-			complete = 1;
-		}
-		int send_to, recv_from;
-		BitmapType* send, recv;
-		int half_bitmap_width;
-		volatile int complete;
-	};
-
-	void bottom_up_search_bitmap() {
-		PROF(profiling::TimeKeeper tk_all);
-		PROF(profiling::TimeKeeper tk_commit);
-		PROF(profiling::TimeSpan ts_commit);
-
-		int half_bitmap_width = get_bitmap_size_local() / 2;
-		BitmapType* bitmap_buffer[NBUF];
-		for(int i = 0; i < NBUF; ++i) {
-			bitmap_buffer[i] = (BitmapType*)work_buf_ + half_bitmap_width*i;
-		}
-		memcpy(bitmap_buffer[0], local_visited_, half_bitmap_width*2*sizeof(BitmapType));
-		int phase = 0;
-		int total_phase = mpi.size_2dc*2;
-		int size_cmask = mpi.size_2dc - 1;
-		BottomUpBitmapComm comm;
-		comm.send_to = (mpi.rank_2dc - 1) & size_cmask;
-		comm.recv_from = (mpi.rank_2dc + 1) & size_cmask;
-		comm.half_bitmap_width = half_bitmap_width;
-
-		for(int phase = 0; phase - 1 < total_phase; ++phase) {
-			int send_phase = phase - 1;
-			int recv_phase = phase + 1;
-
-			if(send_phase >= 0) {
-				comm.send = bitmap_buffer[send_phase & BUFMASK];
-				// send and recv
-				if(recv_phase >= total_phase) {
-					// recv visited
-					int part_idx = recv_phase - total_phase;
-					comm.recv = local_visited_ + half_bitmap_width*part_idx;
-				}
-				else {
-					// recv normal
-					comm.recv = bitmap_buffer[recv_phase & BUFMASK];
-				}
-				comm.complete = 0;
-				comm_.input_command(&comm);
-			}
-			if(phase < total_phase) {
-				BitmapType* phase_bitmap = bitmap_buffer[phase & BUFMASK];
-				TwodVertex phase_bmp_off = ((mpi.rank_2dc * 2 + phase) & size_cmask) * half_bitmap_width;
-				bottom_up_search_bitmap_process_step(phase_bitmap, phase_bmp_off, half_bitmap_width);
-			}
-			if(send_phase >= 0) {
-				while(!comm.complete) sched_yield();
-			}
-		}
-		VERVOSE(botto_up_print_stt(0, 0));
-	}
-	struct BottomUpListComm :  public bfs_detail::BfsAsyncCommumicator::Communicatable {
-		virtual void comm() {
-			MPI_Request req[2];
-			MPI_Status status[2];
-			MPI_Isend(send, send_size, MpiTypeOf<TwodVertex>::type, send_to, 0, mpi.comm_2dr, &req[0]);
-			MPI_Irecv(recv, buffer_size, MpiTypeOf<TwodVertex>::type, recv_from, 0, mpi.comm_2dr, &req[1]);
-			MPI_Waitall(2, req, status);
-			MPI_Get_count(&status[1], MpiTypeOf<TwodVertex>::type, &recv_size);
-			complete = 1;
-		}
-		int send_to, recv_from;
-		TwodVertex* send, recv;
-		int send_size, recv_size, buffer_size;
-		volatile int complete;
-	};
-
-	int bottom_up_search_list(int* list_size, TwodVertex* list_buffer) {
-		PROF(profiling::TimeKeeper tk_all);
-		PROF(profiling::TimeKeeper tk_commit);
-		PROF(profiling::TimeSpan ts_commit);
-
-		int half_bitmap_width = get_bitmap_size_local() / 2;
-		int buffer_size = half_bitmap_width * sizeof(BitmapType) / sizeof(TwodVertex);
-	/*	TwodVertex* list_buffer[NBUF];
-		for(int i = 0; i < NBUF; ++i) {
-			list_buffer[i] = (TwodVertex*)(cq_bitmap_ + half_bitmap_width*i);
-		}*/
-		int8_t* vertex_enabled = (int8_t*)cache_aligned_xcalloc(buffer_size*sizeof(int8_t));
-		int phase = 0;
-		int total_phase = mpi.size_2dc*2;
-		int size_cmask = mpi.size_2dc - 1;
-		BottomUpListComm comm;
-		comm.send_to = (mpi.rank_2dc - 1) & size_cmask;
-		comm.recv_from = (mpi.rank_2dc + 1) & size_cmask;
-		comm.buffer_size = buffer_size;
-		VERVOSE(int64_t num_blocks = 0);
-		VERVOSE(int64_t num_vertexes = 0);
-
-		for(int phase = 0; phase - 1 < total_phase; ++phase) {
-			int send_phase = phase - 2;
-			int write_phase = phase - 1;
-			int recv_phase = phase + 1;
-
-			if(send_phase >= 0) {
-				comm.send_size = list_size[send_phase & BUFMASK];
-				comm.send = list_buffer[send_phase & BUFMASK];
-				comm.recv = list_buffer[recv_phase & BUFMASK];
-				comm.complete = 0;
-				comm_.input_command(&comm);
-			}
-			if(phase < total_phase) {
-				TwodVertex* phase_list = list_buffer[phase & BUFMASK];
-				TwodVertex* write_list = list_buffer[write_phase & BUFMASK];
-				int phase_size = list_size[phase & BUFMASK];
-				TwodVertex phase_bmp_off = ((mpi.rank_2dc * 2 + phase) & size_cmask) * half_bitmap_width;
-				bottom_up_search_list_process_step(
-#if VERVOSE_MODE
-						num_vertexes, num_blocks,
-#endif
-						phase_list, phase_size, vertex_enabled, write_list, phase_bmp_off, half_bitmap_width);
-			}
-			if(send_phase >= 0) {
-				while(!comm.complete) sched_yield();
-				list_size[recv_phase & BUFMASK] = comm.recv_size;
-			}
-		}
-		VERVOSE(botto_up_print_stt(num_blocks, num_vertexes));
-		free(vertex_enabled); vertex_enabled = NULL;
-		return total_phase;
-	}
-#endif // #if BF_DEEPER_ASYNC
 
 	struct BottomUpReceiver : public Runnable {
 		BottomUpReceiver(ThisType* this_, int64_t* buffer_, int length_, int src_)
@@ -2759,20 +2521,18 @@ public:
 
 		PRINT_VAL("%d", BFELL);
 
+		PRINT_VAL("%d", VERTEX_REORDERING);
+		PRINT_VAL("%d", TOP_DOWN_SEND_LB);
+		PRINT_VAL("%d", TOP_DOWN_RECV_LB);
+		PRINT_VAL("%d", BOTTOM_UP_OVERLAP_PFS);
+
 		PRINT_VAL("%d", ISOLATE_FIRST_EDGE);
-		PRINT_VAL("%d", DEGREE_ORDER);
-		PRINT_VAL("%d", DEGREE_ORDER_ONLY_IE);
 		PRINT_VAL("%d", CONSOLIDATE_IFE_PROC);
 
 		PRINT_VAL("%d", INIT_PRED_ONCE);
 
-		PRINT_VAL("%d", STREAM_UPDATE);
-		PRINT_VAL("%d", BF_DEEPER_ASYNC);
-
 		PRINT_VAL("%d", PRE_EXEC_TIME);
 
-		PRINT_VAL("%d", VERTEX_SORTING);
-		PRINT_VAL("%d", LOW_LEVEL_FUNCTION);
 		PRINT_VAL("%d", BACKTRACE_ON_SIGNAL);
 #if BACKTRACE_ON_SIGNAL
 		PRINT_VAL("%d", PRINT_BT_SIGNAL);

@@ -102,8 +102,8 @@ void graph500_bfs(int SCALE, int edgefactor)
                MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
         }
 /////////////////////
-//	for(int i = root_start; i < num_bfs_roots; ++i) {
-	for(int i = 0; i < num_bfs_roots; ++i) {
+	for(int i = root_start; i < num_bfs_roots; ++i) {
+	//for(int i = 0; i < num_bfs_roots; ++i) {
 		VERVOSE(print_max_memory_usage());
 
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
