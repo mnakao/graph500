@@ -1650,6 +1650,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 
 #ifdef _OPENMP
 	if(mpi.isRmaster()){
+	  print_with_prefix("OpenMP version : %d", _OPENMP);
 #if _OPENMP >= 200805
 	  omp_sched_t kind;
 	  int modifier;
@@ -1670,8 +1671,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		  break;
 	  }
 	  print_with_prefix("OpenMP default scheduling : %s, %d", kind_str, modifier);
-#else
-	  print_with_prefix("OpenMP version : %d", _OPENMP);
 #endif
 	}
 #endif
@@ -3430,6 +3429,7 @@ public:
 	}
 	double getSpan() {
 		return (double)span_ / 1000000.0;
+		return 0;
 	}
 private:
 	int64_t span_;

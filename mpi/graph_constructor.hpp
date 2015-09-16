@@ -56,6 +56,13 @@ public:
 		free(invert_map_); invert_map_ = NULL;
 		MPI_Free_mem(orig_vertexes_); orig_vertexes_ = NULL;
 		free(has_edge_bitmap_); has_edge_bitmap_ = NULL;
+#if USE_DCSC
+		free(dcsc_aux_); dcsc_aux_ = NULL;
+		free(dcsc_jc_); dcsc_jc_ = NULL;
+#endif
+#if USE_COARSE_INDEX
+		free(coarse_index_); coarse_index_ = NULL;
+#endif
 		free(edge_array_); edge_array_ = NULL;
 		free(row_starts_); row_starts_ = NULL;
 		free(isolated_edges_); isolated_edges_ = NULL;
@@ -123,9 +130,16 @@ public:
 	LocalVertex* reorder_map_; // Index: Pred
 	LocalVertex* invert_map_; // Index: Reordered Pred
 	LocalVertex* orig_vertexes_; // Index: CSI
-
-	int64_t* edge_array_;
-	int64_t* row_starts_; // Index: CSI
+#if USE_DCSC
+	int rows_per_aux_;
+	TwodVertex* dcsc_aux_; // for DCSC
+	TwodVertex* dcsc_jc_; // for DCSC
+#endif
+#if USE_COARSE_INDEX
+	int64_t* coarse_index_;
+#endif
+	int64_t* edge_array_; // also IR for DCSC
+	int64_t* row_starts_; // Index: CSI, also CP for DCSC
 	int64_t* isolated_edges_; // Index: CSI
 
 	int log_orig_global_verts_; // estimated SCALE parameter
@@ -368,8 +382,8 @@ private:
 #pragma omp for
 			for(int r = 0; r < num_rows_; ++r) {
 				std::vector<DWideRowEdge>& row_data = dwide_row_data_[r];
-				for(int64_t c = 0; c < int64_t(row_data.size()); ++c) {
-					DWideRowEdge& edge = row_data[c];
+				for(int64_t i = 0; i < int64_t(row_data.size()); ++i) {
+					DWideRowEdge& edge = row_data[i];
 					int c = edge.c;
 					TwodVertex local = r * BLOCK_SIZE + edge.src_vertex;
 					LocalVertex reordred = reorder_map[local];
@@ -841,6 +855,7 @@ private:
 	}
 
 	void isolateFirstEdge(GraphType& g) {
+#if ISOLATE_FIRST_EDGE
 		const int64_t num_local_verts = g.num_local_verts_;
 		const int64_t local_bitmap_width = num_local_verts / NBPE;
 		const int64_t row_bitmap_length = local_bitmap_width * mpi.size_2dc;
@@ -856,6 +871,22 @@ private:
 		MPI_Barrier(mpi.comm_2d);
 
 		if(mpi.isMaster()) print_with_prefix("Compacting edge array.");
+#if USE_COARSE_INDEX
+		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
+
+		for(int64_t i = 0; i < src_region_length; ++i) {
+			int64_t word_idx = i / NBPE;
+			int bit_idx = i % NBPE;
+			BitmapType low_mask = (BitmapType(1) << bit_idx) - 1;
+			TwodVertex non_zero_idx = g.row_sums_[word_idx] +
+					__builtin_popcountl(g.row_bitmap_[word_idx] & low_mask);
+			int64_t e_start = g.row_starts_[non_zero_idx];
+			int64_t e_end = g.row_starts_[non_zero_idx + 1];
+			int64_t e_length = e_end - e_start;
+
+			g.edge_array_[e_start] = (int64_t(e_length - 1) << 8) | bit_idx;
+		}
+#else
 		// This loop cannot be parallelized.
 		for(int64_t non_zero_idx = 0; non_zero_idx < non_zero_rows; ++non_zero_idx) {
 			int64_t e_start = g.row_starts_[non_zero_idx];
@@ -872,8 +903,34 @@ private:
 		if(g.row_starts_[non_zero_rows] != 0 && g.edge_array_ == NULL) {
 			throw_exception("Out of memory trying to re-allocate edge array");
 		}
+#endif
 
 		if(mpi.isMaster()) print_with_prefix("Finished compacting edge array.");
+#endif
+	}
+
+	void makeDCSCaux(GraphType& g) {
+#if USE_DCSC
+		const int64_t num_local_verts = g.num_local_verts_;
+		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
+		const int64_t local_bitmap_width = num_local_verts / NBPE;
+		const int64_t row_bitmap_length = local_bitmap_width * mpi.size_2dc;
+		const int64_t non_zero_rows = g.row_sums_[row_bitmap_length];
+
+		g.rows_per_aux_ = src_region_length / non_zero_rows;
+		const int64_t aux_length = (src_region_length + g.rows_per_aux_ - 1) / g.rows_per_aux_;
+		g.dcsc_aux_ = static_cast<TwodVertex*>(
+				cache_aligned_xmalloc((aux_length+1)*sizeof(g.dcsc_aux_[0])));
+
+		for(int64_t i = 0; i < aux_length; ++i) {
+			TwodVertex src_i = i * g.rows_per_aux_;
+			TwodVertex word_idx = src_i / NBPE;
+			TwodVertex bit_idx = src_i % NBPE;
+			BitmapType mask = (BitmapType(1) << bit_idx) - 1;
+			g.dcsc_aux_[i] = __builtin_popcountl(g.row_bitmap_[word_idx] & mask) + g.row_sums_[word_idx];
+		}
+		g.dcsc_aux_[aux_length] = non_zero_rows;
+#endif
 	}
 
 	void constructFromWideCSR(GraphType& g) {
@@ -895,6 +952,10 @@ private:
 		const int64_t non_zero_rows = g.row_sums_[row_bitmap_length];
 		int64_t* row_starts = static_cast<int64_t*>
 			(cache_aligned_xmalloc((non_zero_rows+1)*sizeof(int64_t)));
+#if USE_DCSC
+		g.dcsc_jc_ = static_cast<TwodVertex*>
+			(cache_aligned_xmalloc((non_zero_rows+1)*sizeof(TwodVertex)));
+#endif
 
 		if(mpi.isMaster()) print_with_prefix("Computing row_starts.");
 #pragma omp parallel for
@@ -914,6 +975,9 @@ private:
 					BitmapType word = g.row_bitmap_[word_idx] & ((BitmapType(1) << bit_idx) - 1);
 					TwodVertex row_offset = __builtin_popcountl(word) + g.row_sums_[word_idx];
 					row_starts[row_offset] = edge_offset;
+#if USE_DCSC
+					g.dcsc_jc_[row_offset] = part_base + i;
+#endif
 					edge_offset += row_length[i];
 				}
 				else {
@@ -923,6 +987,14 @@ private:
 			assert (edge_offset == wide_row_starts_[part_idx+1]);
 		}
 		row_starts[non_zero_rows] = wide_row_starts_[num_wide_rows_];
+
+#if USE_COARSE_INDEX
+		g.coarse_index_ = static_cast<int64_t*>
+			(cache_aligned_xmalloc((row_bitmap_length+1)*sizeof(int64_t)));
+		for(int64_t word_idx = 0; word_idx <= row_bitmap_length; ++word_idx) {
+			g.coarse_index_[word_idx] = row_starts[g.row_sums_[word_idx]];
+		}
+#endif
 
 #ifndef NDEBUG
 		// check row_starts
@@ -951,9 +1023,9 @@ private:
 		free(src_vertexes_); src_vertexes_ = NULL;
 
 		g.row_starts_ = row_starts;
-#if ISOLATE_FIRST_EDGE
+
 		isolateFirstEdge(g);
-#endif // #if ISOLATE_FIRST_EDGE || DEGREE_ORDER
+		makeDCSCaux(g);
 
 #if VERVOSE_MODE
 		int64_t send_rowbmp[5] = { non_zero_rows, row_bitmap_length*NBPE, num_local_edges, 0, 0 };

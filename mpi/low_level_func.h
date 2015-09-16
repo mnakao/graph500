@@ -16,6 +16,7 @@ struct LocalPacket {
 		BOTTOM_UP_LENGTH = PRM::PACKET_LENGTH/sizeof(int64_t)
 	};
 	int length;
+	int src_start;
 	int64_t src;
 	union {
 		uint32_t t[TOP_DOWN_LENGTH];

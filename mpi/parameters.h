@@ -31,14 +31,32 @@
 #define VERVOSE_MODE 1
 #define PROFILING_MODE 1
 #define REPORT_GEN_RPGRESS 0
+#define PRINT_RECEIVER_DETAIL 0
 
 // General Optimizations
 // 0: completely off, 1: only reduce isolated vertices, 2: sort by degree and reduce isolated vertices
-#define VERTEX_REORDERING 0
+#define VERTEX_REORDERING 2
 // 0: put all edges to temporally buffer, 1: count first, 2: hybrid
 #define TOP_DOWN_SEND_LB 2
+// 0: disable receive load balance, 1: enable receive load balance
 #define TOP_DOWN_RECV_LB 1
+// 0: disable overlap, 1: enable overlap
 #define BOTTOM_UP_OVERLAP_PFS 1
+// 0: DCSC, 1: Coarse Index, 2:Bitmap
+#define GRAPH_REPRESENTATION 2
+//
+#define EMBED_ORIG_PRED 0
+
+#if GRAPH_REPRESENTATION == 0
+#define USE_DCSC 1
+#define USE_COARSE_INDEX 0
+#elif GRAPH_REPRESENTATION == 1
+#define USE_DCSC 0
+#define USE_COARSE_INDEX 1
+#else
+#define USE_DCSC 0
+#define USE_COARSE_INDEX 0
+#endif
 
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
@@ -46,6 +64,7 @@
 #define ENABLE_MY_ALLGATHER 1
 #define ENABLE_INLINE_ATOMICS 0
 #define ENABLE_FUJI_PROF 0
+#define ENABLE_MY_BARRIER 1
 
 // root switch to on/off debug print
 #define DEBUG_PRINT 0

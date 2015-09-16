@@ -24,7 +24,7 @@ public:
 	virtual int buffer_length() = 0;
 	virtual MPI_Datatype data_type() = 0;
 	virtual int element_size() = 0;
-	virtual void received(void* buf, int offset, int length, int from) = 0;
+	virtual void received(void* buf, int offset, int length, int from, int64_t* debug = NULL) = 0;
 	virtual void finish() = 0;
 };
 
@@ -217,12 +217,12 @@ public:
 							count += size;
 						}
 						uint32_t* dst_ptr = (uint32_t*)&dst[offset * es];
-						dst_ptr[0] = (buffer.header >> 32) | 0x80000000u | 0x40000000u;
+						dst_ptr[0] = (buffer.header >> 32) | 0xFFFF0000u;
 						dst_ptr[1] = (uint32_t)buffer.header;
 						dst_ptr[2] = length;
 						dst_ptr += 3;
 						for(int i = 0; i < length; ++i) {
-							dst_ptr[i] = ptr[i] & 0x7FFFFFFF;
+							dst_ptr[i] = ptr[i];
 						}
 						offset += 3 + length;
 
@@ -252,12 +252,65 @@ public:
 
 			int* recv_offsets = scatter_.get_recv_offsets();
 
-#pragma omp parallel for
+#if PRINT_RECEIVER_DETAIL
+			int64_t total = 0;
+			int64_t thread_max = 0;
+			int64_t task_max = 0;
+			int64_t pk_total = 0;
+			int64_t pk_thread_max = 0;
+			int64_t pk_task_max = 0;
+#pragma omp parallel reduction(max:thread_max,task_max,pk_thread_max,pk_task_max), reduction(+:total,pk_total)
+			{
+				int64_t thread_sum = 0;
+				int64_t pk_thread_sum = 0;
+
+#pragma omp for
+				for(int i = 0; i < comm_size_; ++i) {
+					int offset = recv_offsets[i];
+					int length = recv_offsets[i+1] - offset;
+					int64_t debug[2] = {0};
+					buffer_provider_->received(recvbuf, offset, length, i, debug);
+
+					thread_sum += debug[0];
+					pk_thread_sum += debug[1];
+					task_max = std::max(task_max, debug[0]);
+					pk_task_max = std::max(pk_task_max, debug[1]);
+				}
+
+				total += thread_sum;
+				pk_total += pk_thread_sum;
+				thread_max = std::max(thread_max, thread_sum);
+				pk_thread_max = std::max(pk_thread_max, pk_thread_sum);
+			}
+
+			total_ = total;
+			thread_max_ = thread_max;
+			task_max_ = task_max;
+			pk_total_ = pk_total;
+			pk_thread_max_ = pk_thread_max;
+			pk_task_max_ = pk_task_max;
+
+#elif ENABLE_MY_BARRIER
+			memory::SpinBarrier sync(omp_get_max_threads());
+#pragma omp parallel
+			{
+#pragma omp for schedule(dynamic,1) nowait
+				for(int i = 0; i < comm_size_; ++i) {
+					int offset = recv_offsets[i];
+					int length = recv_offsets[i+1] - offset;
+					buffer_provider_->received(recvbuf, offset, length, i);
+				}
+
+				sync.barrier();
+			}
+#else
+#pragma omp parallel for schedule(dynamic,1)
 			for(int i = 0; i < comm_size_; ++i) {
 				int offset = recv_offsets[i];
 				int length = recv_offsets[i+1] - offset;
 				buffer_provider_->received(recvbuf, offset, length, i);
 			}
+#endif
 			PROF(recv_proc_time_ += tk_all);
 
 			buffer_provider_->finish();
@@ -347,6 +400,14 @@ public:
 		}
 		profiling::g_pis.submitCounter(last_send_size_, "a2a send data", level);
 		profiling::g_pis.submitCounter(last_recv_size_, "a2a recv data", level);
+#if PRINT_RECEIVER_DETAIL
+		profiling::g_pis.submitCounter(total_, "bug total", level);
+		profiling::g_pis.submitCounter(thread_max_, "bug thread max", level);
+		profiling::g_pis.submitCounter(task_max_, "bug task max", level);
+		profiling::g_pis.submitCounter(pk_total_, "bug packet total", level);
+		profiling::g_pis.submitCounter(pk_thread_max_, "bug packet thread max", level);
+		profiling::g_pis.submitCounter(pk_task_max_, "bug packet task max", level);
+#endif
 	}
 #endif
 #if VERVOSE_MODE
@@ -376,6 +437,15 @@ private:
 	PROF(profiling::TimeSpan recv_proc_large_time_);
 	VERVOSE(int last_send_size_);
 	VERVOSE(int last_recv_size_);
+
+#if PRINT_RECEIVER_DETAIL
+	int64_t total_;
+	int64_t thread_max_;
+	int64_t task_max_;
+	int64_t pk_total_;
+	int64_t pk_thread_max_;
+	int64_t pk_task_max_;
+#endif
 
 	void flush(CommTarget& node) {
 		if(node.cur_buf.ptr != NULL) {

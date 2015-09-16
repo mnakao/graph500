@@ -384,13 +384,13 @@ public:
 			if(tmp_rows != NULL) { free(tmp_rows); tmp_rows = NULL; }
 		}
 
-		virtual void received(void* buf, int offset, int length, int src) {
+		virtual void received(void* buf, int offset, int length, int src, int64_t* debug) {
 			VERVOSE(g_tp_comm += length * sizeof(uint32_t));
 			if(this_->growing_or_shrinking_) {
-				this->this_->top_down_receive<true>((uint32_t*)buf + offset, length, tmp_rows, &num_rows);
+				this->this_->top_down_receive<true>((uint32_t*)buf + offset, length, tmp_rows, &num_rows, debug);
 			}
 			else {
-				this->this_->top_down_receive<false>((uint32_t*)buf + offset, length, tmp_rows, &num_rows);
+				this->this_->top_down_receive<false>((uint32_t*)buf + offset, length, tmp_rows, &num_rows, debug);
 			}
 			assert (num_rows < max_num_rows);
 		}
@@ -422,7 +422,7 @@ public:
 			: CommHandlerBase<int64_t>(this__)
 			  { }
 
-		virtual void received(void* buf, int offset, int length, int src) {
+		virtual void received(void* buf, int offset, int length, int src, int64_t* debug) {
 			VERVOSE(g_bu_pred_comm += length * sizeof(int64_t));
 			BottomUpReceiver recv(this->this_, (int64_t*)buf + offset, length, src);
 			recv.run();
@@ -906,6 +906,16 @@ public:
 	// top-down search
 	//-------------------------------------------------------------//
 
+	void top_down_packet_region_fix(LocalPacket& pk) {
+		if(pk.src != -1) {
+			int64_t src = pk.src;
+			int s_index = pk.src_start;
+			int src_length = pk.length - pk.src_start - 2;
+			pk.data.t[s_index++] = (src >> 32) | (src_length << 16);
+			pk.data.t[s_index++] = (uint32_t)src;
+		}
+	}
+
 	void top_down_send(int64_t tgt, int lgl, int r_mask,
 			LocalPacket* packet_array, int64_t src
 #if PROFILING_MODE
@@ -915,16 +925,18 @@ public:
 		int dest = (tgt >> lgl) & r_mask;
 		LocalPacket& pk = packet_array[dest];
 		if(pk.length > LocalPacket::TOP_DOWN_LENGTH-3) { // low probability
+			top_down_packet_region_fix(pk);
 			PROF(profiling::TimeKeeper tk_commit);
 			td_comm_.put(pk.data.t, pk.length, dest);
 			PROF(ts_commit += tk_commit);
 			pk.src = -1;
 			pk.length = 0;
 		}
-		if(pk.src != src) { // TODO: use conditional branch
+		if(pk.src != src) {
+			top_down_packet_region_fix(pk);
 			pk.src = src;
-			pk.data.t[pk.length++] = (src >> 32) | 0x80000000u;
-			pk.data.t[pk.length++] = (uint32_t)src;
+			pk.src_start = pk.length;
+			pk.length += 2; // space for src and length
 		}
 		pk.data.t[pk.length++] = tgt & ((uint32_t(1) << lgl) - 1);
 	}
@@ -1009,9 +1021,18 @@ public:
 					BitmapType cq_bit_i = cq_bitmap[word_idx];
 					if(cq_bit_i == BitmapType(0)) continue;
 
+#if USE_DCSC
+					BitmapType bit_flags = cq_bit_i;
+#elif USE_COARSE_INDEX
+					BitmapType bit_flags = cq_bit_i;
+					int64_t edge_offset = graph_.coarse_index_[word_idx];
+					int64_t edge_end = graph_.coarse_index_[word_idx+1];
+					TwodVertex non_zero_off = graph_.row_sums_[word_idx];
+#else
 					BitmapType row_bitmap_i = graph_.row_bitmap_[word_idx];
 					BitmapType bit_flags = cq_bit_i & row_bitmap_i;
 					TwodVertex bmp_row_sums = graph_.row_sums_[word_idx];
+#endif
 					while(bit_flags != BitmapType(0)) {
 						BitmapType cq_bit = bit_flags & (-bit_flags);
 						BitmapType low_mask = cq_bit - 1;
@@ -1019,9 +1040,43 @@ public:
 						int bit_idx = __builtin_popcountl(low_mask);
 						TwodVertex compact = word_idx * NBPE + bit_idx;
 						TwodVertex src_c = word_idx / get_bitmap_size_local(); // TODO:
+#if USE_DCSC
+						TwodVertex aux_index = compact / graph_.rows_per_aux_;
+						TwodVertex non_zero_off = graph_.dcsc_aux_[aux_index];
+						TwodVertex aux_end = graph_.dcsc_aux_[aux_index+1];
+						for( ; non_zero_off < aux_end; ++non_zero_off) {
+							if(graph_.dcsc_jc_[non_zero_off] == compact) {
+								break;
+							}
+						}
+						if(non_zero_off == aux_end) {
+							// no edge
+							continue;
+						}
+#elif USE_COARSE_INDEX
+						int edge_src_idx = edge_array[edge_offset] & 0xFF;
+						while(true) {
+							if(edge_src_idx >= bit_idx) {
+								break;
+							}
+							edge_offset += edge_array[edge_offset] >> 8;
+							edge_src_idx = edge_array[edge_offset] & 0xFF;
+							++non_zero_off;
+						}
+						if(edge_src_idx != bit_idx) {
+							// no edge
+							continue;
+						}
+#else
 						TwodVertex non_zero_off = bmp_row_sums + __builtin_popcountl(row_bitmap_i & low_mask);
+#endif
+#if EMBED_ORIG_PRED
 						int64_t src_orig =
 								int64_t(graph_.orig_vertexes_[non_zero_off]) * P + src_c * R + r;
+#else
+						int64_t src_local = word_idx % get_bitmap_size_local();
+						int64_t src_orig = src_local * P + src_c * R + r;
+#endif
 	#if ISOLATE_FIRST_EDGE
 						top_down_send(graph_.isolated_edges_[non_zero_off], lgl,
 								r_mask, packet_array, src_orig
@@ -1030,8 +1085,13 @@ public:
 	#endif
 							);
 	#endif // #if ISOLATE_FIRST_EDGE
+#if USE_COARSE_INDEX
+						int64_t e_start = edge_offset + 1;
+						int64_t e_end = e_start + (edge_array[edge_offset] >> 8);
+#else
 						int64_t e_start = graph_.row_starts_[non_zero_off];
 						int64_t e_end = graph_.row_starts_[non_zero_off+1];
+#endif
 						IF_LARGE_EDGE
 #if TOP_DOWN_SEND_LB > 0
 						{
@@ -1065,12 +1125,42 @@ public:
 					TwodVertex compact = src_c * L + (src.value & local_mask);
 					TwodVertex word_idx = compact >> LOG_NBPE;
 					int bit_idx = compact & NBPE_MASK;
-					BitmapType row_bitmap_i = graph_.row_bitmap_[word_idx];
 					BitmapType mask = BitmapType(1) << bit_idx;
-					if(row_bitmap_i & mask) {
+#if USE_DCSC
+					TwodVertex aux_index = compact / graph_.rows_per_aux_;
+					TwodVertex non_zero_off = graph_.dcsc_aux_[aux_index];
+					TwodVertex aux_end = graph_.dcsc_aux_[aux_index+1];
+					for( ; non_zero_off < aux_end; ++non_zero_off) {
+						if(graph_.dcsc_jc_[non_zero_off] == compact) {
+							break;
+						}
+					}
+					if(non_zero_off != aux_end)
+#elif USE_COARSE_INDEX
+					//
+					int64_t edge_offset = graph_.coarse_index_[word_idx];
+					int64_t edge_end = graph_.coarse_index_[word_idx+1];
+					TwodVertex non_zero_off = graph_.row_sums_[word_idx];
+					int edge_src_idx = edge_array[edge_offset] & 0xFF;
+					while(true) {
+						if(edge_src_idx >= bit_idx) {
+							break;
+						}
+						edge_offset += edge_array[edge_offset] >> 8;
+						edge_src_idx = edge_array[edge_offset] & 0xFF;
+						++non_zero_off;
+					}
+					if(edge_src_idx == bit_idx)
+#else
+					BitmapType row_bitmap_i = graph_.row_bitmap_[word_idx];
+					if(row_bitmap_i & mask)
+#endif
+					{
+#if !USE_DCSC && !USE_COARSE_INDEX
 						BitmapType low_mask = (BitmapType(1) << bit_idx) - 1;
 						TwodVertex non_zero_off = graph_.row_sums_[word_idx] +
 								__builtin_popcountl(graph_.row_bitmap_[word_idx] & low_mask);
+#endif
 						int64_t src_orig =
 								int64_t(graph_.orig_vertexes_[non_zero_off]) * P + src_c * R + r;
 	#if ISOLATE_FIRST_EDGE
@@ -1116,6 +1206,7 @@ public:
 							thread_local_buffer_[i]->fold_packet;
 					LocalPacket& pk = packet_array[target];
 					if(pk.length > 0) {
+						top_down_packet_region_fix(pk);
 						PROF(profiling::TimeKeeper tk_commit);
 						td_comm_.put(pk.data.t, pk.length, target);
 						PROF(ts_commit += tk_commit);
@@ -1246,9 +1337,10 @@ public:
 	}
 
 	template <bool growing>
-	void top_down_receive(uint32_t* stream, int length, TopDownRow* rows, volatile int* num_rows) {
+	void top_down_receive(uint32_t* stream, int length, TopDownRow* rows, volatile int* num_rows, int64_t* debug) {
 		TRACER(td_recv);
 		PROF(profiling::TimeKeeper tk_all);
+		//PROF(profiling::TimeKeeper tk_bug);
 
 		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
 		QueuedVertexes* buf = tlb->cur_buffer;
@@ -1256,7 +1348,6 @@ public:
 		BitmapType* visited = (BitmapType*)new_visited_;
 		int64_t* restrict const pred = pred_;
 		const int cur_level = current_level_;
-		int64_t pred_v = -1;
 		LocalVertex* invert_map = graph_.invert_map_;
 
 		// for id converter //
@@ -1264,102 +1355,83 @@ public:
 		LocalVertex lmask = (LocalVertex(1) << lgl) - 1;
 		// ------------------- //
 
-		for(int i = 0; i < length; ++i) {
-			uint32_t v = stream[i];
-			if(v & 0x80000000u) {
-				int64_t src = (int64_t(v & 0xFFFF) << 32) | stream[i+1];
-				pred_v = src | (int64_t(cur_level) << 48);
-				if(v & 0x40000000u) {
-					int length_i = stream[i+2];
-#if TOP_DOWN_RECV_LB
-					if(length_i < PRM::TOP_DOWN_PENDING_WIDTH)
-#endif // #if TOP_DOWN_RECV_LB
-					{
-						assert (pred_v != -1);
-						for(int c = 0; c < length_i; ++c) {
-							LocalVertex tgt_local = stream[i+3+c] & lmask;
-							if(growing) {
-								// TODO: which is better ?
-								//LocalVertex tgt_orig = invert_map[tgt_local];
-								const TwodVertex word_idx = tgt_local >> LOG_NBPE;
-								const int bit_idx = tgt_local & NBPE_MASK;
-								const BitmapType mask = BitmapType(1) << bit_idx;
-								if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
-									if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
-										LocalVertex tgt_orig = invert_map[tgt_local];
-										assert (pred[tgt_orig] == -1);
-										pred[tgt_orig] = pred_v;
-										if(buf->full()) {
-											nq_.push(buf); buf = nq_empty_buffer_.get();
-										}
-										buf->append_nocheck(tgt_local);
-									}
-								}
-							}
-							else {
-								LocalVertex tgt_orig = invert_map[tgt_local];
-								if(pred[tgt_orig] == -1) {
-									if(__sync_bool_compare_and_swap(&pred[tgt_orig], -1, pred_v)) {
-										if(buf->full()) {
-											nq_.push(buf); buf = nq_empty_buffer_.get();
-										}
-										buf->append_nocheck(tgt_local);
-									}
-								}
-							}
-						}
-					}
-#if TOP_DOWN_RECV_LB
-					else {
-						int put_off = __sync_fetch_and_add(num_rows, 1);
-						rows[put_off].length = length_i;
-						rows[put_off].ptr = &stream[i+3];
-						rows[put_off].src = src;
-					}
-#endif // #if TOP_DOWN_RECV_LB
+		//PROF(bug_other_time_ += tk_bug);
+		for(int i = 0; i < length; ) {
+			uint64_t v = ((uint64_t)stream[i] << 32) | stream[i+1];
+			int length_i = (v >> 48);
+			int64_t src = v & ((int64_t(1) << 48) - 1);
+			int64_t pred_v = src | (int64_t(cur_level) << 48);
+			uint32_t* stream_i;
 
-					i += 2 + length_i;
-				}
-				else {
-					i += 1;
-				}
+			if(length_i == 0xFFFF) {
+				length_i = stream[i+2];
+				stream_i = &stream[i+3];
+				i += 3 + length_i;
 			}
 			else {
-				assert (pred_v != -1);
+				stream_i = &stream[i+2];
+				i += 2 + length_i;
+			}
 
-				LocalVertex tgt_local = v & lmask;
-				if(growing) {
-					// TODO: which is better ?
-					//LocalVertex tgt_orig = invert_map[tgt_local];
-					const TwodVertex word_idx = tgt_local >> LOG_NBPE;
-					const int bit_idx = tgt_local & NBPE_MASK;
-					const BitmapType mask = BitmapType(1) << bit_idx;
-					if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
-						if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
-							LocalVertex tgt_orig = invert_map[tgt_local];
-							assert (pred[tgt_orig] == -1);
-							pred[tgt_orig] = pred_v;
-							if(buf->full()) {
-								nq_.push(buf); buf = nq_empty_buffer_.get();
+#if PRINT_RECEIVER_DETAIL
+			debug[0] += length_i;
+			debug[1] += 1;
+#endif
+
+#if TOP_DOWN_RECV_LB
+			if(length_i < PRM::TOP_DOWN_PENDING_WIDTH)
+#endif // #if TOP_DOWN_RECV_LB
+			{
+				for(int c = 0; c < length_i; ++c) {
+					LocalVertex tgt_local = stream_i[c] & lmask;
+					if(growing) {
+						// TODO: which is better ?
+						//LocalVertex tgt_orig = invert_map[tgt_local];
+						const TwodVertex word_idx = tgt_local >> LOG_NBPE;
+						const int bit_idx = tgt_local & NBPE_MASK;
+						const BitmapType mask = BitmapType(1) << bit_idx;
+						if((visited[word_idx] & mask) == 0) { // if this vertex has not visited
+							if((__sync_fetch_and_or(&visited[word_idx], mask) & mask) == 0) {
+								//PROF(bug_proc_time_ += tk_bug);
+								LocalVertex tgt_orig = invert_map[tgt_local];
+								assert (pred[tgt_orig] == -1);
+								pred[tgt_orig] = pred_v;
+								if(buf->full()) {
+									nq_.push(buf); buf = nq_empty_buffer_.get();
+								}
+								buf->append_nocheck(tgt_local);
+								//PROF(bug_add_nq_time_ += tk_bug);
 							}
-							buf->append_nocheck(tgt_local);
 						}
 					}
-				}
-				else {
-					LocalVertex tgt_orig = invert_map[tgt_local];
-					if(pred[tgt_orig] == -1) {
-						if(__sync_bool_compare_and_swap(&pred[tgt_orig], -1, pred_v)) {
-							if(buf->full()) {
-								nq_.push(buf); buf = nq_empty_buffer_.get();
+					else {
+						LocalVertex tgt_orig = invert_map[tgt_local];
+						if(pred[tgt_orig] == -1) {
+							if(__sync_bool_compare_and_swap(&pred[tgt_orig], -1, pred_v)) {
+								//PROF(bug_proc_time_ += tk_bug);
+								if(buf->full()) {
+									nq_.push(buf); buf = nq_empty_buffer_.get();
+								}
+								buf->append_nocheck(tgt_local);
+								//PROF(bug_add_nq_time_ += tk_bug);
 							}
-							buf->append_nocheck(tgt_local);
 						}
 					}
 				}
 			}
+#if TOP_DOWN_RECV_LB
+			else {
+				//PROF(bug_proc_time_ += tk_bug);
+				int put_off = __sync_fetch_and_add(num_rows, 1);
+				rows[put_off].length = length_i;
+				rows[put_off].ptr = stream_i;
+				rows[put_off].src = src;
+				//PROF(bug_other_time_ += tk_bug);
+			}
+#endif // #if TOP_DOWN_RECV_LB
 		}
 		tlb->cur_buffer = buf;
+		//PROF(bug_proc_time_ += tk_bug);
 		PROF(recv_proc_thread_time_ += tk_all);
 	}
 
@@ -1862,16 +1934,57 @@ public:
 		int num_send = 0;
 #if CONSOLIDATE_IFE_PROC
 		for(int64_t blk_bmp_off = off_start; blk_bmp_off < off_end; ++blk_bmp_off) {
-			BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
 			BitmapType visited_i = *(phase_bitmap + blk_bmp_off);
+#if USE_DCSC
+			TwodVertex word_idx = phase_bmp_off + blk_bmp_off;
+			BitmapType bit_flags = ~visited_i;
+#elif USE_COARSE_INDEX
+			TwodVertex word_idx = phase_bmp_off + blk_bmp_off;
+			BitmapType bit_flags = ~visited_i;
+			int64_t edge_offset = graph_.coarse_index_[word_idx];
+			int64_t edge_end = graph_.coarse_index_[word_idx+1];
+			TwodVertex non_zero_idx = graph_.row_sums_[word_idx];
+#else
+			BitmapType row_bmp_i = *(row_bitmap + phase_bmp_off + blk_bmp_off);
 			TwodVertex bmp_row_sums = *(row_sums + phase_bmp_off + blk_bmp_off);
 			BitmapType bit_flags = (~visited_i) & row_bmp_i;
+#endif
 			while(bit_flags != BitmapType(0)) {
 				BitmapType vis_bit = bit_flags & (-bit_flags);
 				BitmapType mask = vis_bit - 1;
 				bit_flags &= ~vis_bit;
 				int idx = __builtin_popcountl(mask);
+#if USE_DCSC
+				TwodVertex compact = word_idx * NBPE + idx;
+				TwodVertex aux_index = compact / graph_.rows_per_aux_;
+				TwodVertex non_zero_idx = graph_.dcsc_aux_[aux_index];
+				TwodVertex aux_end = graph_.dcsc_aux_[aux_index+1];
+				for( ; non_zero_idx < aux_end; ++non_zero_idx) {
+					if(graph_.dcsc_jc_[non_zero_idx] == compact) {
+						break;
+					}
+				}
+				if(non_zero_idx == aux_end) {
+					// no edge
+					continue;
+				}
+#elif USE_COARSE_INDEX
+				int edge_src_idx = edge_array[edge_offset] & 0xFF;
+				while(true) {
+					if(edge_src_idx >= idx) {
+						break;
+					}
+					edge_offset += edge_array[edge_offset] >> 8;
+					edge_src_idx = edge_array[edge_offset] & 0xFF;
+					++non_zero_idx;
+				}
+				if(edge_src_idx != idx) {
+					// no edge
+					continue;
+				}
+#else
 				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
+#endif
 				LocalVertex tgt_orig = orig_vertexes[non_zero_idx];
 				// short cut
 				int64_t src = isolated_edges[non_zero_idx];
@@ -1884,8 +1997,13 @@ public:
 					VERVOSE(tmp_edge_relax += 1);
 					continue;
 				}
+#if USE_COARSE_INDEX
+				int64_t e_start = edge_offset + 1;
+				int64_t e_end = e_start + (edge_array[edge_offset] >> 8);
+#else
 				int64_t e_start = row_starts[non_zero_idx];
 				int64_t e_end = row_starts[non_zero_idx+1];
+#endif
 				for(int64_t e = e_start; e < e_end; ++e) {
 					int64_t src = edge_array[e];
 					TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
@@ -2082,13 +2200,44 @@ public:
 			do {
 				vertex_enabled[i] = 1;
 				TwodVertex tgt = phase_list[i];
+#if USE_DCSC
+				TwodVertex aux_index = tgt / graph_.rows_per_aux_;
+				TwodVertex non_zero_idx = graph_.dcsc_aux_[aux_index];
+				TwodVertex aux_end = graph_.dcsc_aux_[aux_index+1];
+				for( ; non_zero_idx < aux_end; ++non_zero_idx) {
+					if(graph_.dcsc_jc_[non_zero_idx] == tgt) {
+						break;
+					}
+				}
+				if(non_zero_idx < aux_end)
+#elif USE_COARSE_INDEX
+				TwodVertex word_idx = tgt >> LOG_NBPE;
+				int bit_idx = tgt & NBPE_MASK;
+				int64_t edge_offset = graph_.coarse_index_[word_idx];
+				int64_t edge_end = graph_.coarse_index_[word_idx+1];
+				TwodVertex non_zero_idx = graph_.row_sums_[word_idx];
+				int edge_src_idx = graph_.edge_array_[edge_offset] & 0xFF;
+				while(true) {
+					if(edge_src_idx >= bit_idx) {
+						break;
+					}
+					edge_offset += graph_.edge_array_[edge_offset] >> 8;
+					edge_src_idx = graph_.edge_array_[edge_offset] & 0xFF;
+					++non_zero_idx;
+				}
+				if(edge_src_idx == bit_idx)
+#else
 				TwodVertex word_idx = tgt >> LOG_NBPE;
 				int bit_idx = tgt & NBPE_MASK;
 				BitmapType vis_bit = (BitmapType(1) << bit_idx);
 				BitmapType row_bitmap_i = phase_row_bitmap[word_idx];
-				if(row_bitmap_i & vis_bit) { // I have edges for this vertex ?
+				if(row_bitmap_i & vis_bit) // I have edges for this vertex ?
+#endif
+				{
+#if !USE_DCSC && !USE_COARSE_INDEX
 					TwodVertex non_zero_idx = phase_row_sums[word_idx] +
 							__builtin_popcountl(row_bitmap_i & (vis_bit-1));
+#endif
 					LocalVertex tgt_orig = graph_.orig_vertexes_[non_zero_idx];
 #if ISOLATE_FIRST_EDGE
 					int64_t src = graph_.isolated_edges_[non_zero_idx];
@@ -2102,8 +2251,13 @@ public:
 						continue;
 					}
 #endif // #if ISOLATE_FIRST_EDGE
+#if USE_COARSE_INDEX
+					int64_t e_start = edge_offset + 1;
+					int64_t e_end = e_start + (graph_.edge_array_[edge_offset] >> 8);
+#else
 					int64_t e_start = graph_.row_starts_[non_zero_idx];
 					int64_t e_end = graph_.row_starts_[non_zero_idx+1];
+#endif
 					for(int64_t e = e_start; e < e_end; ++e) {
 						int64_t src = graph_.edge_array_[e];
 						TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
@@ -2646,6 +2800,12 @@ public:
 	PROF(profiling::TimeSpan recv_proc_thread_time_);
 	PROF(profiling::TimeSpan recv_proc_thread_large_time_);
 	PROF(profiling::TimeSpan gather_nq_time_);
+
+	//PROF(profiling::TimeSpan bug_add_nq_time_);
+	//PROF(profiling::TimeSpan bug_proc_time_);
+	//PROF(profiling::TimeSpan bug_other_time_);
+
+	PROF(profiling::TimeSpan prof_time_);
 };
 
 void BfsBase::run_bfs(int64_t root, int64_t* pred)
@@ -2737,6 +2897,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		global_visited_vertices += global_nq_size_;
 
 #if VERVOSE_MODE
+		PROF(profiling::TimeKeeper tk_prof);
 		tmp = MPI_Wtime();
 		double cur_fold_time = tmp - prev_time;
 		fold_time += cur_fold_time; prev_time = tmp;
@@ -2768,6 +2929,10 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		gather_nq_time_.submit("gather NQ info", current_level_);
 		seq_proc_time_.submit("sequential processing", current_level_);
 		a2a_comm->submit_prof_info(current_level_, forward_or_backward_);
+
+		//bug_add_nq_time_.submit("bug add nq", current_level_);
+		//bug_proc_time_.submit("bug proc", current_level_);
+		//bug_other_time_.submit("bug other", current_level_);
 
 		if(forward_or_backward_) {
 			profiling::g_pis.submitCounter(num_edge_top_down_, "top-down edge relax", current_level_);
@@ -2881,7 +3046,9 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 
 			print_with_prefix("=== === === === ===");
 		}
+		PROF(prof_time_ += tk_prof);
 		if(global_nq_size_ == 0) {
+			PROF(prof_time_.submit("profile", 99));
 			break;
 		}
 #endif
