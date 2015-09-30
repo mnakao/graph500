@@ -2299,6 +2299,77 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 	::free(local_indices);
 }
 
+template <typename Mapping>
+void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
+{
+	ScatterContext scatter(comm);
+
+#pragma omp parallel
+	{
+		int* restrict counts = scatter.get_counts();
+
+#pragma omp for schedule(static)
+		for (int i = 0; i < data_count; ++i) {
+			if(mapping.if_target(i)) {
+				(counts[mapping.target(i)])++;
+			}
+		} // #pragma omp for schedule(static)
+	}
+
+	scatter.sum();
+
+	int send_count = scatter.get_send_count();
+	int* restrict local_indices = static_cast<int*>(
+			cache_aligned_xmalloc(send_count*sizeof(int)));
+	typename Mapping::send_type* restrict partitioned_data = static_cast<typename Mapping::send_type*>(
+			cache_aligned_xmalloc(send_count*sizeof(typename Mapping::send_type)));
+
+#pragma omp parallel
+	{
+		int* restrict offsets = scatter.get_offsets();
+
+#pragma omp for schedule(static)
+		for (int i = 0; i < data_count; ++i) {
+			if(mapping.if_target(i)) {
+				int pos = (offsets[mapping.target(i)])++;
+				assert (pos < send_count);
+				local_indices[i] = pos;
+				partitioned_data[pos] = mapping.get(i);
+			}
+			//// user defined ////
+		} // #pragma omp for schedule(static)
+	} // #pragma omp parallel
+
+	// send and receive requests
+	typename Mapping::send_type* restrict reply_verts = scatter.scatter(partitioned_data);
+	int recv_count = scatter.get_recv_count();
+	::free(partitioned_data);
+
+	// make reply data
+	typename Mapping::recv_type* restrict reply_data = static_cast<typename Mapping::recv_type*>(
+			cache_aligned_xmalloc(recv_count*sizeof(typename Mapping::recv_type)));
+#pragma omp parallel for
+	for (int i = 0; i < recv_count; ++i) {
+		reply_data[i] = mapping.map(reply_verts[i]);
+	}
+	scatter.free(reply_verts);
+
+	// send and receive reply
+	typename Mapping::recv_type* restrict recv_data = scatter.gather(reply_data);
+	::free(reply_data);
+
+	// apply received data to edges
+#pragma omp parallel for
+	for (int i = 0; i < data_count; ++i) {
+		if(mapping.if_target(i)) {
+			mapping.set(i, recv_data[local_indices[i]]);
+		}
+	}
+
+	scatter.free(recv_data);
+	::free(local_indices);
+}
+
 } // namespace MpiCollective { //
 
 //-------------------------------------------------------------//

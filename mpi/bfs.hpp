@@ -1074,8 +1074,9 @@ public:
 						int64_t src_orig =
 								int64_t(graph_.orig_vertexes_[non_zero_off]) * P + src_c * R + r;
 #else
-						int64_t src_local = word_idx % get_bitmap_size_local();
+						int64_t src_local = compact - (src_c * get_bitmap_size_local() * NBPE);
 						int64_t src_orig = src_local * P + src_c * R + r;
+
 #endif
 	#if ISOLATE_FIRST_EDGE
 						top_down_send(graph_.isolated_edges_[non_zero_off], lgl,
@@ -1161,8 +1162,12 @@ public:
 						TwodVertex non_zero_off = graph_.row_sums_[word_idx] +
 								__builtin_popcountl(graph_.row_bitmap_[word_idx] & low_mask);
 #endif
+#if EMBED_ORIG_PRED
 						int64_t src_orig =
 								int64_t(graph_.orig_vertexes_[non_zero_off]) * P + src_c * R + r;
+#else
+						int64_t src_orig = src.low(lgl) * P + src.high(lgl) * R + r;
+#endif
 	#if ISOLATE_FIRST_EDGE
 						top_down_send(graph_.isolated_edges_[non_zero_off], lgl,
 								r_mask, packet_array, src_orig
@@ -1913,6 +1918,9 @@ public:
 			int off_start,
 			int off_end,
 			int phase_bmp_off,
+#if !EMBED_ORIG_PRED
+			TwodVertex phase_vertex_off,
+#endif
 			LocalPacket* buffer)
 	{
 		VERVOSE(int tmp_edge_relax = 0);
@@ -1985,14 +1993,22 @@ public:
 #else
 				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
 #endif
+#if EMBED_ORIG_PRED
 				LocalVertex tgt_orig = orig_vertexes[non_zero_idx];
+#endif
 				// short cut
 				int64_t src = isolated_edges[non_zero_idx];
-				TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
+				TwodVertex src_mid_low = SeparatedId(src).low(r_bits + lgl);
+				TwodVertex bit_idx = SeparatedId(src_mid_low).compact(lgl, L);
 				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
+#if EMBED_ORIG_PRED
 					buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
+#else
+					buffer->data.b[num_send++] = (src_mid_low << lgl) |
+							(phase_vertex_off + (blk_bmp_off * NBPE) + idx);
+#endif
 					// end this row
 					VERVOSE(tmp_edge_relax += 1);
 					continue;
@@ -2006,11 +2022,17 @@ public:
 #endif
 				for(int64_t e = e_start; e < e_end; ++e) {
 					int64_t src = edge_array[e];
-					TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
+					TwodVertex src_mid_low = SeparatedId(src).low(r_bits + lgl);
+					TwodVertex bit_idx = SeparatedId(src_mid_low).compact(lgl, L);
 					if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 						// add to next queue
 						visited_i |= vis_bit;
+#if EMBED_ORIG_PRED
 						buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
+#else
+						buffer->data.b[num_send++] = (src_mid_low << lgl) |
+								(phase_vertex_off + (blk_bmp_off * NBPE) + idx);
+#endif
 						// end this row
 						VERVOSE(tmp_edge_relax += e - e_start + 1);
 						break;
@@ -2095,8 +2117,10 @@ public:
 
 		BitmapType* phase_bitmap = (BitmapType*)data.data;
 		int phase_bmp_off = data.tag.region_id * step_bitmap_width;
-		//TwodVertex L = graph_.num_local_verts_;
-		//TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
+#if !EMBED_ORIG_PRED
+		TwodVertex L = graph_.num_local_verts_;
+		TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
+#endif
 		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
 		LocalPacket* buffer = tlb->fold_packet;
 
@@ -2120,7 +2144,11 @@ public:
 			int off_end = std::min(step_bitmap_width, off_start + block_width);
 
 			bottom_up_search_bitmap_process_block(phase_bitmap,
-					off_start, off_end, phase_bmp_off, buffer);
+					off_start, off_end, phase_bmp_off,
+#if !EMBED_ORIG_PRED
+					phase_vertex_off,
+#endif
+					buffer);
 			PROF(extract_edge_time_ += tk_all);
 
 			if(tid == 0) {
@@ -2139,7 +2167,11 @@ public:
 		int off_end = std::min(step_bitmap_width, off_start + width_per_thread);
 
 		bottom_up_search_bitmap_process_block(phase_bitmap,
-				off_start, off_end, phase_bmp_off, buffer);
+				off_start, off_end, phase_bmp_off,
+#if !EMBED_ORIG_PRED
+				phase_vertex_off,
+#endif
+				buffer);
 		PROF(extract_edge_time_ += tk_all);
 
 		int visited_count = buffer->length / 2;
@@ -2176,7 +2208,9 @@ public:
 		int r_bits = graph_.r_bits_;
 		TwodVertex L = graph_.num_local_verts_;
 		int orig_lgl = graph_.orig_local_bits_;
-		//TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
+#if !EMBED_ORIG_PRED
+		TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
+#endif
 		VERVOSE(int tmp_num_blocks = 0);
 		VERVOSE(int tmp_edge_relax = 0);
 		PROF(profiling::TimeKeeper tk_all);
@@ -2238,14 +2272,22 @@ public:
 					TwodVertex non_zero_idx = phase_row_sums[word_idx] +
 							__builtin_popcountl(row_bitmap_i & (vis_bit-1));
 #endif
+#if EMBED_ORIG_PRED
 					LocalVertex tgt_orig = graph_.orig_vertexes_[non_zero_idx];
+#endif
 #if ISOLATE_FIRST_EDGE
 					int64_t src = graph_.isolated_edges_[non_zero_idx];
-					TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
+					TwodVertex src_mid_low = SeparatedId(src).low(r_bits + lgl);
+					TwodVertex bit_idx = SeparatedId(src_mid_low).compact(lgl, L);
 					if(shared_visited_[bit_idx >> LOG_NBPE] & (BitmapType(1) << (bit_idx & NBPE_MASK))) {
 						// add to next queue
 						vertex_enabled[i] = 0; --num_enabled;
+#if EMBED_ORIG_PRED
 						buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
+#else
+						buffer->data.b[num_send++] = (src_mid_low << lgl) |
+								(phase_vertex_off + tgt);
+#endif
 						// end this row
 						VERVOSE(tmp_edge_relax += 1);
 						continue;
@@ -2260,11 +2302,17 @@ public:
 #endif
 					for(int64_t e = e_start; e < e_end; ++e) {
 						int64_t src = graph_.edge_array_[e];
-						TwodVertex bit_idx = SeparatedId(SeparatedId(src).low(r_bits + lgl)).compact(lgl, L);
+						TwodVertex src_mid_low = SeparatedId(src).low(r_bits + lgl);
+						TwodVertex bit_idx = SeparatedId(src_mid_low).compact(lgl, L);
 						if(shared_visited_[bit_idx >> LOG_NBPE] & (BitmapType(1) << (bit_idx & NBPE_MASK))) {
 							// add to next queue
 							vertex_enabled[i] = 0; --num_enabled;
+#if EMBED_ORIG_PRED
 							buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
+#else
+							buffer->data.b[num_send++] = (src_mid_low << lgl) |
+									(phase_vertex_off + tgt);
+#endif
 							// end this row
 							VERVOSE(tmp_edge_relax += e - e_start + 1);
 							break;
@@ -2618,8 +2666,14 @@ public:
 			int P = mpi.size_2d;
 			int r_bits = this_->graph_.r_bits_;
 			int64_t r_mask = ((1 << r_bits) - 1);
+#if EMBED_ORIG_PRED
 			int orig_lgl = this_->graph_.orig_local_bits_;
 			LocalVertex lmask = (LocalVertex(1) << orig_lgl) - 1;
+#else
+			int lgl = this_->graph_.local_bits_;
+			LocalVertex lmask = (LocalVertex(1) << lgl) - 1;
+			LocalVertex* invert_map = this_->graph_.invert_map_;
+#endif
 			int64_t cshifted = src_ * mpi.size_2dr;
 			int64_t levelshifted = int64_t(this_->current_level_) << 48;
 			int64_t* buffer = buffer_;
@@ -2627,10 +2681,16 @@ public:
 			int64_t* pred = this_->pred_;
 			for(int i = 0; i < length; ++i) {
 				int64_t v = buffer[i];
-				int64_t pred_dst = v >> orig_lgl;
 				LocalVertex tgt_local = v & lmask;
+#if EMBED_ORIG_PRED
 				int64_t pred_v = ((pred_dst >> r_bits) * P +
 						cshifted + (pred_dst & r_mask)) | levelshifted;
+#else
+				int64_t pred_dst = v >> lgl;
+				tgt_local = invert_map[tgt_local];
+				int64_t pred_v = ((pred_dst & lmask) * P +
+						cshifted + (pred_dst >> lgl)) | levelshifted;
+#endif
 				assert (this_->pred_[tgt_local] == -1);
 				pred[tgt_local] = pred_v;
 			}
@@ -2642,6 +2702,43 @@ public:
 		int length_;
 		int src_;
 	};
+
+#if !EMBED_ORIG_PRED
+	class PredConverter
+	{
+	public:
+		typedef LocalVertex send_type;
+		typedef LocalVertex recv_type;
+
+		PredConverter(int64_t* pred, LocalVertex* invert_map, int org_local_bits, int local_bits)
+			: pred_(pred)
+			, invert_map_(invert_map)
+			, org_local_bits_(org_local_bits)
+			, local_bits_(local_bits)
+		{ }
+		bool if_target(int i) const {
+			return pred_[i] != int64_t(-1);
+		}
+		int target(int i) const {
+			return (pred_[i] & ((int64_t(1) << 48) - 1)) % mpi.size_2d;
+		}
+		LocalVertex get(int i) const {
+			return (pred_[i] & ((int64_t(1) << 48) - 1)) / mpi.size_2d;
+		}
+		LocalVertex map(LocalVertex v) const {
+			return invert_map_[v];
+		}
+		void set(int i, LocalVertex d) const {
+			int64_t mask = (int64_t(1) << 48) - 1;
+			pred_[i] = (pred_[i] & ~mask) | (((pred_[i] & mask) % mpi.size_2d) + (d * mpi.size_2d));
+		}
+	private:
+		int64_t* const pred_;
+		LocalVertex* invert_map_;
+		const int org_local_bits_;
+		const int local_bits_;
+	};
+#endif
 
 	static void printInformation()
 	{
@@ -3076,6 +3173,17 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		expand_time += cur_expand_time; prev_time = tmp;
 #endif
 	} // while(true) {
+#if VERTEX_REORDERING && !EMBED_ORIG_PRED
+	// convert pred source vertex (reordered -> original)
+	MpiCol::gather_if(
+			PredConverter(
+					pred_,
+					graph_.invert_map_,
+					graph_.orig_local_bits_,
+					graph_.local_bits_),
+			graph_.pred_size(),
+			mpi.comm_2d);
+#endif
 	clear_nq_stack();
 #if VERVOSE_MODE
 	if(mpi.isMaster()) print_with_prefix("Time of BFS: %f ms", (MPI_Wtime() - start_time) * 1000.0);
