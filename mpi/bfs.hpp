@@ -2683,6 +2683,7 @@ public:
 				int64_t v = buffer[i];
 				LocalVertex tgt_local = v & lmask;
 #if EMBED_ORIG_PRED
+				int64_t pred_dst = v >> orig_lgl;
 				int64_t pred_v = ((pred_dst >> r_bits) * P +
 						cshifted + (pred_dst & r_mask)) | levelshifted;
 #else
@@ -2776,6 +2777,8 @@ public:
 		PRINT_VAL("%d", TOP_DOWN_SEND_LB);
 		PRINT_VAL("%d", TOP_DOWN_RECV_LB);
 		PRINT_VAL("%d", BOTTOM_UP_OVERLAP_PFS);
+		PRINT_VAL("%d", GRAPH_REPRESENTATION);
+		PRINT_VAL("%d", EMBED_ORIG_PRED);
 
 		PRINT_VAL("%d", ISOLATE_FIRST_EDGE);
 		PRINT_VAL("%d", CONSOLIDATE_IFE_PROC);
