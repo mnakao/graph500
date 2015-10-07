@@ -35,7 +35,7 @@
 
 // General Optimizations
 // 0: completely off, 1: only reduce isolated vertices, 2: sort by degree and reduce isolated vertices
-#define VERTEX_REORDERING 0
+#define VERTEX_REORDERING 2
 // 0: put all edges to temporally buffer, 1: count first, 2: hybrid
 #define TOP_DOWN_SEND_LB 2
 // 0: disable receive load balance, 1: enable receive load balance
@@ -43,9 +43,9 @@
 // 0: disable overlap, 1: enable overlap
 #define BOTTOM_UP_OVERLAP_PFS 1
 // 0: DCSC, 1: Coarse Index, 2:Bitmap
-#define GRAPH_REPRESENTATION 2
+#define GRAPH_REPRESENTATION 1
 // 0: not use embedded original vertex id, 1: use it
-#define EMBED_ORIG_PRED 0
+#define EMBED_ORIG_PRED 1
 
 #if GRAPH_REPRESENTATION == 0
 #define USE_DCSC 1

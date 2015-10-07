@@ -495,7 +495,11 @@ public:
 						root_c, mpi.comm_2dr);
 
 				// update pred
+#if EMBED_ORIG_PRED
 				pred_[root_local] = root;
+#else
+				pred_[root_local] = root_reordered;
+#endif
 
 				// update visited
 				int64_t word_idx = reordered >> LOG_NBPE;
@@ -1054,16 +1058,18 @@ public:
 							continue;
 						}
 #elif USE_COARSE_INDEX
-						int edge_src_idx = edge_array[edge_offset] & 0xFF;
-						while(true) {
-							if(edge_src_idx >= bit_idx) {
-								break;
+						int edge_src_idx = -1;
+						if(edge_offset < edge_end) {
+							while(true) {
+								edge_src_idx = edge_array[edge_offset] & 0xFF;
+								if(edge_src_idx >= bit_idx || edge_offset >= edge_end) {
+									break;
+								}
+								edge_offset += (edge_array[edge_offset] >> 8) + 1;
+								++non_zero_off;
 							}
-							edge_offset += edge_array[edge_offset] >> 8;
-							edge_src_idx = edge_array[edge_offset] & 0xFF;
-							++non_zero_off;
 						}
-						if(edge_src_idx != bit_idx) {
+						if(edge_src_idx != bit_idx || edge_offset >= edge_end) {
 							// no edge
 							continue;
 						}
@@ -1142,16 +1148,18 @@ public:
 					int64_t edge_offset = graph_.coarse_index_[word_idx];
 					int64_t edge_end = graph_.coarse_index_[word_idx+1];
 					TwodVertex non_zero_off = graph_.row_sums_[word_idx];
-					int edge_src_idx = edge_array[edge_offset] & 0xFF;
-					while(true) {
-						if(edge_src_idx >= bit_idx) {
-							break;
+					int edge_src_idx = -1;
+					if(edge_offset < edge_end) {
+						while(true) {
+							edge_src_idx = edge_array[edge_offset] & 0xFF;
+							if(edge_src_idx >= bit_idx || edge_offset >= edge_end) {
+								break;
+							}
+							edge_offset += (edge_array[edge_offset] >> 8) + 1;
+							++non_zero_off;
 						}
-						edge_offset += edge_array[edge_offset] >> 8;
-						edge_src_idx = edge_array[edge_offset] & 0xFF;
-						++non_zero_off;
 					}
-					if(edge_src_idx == bit_idx)
+					if(edge_src_idx == bit_idx && edge_offset < edge_end)
 #else
 					BitmapType row_bitmap_i = graph_.row_bitmap_[word_idx];
 					if(row_bitmap_i & mask)
@@ -1176,8 +1184,13 @@ public:
 	#endif
 							);
 	#endif // #if ISOLATE_FIRST_EDGE
+#if USE_COARSE_INDEX
+						int64_t e_start = edge_offset + 1;
+						int64_t e_end = e_start + (edge_array[edge_offset] >> 8);
+#else
 						int64_t e_start = graph_.row_starts_[non_zero_off];
 						int64_t e_end = graph_.row_starts_[non_zero_off+1];
+#endif
 						IF_LARGE_EDGE
 #if TOP_DOWN_SEND_LB > 0
 						{
@@ -1977,16 +1990,18 @@ public:
 					continue;
 				}
 #elif USE_COARSE_INDEX
-				int edge_src_idx = edge_array[edge_offset] & 0xFF;
-				while(true) {
-					if(edge_src_idx >= idx) {
-						break;
+				int edge_src_idx = -1;
+				if(edge_offset < edge_end) {
+					while(true) {
+						edge_src_idx = edge_array[edge_offset] & 0xFF;
+						if(edge_src_idx >= idx || edge_offset >= edge_end) {
+							break;
+						}
+						edge_offset += (edge_array[edge_offset] >> 8) + 1;
+						++non_zero_idx;
 					}
-					edge_offset += edge_array[edge_offset] >> 8;
-					edge_src_idx = edge_array[edge_offset] & 0xFF;
-					++non_zero_idx;
 				}
-				if(edge_src_idx != idx) {
+				if(edge_src_idx != idx || edge_offset >= edge_end) {
 					// no edge
 					continue;
 				}
@@ -2003,6 +2018,11 @@ public:
 				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
+
+					if(tgt_orig == 30418) {
+						print_with_prefix("non_zero_idx = %d, word_idx = %d", non_zero_idx, word_idx);
+					}
+
 #if EMBED_ORIG_PRED
 					buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 #else
@@ -2027,6 +2047,11 @@ public:
 					if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 						// add to next queue
 						visited_i |= vis_bit;
+
+						if(tgt_orig == 30418) {
+							print_with_prefix("non_zero_idx = %d, word_idx = %d", non_zero_idx, word_idx);
+						}
+
 #if EMBED_ORIG_PRED
 						buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 #else
@@ -2250,16 +2275,18 @@ public:
 				int64_t edge_offset = graph_.coarse_index_[word_idx];
 				int64_t edge_end = graph_.coarse_index_[word_idx+1];
 				TwodVertex non_zero_idx = graph_.row_sums_[word_idx];
-				int edge_src_idx = graph_.edge_array_[edge_offset] & 0xFF;
-				while(true) {
-					if(edge_src_idx >= bit_idx) {
-						break;
+				int edge_src_idx = -1;
+				if(edge_offset < edge_end) {
+					while(true) {
+						edge_src_idx = graph_.edge_array_[edge_offset] & 0xFF;
+						if(edge_src_idx >= bit_idx || edge_offset >= edge_end) {
+							break;
+						}
+						edge_offset += (graph_.edge_array_[edge_offset] >> 8) + 1;
+						++non_zero_idx;
 					}
-					edge_offset += graph_.edge_array_[edge_offset] >> 8;
-					edge_src_idx = graph_.edge_array_[edge_offset] & 0xFF;
-					++non_zero_idx;
 				}
-				if(edge_src_idx == bit_idx)
+				if(edge_src_idx == bit_idx && edge_offset < edge_end)
 #else
 				TwodVertex word_idx = tgt >> LOG_NBPE;
 				int bit_idx = tgt & NBPE_MASK;
@@ -2692,6 +2719,9 @@ public:
 				int64_t pred_v = ((pred_dst & lmask) * P +
 						cshifted + (pred_dst >> lgl)) | levelshifted;
 #endif
+				if(this_->pred_[tgt_local] != -1) {
+					print_with_prefix("tgt_local = %d", tgt_local);
+				}
 				assert (this_->pred_[tgt_local] == -1);
 				pred[tgt_local] = pred_v;
 			}

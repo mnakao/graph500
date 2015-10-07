@@ -2307,7 +2307,6 @@ void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
 #pragma omp parallel
 	{
 		int* restrict counts = scatter.get_counts();
-
 #pragma omp for schedule(static)
 		for (int i = 0; i < data_count; ++i) {
 			if(mapping.if_target(i)) {
@@ -2320,7 +2319,7 @@ void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
 
 	int send_count = scatter.get_send_count();
 	int* restrict local_indices = static_cast<int*>(
-			cache_aligned_xmalloc(send_count*sizeof(int)));
+			cache_aligned_xmalloc(data_count*sizeof(int)));
 	typename Mapping::send_type* restrict partitioned_data = static_cast<typename Mapping::send_type*>(
 			cache_aligned_xmalloc(send_count*sizeof(typename Mapping::send_type)));
 
