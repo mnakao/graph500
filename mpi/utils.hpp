@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 #include <stdarg.h>
-#include <malloc.h>
+#include <stdlib.h>
 
 // for affinity setting //
 #include <unistd.h>
