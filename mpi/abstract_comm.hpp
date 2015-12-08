@@ -150,7 +150,7 @@ public:
 #pragma omp parallel
 			{
 				int* counts = scatter_.get_counts();
-#pragma omp for schedule(static)
+				OMP_FOR(schedule(static))
 				for(int i = 0; i < comm_size_; ++i) {
 					CommTarget& node = node_[i];
 					flush(node);
@@ -175,6 +175,7 @@ public:
 						}
 					}
 				} // #pragma omp for schedule(static)
+				OMP_END_FOR
 			}
 
 			scatter_.sum();
@@ -189,7 +190,7 @@ public:
 			{
 				int* offsets = scatter_.get_offsets();
 				uint8_t* dst = (uint8_t*)buffer_provider_->second_buffer();
-#pragma omp for schedule(static)
+				OMP_FOR(schedule(static))
 				for(int i = 0; i < comm_size_; ++i) {
 					CommTarget& node = node_[i];
 					int& offset = offsets[i];
@@ -233,6 +234,7 @@ public:
 					}
 					node.send_data.clear();
 				} // #pragma omp for schedule(static)
+				OMP_END_FOR
 			} // #pragma omp parallel
 			USER_END(a2a_merge);
 
@@ -252,7 +254,7 @@ public:
 
 			int* recv_offsets = scatter_.get_recv_offsets();
 
-#if PRINT_RECEIVER_DETAIL
+#if 0
 			int64_t total = 0;
 			int64_t thread_max = 0;
 			int64_t task_max = 0;
@@ -289,27 +291,14 @@ public:
 			pk_total_ = pk_total;
 			pk_thread_max_ = pk_thread_max;
 			pk_task_max_ = pk_task_max;
-
-#elif ENABLE_MY_BARRIER
-			memory::SpinBarrier sync(omp_get_max_threads());
-#pragma omp parallel
-			{
-#pragma omp for schedule(dynamic,1) nowait
-				for(int i = 0; i < comm_size_; ++i) {
-					int offset = recv_offsets[i];
-					int length = recv_offsets[i+1] - offset;
-					buffer_provider_->received(recvbuf, offset, length, i);
-				}
-
-				sync.barrier();
-			}
 #else
-#pragma omp parallel for schedule(dynamic,1)
+			OMP_PAR_FOR(schedule(dynamic,1))
 			for(int i = 0; i < comm_size_; ++i) {
 				int offset = recv_offsets[i];
 				int length = recv_offsets[i+1] - offset;
 				buffer_provider_->received(recvbuf, offset, length, i);
 			}
+			OMP_PAR_END_FOR
 #endif
 			PROF(recv_proc_time_ += tk_all);
 
@@ -335,7 +324,7 @@ public:
 #pragma omp parallel
 		{
 			int* counts = scatter_.get_counts();
-#pragma omp for schedule(static)
+			OMP_FOR(schedule(static))
 			for(int i = 0; i < comm_size_; ++i) {
 				CommTarget& node = node_[i];
 				flush(node);
@@ -343,6 +332,7 @@ public:
 					counts[i] += node.send_data[b].length;
 				}
 			} // #pragma omp for schedule(static)
+			OMP_END_FOR
 		}
 
 		scatter_.sum();
@@ -351,7 +341,7 @@ public:
 		{
 			int* offsets = scatter_.get_offsets();
 			uint8_t* dst = (uint8_t*)buffer_provider_->second_buffer();
-#pragma omp for schedule(static)
+			OMP_FOR(schedule(static))
 			for(int i = 0; i < comm_size_; ++i) {
 				CommTarget& node = node_[i];
 				int& offset = offsets[i];
@@ -364,6 +354,7 @@ public:
 				}
 				node.send_data.clear();
 			} // #pragma omp for schedule(static)
+			OMP_END_FOR
 		} // #pragma omp parallel
 		USER_END(a2a_merge);
 
@@ -382,12 +373,13 @@ public:
 
 		int* recv_offsets = scatter_.get_recv_offsets();
 
-#pragma omp parallel for schedule(dynamic,1)
+		OMP_PAR_FOR(schedule(dynamic,1))
 		for(int i = 0; i < comm_size_; ++i) {
 			int offset = recv_offsets[i];
 			int length = recv_offsets[i+1] - offset;
 			buffer_provider_->received(recvbuf, offset, length, i);
 		}
+		OMP_PAR_END_FOR
 		PROF(recv_proc_time_ += tk_all);
 	}
 #if PROFILING_MODE

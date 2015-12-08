@@ -43,7 +43,7 @@
 // 0: disable overlap, 1: enable overlap
 #define BOTTOM_UP_OVERLAP_PFS 1
 // 0: DCSC, 1: Coarse Index, 2:Bitmap
-#define GRAPH_REPRESENTATION 1
+#define GRAPH_REPRESENTATION 2
 // 0: not use embedded original vertex id, 1: use it
 #define EMBED_ORIG_PRED 1
 

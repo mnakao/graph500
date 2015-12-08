@@ -890,10 +890,11 @@ public:
 			const int bitmap_width = get_bitmap_size_local();
 			BitmapType* new_visited = (BitmapType*)new_visited_;
 			BitmapType* old_visited = (BitmapType*)old_visited_;
-#pragma omp parallel for
+			OMP_PAR_FOR()
 			for(int i = 0; i < bitmap_width; ++i) {
 				new_visited[i] &= ~(old_visited[i]);
 			}
+			OMP_PAR_END_FOR
 			// expand nq
 			expand_nq_bitmap();
 		}
@@ -1020,7 +1021,7 @@ public:
 			if(bitmap_or_list) {
 				BitmapType* cq_bitmap = shared_visited_;
 				int64_t bitmap_size = get_bitmap_size_local() * mpi.size_2dc;
-	#pragma omp for
+				OMP_FOR()
 				for(int64_t word_idx = 0; word_idx < bitmap_size; ++word_idx) {
 					BitmapType cq_bit_i = cq_bitmap[word_idx];
 					if(cq_bit_i == BitmapType(0)) continue;
@@ -1122,10 +1123,11 @@ public:
 						VERVOSE(num_edge_relax += e_end - e_start + 1);
 					} // while(bit_flags != BitmapType(0)) {
 				} // #pragma omp for // implicit barrier
+				OMP_END_FOR
 			}
 			else {
 				TwodVertex* cq_list = (TwodVertex*)cq_list_;
-	#pragma omp for
+				OMP_FOR()
 				for(int64_t i = 0; i < int64_t(cq_size_); ++i) {
 					SeparatedId src(cq_list[i]);
 					TwodVertex src_c = src.value >> lgl;
@@ -1214,10 +1216,11 @@ public:
 						VERVOSE(num_edge_relax += e_end - e_start + 1);
 					} // if(row_bitmap_i & mask) {
 				} // #pragma omp for // implicit barrier
+				OMP_END_FOR
 			}
 
 			// flush buffer
-#pragma omp for
+			OMP_FOR()
 			for(int target = 0; target < mpi.size_2dr; ++target) {
 				for(int i = 0; i < omp_get_num_threads(); ++i) {
 					LocalPacket* packet_array =
@@ -1233,6 +1236,8 @@ public:
 					}
 				}
 			} // #pragma omp for
+			OMP_END_FOR
+
 			PROF(profiling::TimeSpan ts_all; ts_all += tk_all; ts_all -= ts_commit);
 			PROF(extract_edge_time_ += ts_all);
 			PROF(commit_time_ += ts_commit);
@@ -1282,7 +1287,6 @@ public:
 		// process from tail because computation cost is higher in tail
 		volatile int procces_counter = num_splits - 1;
 		//volatile int procces_counter = 0;
-
 #pragma omp parallel
 		{
 			TRACER(td_recv);
@@ -2018,11 +2022,6 @@ public:
 				if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 					// add to next queue
 					visited_i |= vis_bit;
-
-					if(tgt_orig == 30418) {
-						print_with_prefix("non_zero_idx = %d, word_idx = %d", non_zero_idx, word_idx);
-					}
-
 #if EMBED_ORIG_PRED
 					buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 #else
@@ -2047,11 +2046,6 @@ public:
 					if(shared_visited[bit_idx >> PRM::LOG_NBPE] & (BitmapType(1) << (bit_idx & PRM::NBPE_MASK))) {
 						// add to next queue
 						visited_i |= vis_bit;
-
-						if(tgt_orig == 30418) {
-							print_with_prefix("non_zero_idx = %d, word_idx = %d", non_zero_idx, word_idx);
-						}
-
 #if EMBED_ORIG_PRED
 						buffer->data.b[num_send++] = ((src >> lgl) << orig_lgl) | tgt_orig;
 #else
@@ -2479,7 +2473,7 @@ public:
 					// This is rounded and came here.
 					BitmapType* src = (BitmapType*)data.data;
 					BitmapType* dst = new_vis[data.tag.region_id % BU_SUBSTEP];
-#pragma omp for
+#pragma omp for nowait
 					for(int64_t i = 0; i < step_bitmap_width; ++i) {
 						dst[i] = src[i];
 					}
@@ -2598,7 +2592,7 @@ public:
 					// This is rounded and came here.
 					int local_region_id = data.tag.region_id % BU_SUBSTEP;
 					TwodVertex* dst = new_vis[local_region_id];
-#pragma omp for
+#pragma omp for nowait
 					for(int64_t i = 0; i < data.tag.length; ++i) {
 						dst[i] = phase_list[i];
 					}
@@ -2719,9 +2713,6 @@ public:
 				int64_t pred_v = ((pred_dst & lmask) * P +
 						cshifted + (pred_dst >> lgl)) | levelshifted;
 #endif
-				if(this_->pred_[tgt_local] != -1) {
-					print_with_prefix("tgt_local = %d", tgt_local);
-				}
 				assert (this_->pred_[tgt_local] == -1);
 				pred[tgt_local] = pred_v;
 			}
@@ -2761,7 +2752,7 @@ public:
 		}
 		void set(int i, LocalVertex d) const {
 			int64_t mask = (int64_t(1) << 48) - 1;
-			pred_[i] = (pred_[i] & ~mask) | (((pred_[i] & mask) % mpi.size_2d) + (d * mpi.size_2d));
+			pred_[i] = (pred_[i] & ~mask) | (((pred_[i] & mask) % mpi.size_2d) + (int64_t(d) * mpi.size_2d));
 		}
 	private:
 		int64_t* const pred_;

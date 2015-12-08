@@ -299,7 +299,39 @@ void print_with_prefix(const char* format, ...) {
 // Memory Allocation
 //-------------------------------------------------------------//
 
-////
+namespace memory {
+
+struct SpinBarrier {
+	volatile int step, cnt;
+	int max;
+	SpinBarrier() { }
+	explicit SpinBarrier(int num_threads) {
+		init(num_threads);
+	}
+	void init(int num_threads) {
+		step = cnt = 0;
+		max = num_threads;
+	}
+	void barrier() {
+		int cur_step = step;
+		int wait_cnt = __sync_add_and_fetch(&cnt, 1);
+		assert (wait_cnt <= max);
+		if(wait_cnt == max) {
+			cnt = 0;
+			__sync_add_and_fetch(&step, 1);
+			return ;
+		}
+		while(step == cur_step) ;
+	}
+};
+
+} // namespace memory {
+
+#if ENABLE_MY_BARRIER
+memory::SpinBarrier g_my_sync;
+#endif
+
+
 int64_t g_memory_usage = 0;
 void x_allocate_check(void* ptr) {
 	size_t nbytes = malloc_usable_size(ptr);
@@ -1694,6 +1726,10 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		numa::set_affinity();
 	}
 
+#if ENABLE_MY_BARRIER
+	g_my_sync.init(omp_get_max_threads());
+#endif
+
 #if CUDA_ENABLED
 	CudaStreamManager::initialize_cuda(g_GpuIndex);
 
@@ -2249,10 +2285,11 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 	{
 		int* restrict counts = scatter.get_counts();
 
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for (int i = 0; i < data_count; ++i) {
 			(counts[mapping.target(i)])++;
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 
 	scatter.sum();
@@ -2261,7 +2298,7 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 	{
 		int* restrict offsets = scatter.get_offsets();
 
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for (int i = 0; i < data_count; ++i) {
 			int pos = (offsets[mapping.target(i)])++;
 			assert (pos < data_count);
@@ -2269,6 +2306,7 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 			partitioned_data[pos] = mapping.get(i);
 			//// user defined ////
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	} // #pragma omp parallel
 
 	// send and receive requests
@@ -2279,10 +2317,11 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 	// make reply data
 	typename Mapping::recv_type* restrict reply_data = static_cast<typename Mapping::recv_type*>(
 			cache_aligned_xmalloc(recv_count*sizeof(typename Mapping::recv_type)));
-#pragma omp parallel for
+	OMP_PAR_FOR()
 	for (int i = 0; i < recv_count; ++i) {
 		reply_data[i] = mapping.map(reply_verts[i]);
 	}
+	OMP_PAR_END_FOR
 	scatter.free(reply_verts);
 
 	// send and receive reply
@@ -2290,10 +2329,11 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 	::free(reply_data);
 
 	// apply received data to edges
-#pragma omp parallel for
+	OMP_PAR_FOR()
 	for (int i = 0; i < data_count; ++i) {
 		mapping.set(i, recv_data[local_indices[i]]);
 	}
+	OMP_PAR_END_FOR
 
 	scatter.free(recv_data);
 	::free(local_indices);
@@ -2307,12 +2347,13 @@ void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
 #pragma omp parallel
 	{
 		int* restrict counts = scatter.get_counts();
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for (int i = 0; i < data_count; ++i) {
 			if(mapping.if_target(i)) {
 				(counts[mapping.target(i)])++;
 			}
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 
 	scatter.sum();
@@ -2327,7 +2368,7 @@ void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
 	{
 		int* restrict offsets = scatter.get_offsets();
 
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for (int i = 0; i < data_count; ++i) {
 			if(mapping.if_target(i)) {
 				int pos = (offsets[mapping.target(i)])++;
@@ -2337,6 +2378,7 @@ void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
 			}
 			//// user defined ////
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	} // #pragma omp parallel
 
 	// send and receive requests
@@ -2347,10 +2389,11 @@ void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
 	// make reply data
 	typename Mapping::recv_type* restrict reply_data = static_cast<typename Mapping::recv_type*>(
 			cache_aligned_xmalloc(recv_count*sizeof(typename Mapping::recv_type)));
-#pragma omp parallel for
+	OMP_PAR_FOR()
 	for (int i = 0; i < recv_count; ++i) {
 		reply_data[i] = mapping.map(reply_verts[i]);
 	}
+	OMP_PAR_END_FOR
 	scatter.free(reply_verts);
 
 	// send and receive reply
@@ -2358,12 +2401,13 @@ void gather_if(const Mapping mapping, int data_count, MPI_Comm comm)
 	::free(reply_data);
 
 	// apply received data to edges
-#pragma omp parallel for
+	OMP_PAR_FOR()
 	for (int i = 0; i < data_count; ++i) {
 		if(mapping.if_target(i)) {
 			mapping.set(i, recv_data[local_indices[i]]);
 		}
 	}
+	OMP_PAR_END_FOR
 
 	scatter.free(recv_data);
 	::free(local_indices);
@@ -3274,26 +3318,6 @@ public:
 
 	std::vector<T> stack_;
 	pthread_mutex_t thread_sync_;
-};
-
-struct SpinBarrier {
-	volatile int step, cnt;
-	int max;
-	explicit SpinBarrier(int num_threads) {
-		step = cnt = 0;
-		max = num_threads;
-	}
-	void barrier() {
-		int cur_step = step;
-		int wait_cnt = __sync_add_and_fetch(&cnt, 1);
-		assert (wait_cnt <= max);
-		if(wait_cnt == max) {
-			cnt = 0;
-			__sync_add_and_fetch(&step, 1);
-			return ;
-		}
-		while(step == cur_step) ;
-	}
 };
 
 void copy_mt(void* dst, void* src, size_t size) {

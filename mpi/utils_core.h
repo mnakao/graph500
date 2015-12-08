@@ -414,4 +414,22 @@ void stop_collection(const char *);
 }
 #endif
 
+#define STRINGIFY(a) #a
+
+#if ENABLE_MY_BARRIER
+
+#define OMP_FOR(option) _Pragma(STRINGIFY(omp for nowait option))
+#define OMP_END_FOR g_my_sync.barrier();
+#define OMP_PAR_FOR(option) _Pragma("omp parallel") { _Pragma(STRINGIFY(omp for nowait option))
+#define OMP_PAR_END_FOR g_my_sync.barrier(); }
+
+#else
+
+#define OMP_FOR(option) _Pragma(STRINGIFY(omp for option))
+#define OMP_END_FOR
+#define OMP_PAR_FOR(option) _Pragma(STRINGIFY(omp parallel for nowait option))
+#define OMP_PAR_END_FOR
+
+#endif
+
 #endif /* UTILS_HPP_ */

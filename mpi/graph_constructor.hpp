@@ -263,7 +263,7 @@ struct DegreeCalculation {
 	void add(int64_t* edges, int64_t num_edges) {
 
 		// count edges
-#pragma omp parallel for
+		OMP_PAR_FOR()
 		for(int64_t i = 0; i < num_edges; ++i) {
 			SeparatedId id(edges[i]);
 			TwodVertex local = id.low(org_local_bits_);
@@ -271,6 +271,7 @@ struct DegreeCalculation {
 
 			__sync_fetch_and_add(&row_length_[row], 1);
 		}
+		OMP_PAR_END_FOR
 
 		// resize data store
 		for(int i = 0; i < num_rows_; ++i) {
@@ -278,7 +279,7 @@ struct DegreeCalculation {
 		}
 
 		// store data
-#pragma omp parallel for
+		OMP_PAR_FOR()
 		for(int64_t i = 0; i < num_edges; ++i) {
 			SeparatedId id(edges[i]);
 			int c = id.high(org_local_bits_);
@@ -289,6 +290,7 @@ struct DegreeCalculation {
 			int64_t offset = __sync_fetch_and_add(&row_offset_[row], 1);
 			dwide_row_data_[row][offset] = DWideRowEdge(src_vertex, c);
 		}
+		OMP_PAR_END_FOR
 	}
 
 	GraphConstructionData process() {
@@ -313,8 +315,7 @@ private:
 		int64_t num_verts = num_orig_local_verts();
 		int64_t* degree = static_cast<int64_t*>(cache_aligned_xcalloc(num_verts*sizeof(int64_t)));
 		vertexes_ = static_cast<LocalVertex*>(cache_aligned_xcalloc(num_verts*sizeof(LocalVertex)));
-
-#pragma omp parallel for
+		OMP_PAR_FOR()
 		for(int r = 0; r < num_rows_; ++r) {
 			std::vector<DWideRowEdge>& row_data = dwide_row_data_[r];
 			for(int64_t c = 0; c < int64_t(row_data.size()); ++c) {
@@ -323,6 +324,7 @@ private:
 				__sync_fetch_and_add(&degree[local], 1);
 			}
 		}
+		OMP_PAR_END_FOR
 
 		for(LocalVertex i = 0; i < num_verts; ++i) {
 			vertexes_[i] = i;
@@ -357,10 +359,12 @@ private:
 		// store mapping to degree
 		LocalVertex* reorde_map = static_cast<LocalVertex*>(
 				cache_aligned_xcalloc(num_verts*sizeof(LocalVertex)));
-#pragma omp parallel for
+
+		OMP_PAR_FOR()
 		for(int64_t i = 0; i < num_verts; ++i) {
 			reorde_map[vertexes_[i]] = int(i);
 		}
+		OMP_PAR_END_FOR
 
 		return reorde_map;
 	}
@@ -379,7 +383,7 @@ private:
 		{
 			int64_t* counts = row_length_counter.get_counts();
 
-#pragma omp for
+			OMP_FOR()
 			for(int r = 0; r < num_rows_; ++r) {
 				std::vector<DWideRowEdge>& row_data = dwide_row_data_[r];
 				for(int64_t i = 0; i < int64_t(row_data.size()); ++i) {
@@ -398,6 +402,7 @@ private:
 					}
 				}
 			}
+			OMP_END_FOR
 		}
 
 		// free memory
@@ -447,7 +452,7 @@ private:
 		orig_vertexes_ = static_cast<LocalVertex*>(
 				cache_aligned_xcalloc(total_vertexes_*sizeof(LocalVertex)));
 
-#pragma omp parallel for
+		OMP_PAR_FOR()
 		for(int c = 0; c < mpi.size_2dc; ++c) {
 			for(int64_t i = 0; i < local_bitmap_size(); ++i) {
 				int64_t word_idx = i + local_bitmap_size() * c;
@@ -462,6 +467,7 @@ private:
 				}
 			}
 		}
+		OMP_PAR_END_FOR
 	}
 
 	GraphConstructionData gather_data(LocalVertex* reorder_map) {
@@ -672,7 +678,7 @@ private:
 	void maxVertex(const EdgeType* edge_data, const int edge_data_length,
 			uint64_t& max_vertex, int& max_weight, typename EdgeType::has_weight dummy = 0)
 	{
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for(int i = 0; i < edge_data_length; ++i) {
 			const int64_t v0 = edge_data[i].v0();
 			const int64_t v1 = edge_data[i].v1();
@@ -680,6 +686,7 @@ private:
 			max_vertex |= (uint64_t)(v0 | v1);
 			if(max_weight < weight) max_weight = weight;
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 
 	// function #2
@@ -687,12 +694,13 @@ private:
 	void maxVertex(const EdgeType* edge_data, const int edge_data_length,
 			uint64_t& max_vertex, int& max_weight, typename EdgeType::no_weight dummy = 0)
 	{
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for(int i = 0; i < edge_data_length; ++i) {
 			const int64_t v0 = edge_data[i].v0();
 			const int64_t v1 = edge_data[i].v1();
 			max_vertex |= (uint64_t)(v0 | v1);
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 
 	// using SFINAE
@@ -701,7 +709,7 @@ private:
 	void scanEdges(const EdgeType* edge_data, const int edge_data_length,
 			int* restrict counts, typename EdgeType::has_weight dummy = 0)
 	{
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for(int i = 0; i < edge_data_length; ++i) {
 			const int64_t v0 = edge_data[i].v0();
 			const int64_t v1 = edge_data[i].v1();
@@ -710,6 +718,7 @@ private:
 			(counts[edge_owner(v0,v1)])++;
 			(counts[edge_owner(v1,v0)])++;
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 
 	// function #2
@@ -717,7 +726,7 @@ private:
 	void scanEdges(const EdgeType* edge_data, const int edge_data_length,
 			int* restrict counts, typename EdgeType::no_weight dummy = 0)
 	{
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for(int i = 0; i < edge_data_length; ++i) {
 			const int64_t v0 = edge_data[i].v0();
 			const int64_t v1 = edge_data[i].v1();
@@ -725,6 +734,7 @@ private:
 			(counts[edge_owner(v0,v1)])++;
 			(counts[edge_owner(v1,v0)])++;
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 
 	// using SFINAE
@@ -791,7 +801,7 @@ private:
 			{
 				int* restrict counts = scatter.get_counts();
 
-#pragma omp for schedule(static)
+				OMP_FOR(schedule(static))
 				for(int i = 0; i < edge_data_length; ++i) {
 					const int64_t v0 = edge_data[i].v0();
 					const int64_t v1 = edge_data[i].v1();
@@ -799,6 +809,7 @@ private:
 					(counts[vertex_owner(v0)])++;
 					(counts[vertex_owner(v1)])++;
 				} // #pragma omp for schedule(static)
+				OMP_END_FOR
 			} // #pragma omp parallel
 
 			scatter.sum();
@@ -816,7 +827,7 @@ private:
 			{
 				int* restrict offsets = scatter.get_offsets();
 
-#pragma omp for schedule(static)
+				OMP_FOR(schedule(static))
 				for(int i = 0; i < edge_data_length; ++i) {
 					const int64_t v0 = edge_data[i].v0();
 					const int64_t v1 = edge_data[i].v1();
@@ -829,6 +840,7 @@ private:
 					//assert (offsets[edge_owner(v1,v0)] < 2 * FILE_CHUNKSIZE);
 					edges_to_send[(offsets[vertex_owner(v1)])++] = v1_swizzled.value;
 				} // #pragma omp for schedule(static)
+				OMP_END_FOR
 			} // #pragma omp parallel
 
 #if NETWORK_PROBLEM_AYALISYS
@@ -958,7 +970,7 @@ private:
 #endif
 
 		if(mpi.isMaster()) print_with_prefix("Computing row_starts.");
-#pragma omp parallel for
+		OMP_PAR_FOR()
 		for(int64_t part_base = 0; part_base < src_region_length; part_base += EDGE_PART_SIZE) {
 			int64_t part_idx = part_base >> LOG_EDGE_PART_SIZE;
 			int64_t row_length[EDGE_PART_SIZE] = {0};
@@ -986,6 +998,7 @@ private:
 			}
 			assert (edge_offset == wide_row_starts_[part_idx+1]);
 		}
+		OMP_PAR_END_FOR
 		row_starts[non_zero_rows] = wide_row_starts_[num_wide_rows_];
 
 #if USE_COARSE_INDEX
@@ -998,7 +1011,7 @@ private:
 
 #ifndef NDEBUG
 		// check row_starts
-#pragma omp parallel for
+		OMP_PAR_FOR()
 		for(int64_t part_base = 0; part_base < src_region_length; part_base += EDGE_PART_SIZE) {
 			int64_t part_size = std::min<int64_t>(src_region_length - part_base, EDGE_PART_SIZE);
 			int64_t part_idx = part_base >> LOG_EDGE_PART_SIZE;
@@ -1016,6 +1029,7 @@ private:
 				assert (row_starts[nz_idx + i + 1] > row_starts[nz_idx + i]);
 			}
 		}
+		OMP_PAR_END_FOR
 #endif // #ifndef NDEBUG
 
 		// delete wide row structure
@@ -1066,7 +1080,7 @@ private:
 			int* restrict offsets, EdgeType* edges_to_send, typename EdgeType::has_weight dummy = 0)
 	{
 		const int local_bits = org_local_bits_;
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for(int i = 0; i < edge_data_length; ++i) {
 			const int64_t v0 = edge_data[i].v0();
 			const int64_t v1 = edge_data[i].v1();
@@ -1080,6 +1094,7 @@ private:
 			//assert (offsets[edge_owner(v1,v0)] < 2 * FILE_CHUNKSIZE);
 			edges_to_send[(offsets[edge_owner(v1,v0)])++].set(v1_src.value, v0_dst.value, edge_data[i].weight_);
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 
 	// function #2
@@ -1088,7 +1103,7 @@ private:
 			int* restrict offsets, EdgeType* edges_to_send, typename EdgeType::no_weight dummy = 0)
 	{
 		const int local_bits = org_local_bits_;
-#pragma omp for schedule(static)
+		OMP_FOR(schedule(static))
 		for(int i = 0; i < edge_data_length; ++i) {
 			const int64_t v0 = edge_data[i].v0();
 			const int64_t v1 = edge_data[i].v1();
@@ -1102,6 +1117,7 @@ private:
 			//assert (offsets[edge_owner(v1,v0)] < 2 * FILE_CHUNKSIZE);
 			edges_to_send[(offsets[edge_owner(v1,v0)])++].set(v1_src.value, v0_dst.value);
 		} // #pragma omp for schedule(static)
+		OMP_END_FOR
 	}
 /*
 	// using SFINAE
@@ -1142,12 +1158,13 @@ private:
 		{
 			int64_t* counts = row_length_counter.get_counts();
 
-#pragma omp for schedule(static)
+			OMP_FOR(schedule(static))
 			for(int i = 0; i < num_edges; ++i) {
 				const SeparatedId v0(src_converted[i]);
 				const int src_high = v0.compact(lgl, L) >> LOG_EDGE_PART_SIZE;
 				counts[src_high]++;
 			}
+			OMP_END_FOR
 		}
 
 		row_length_counter.sum(wide_row_starts_);
@@ -1156,7 +1173,7 @@ private:
 		{
 			int64_t* offsets = row_length_counter.get_offsets();
 
-#pragma omp for schedule(static)
+			OMP_FOR(schedule(static))
 			for(int i = 0; i < num_edges; ++i) {
 				const SeparatedId v0(src_converted[i]);
 				const SeparatedId v1(tgt_converted[i]);
@@ -1172,6 +1189,7 @@ private:
 				src_vertexes_[pos] = src_low;
 				g.edge_array_[pos] = v1.value;
 			}
+			OMP_END_FOR
 		}
 	}
 
@@ -1272,7 +1290,7 @@ private:
 			{
 				int* restrict counts = scatter.get_counts();
 
-#pragma omp for schedule(static)
+				OMP_FOR(schedule(static))
 				for(int i = 0; i < edge_data_length; ++i) {
 					const int64_t v0 = edge_data[i].v0();
 					const int64_t v1 = edge_data[i].v1();
@@ -1280,6 +1298,7 @@ private:
 					(counts[edge_owner(v0,v1)])++;
 					(counts[edge_owner(v1,v0)])++;
 				} // #pragma omp for schedule(static)
+				OMP_END_FOR
 			} // #pragma omp parallel
 
 			scatter.sum();
@@ -1339,13 +1358,14 @@ private:
 		wide_row_starts_[0] = 0;
 
 #ifndef NDEBUG
-#pragma omp parallel for
+		OMP_PAR_FOR()
 		for(int64_t i = 0; i <= num_wide_rows_; ++i) {
 			if(row_starts_sup_[i] != wide_row_starts_[i]) {
 				print_with_prefix("Error: Edge Counts: i=%"PRId64",1st=%"PRId64",2nd=%"PRId64"", i, row_starts_sup_[i], wide_row_starts_[i]);
 			}
 			assert(row_starts_sup_[i] == wide_row_starts_[i]);
 		}
+		OMP_PAR_END_FOR
 #endif
 	}
 
@@ -1446,7 +1466,7 @@ private:
 	template<typename EdgeType>
 	void sortEdgesInner(GraphType& g, typename EdgeType::no_weight dummy = 0)
 	{
-#pragma omp for
+		OMP_FOR()
 		for(int64_t i = 0; i < num_wide_rows_; ++i) {
 			const int64_t edge_offset = wide_row_starts_[i];
 			const int64_t edge_count = wide_row_starts_[i+1] - edge_offset;
@@ -1478,6 +1498,7 @@ private:
 			}
 			row_starts_sup_[i] = idx - edge_offset;
 		} // #pragma omp for
+		OMP_END_FOR
 
 	}
 
@@ -1521,10 +1542,11 @@ private:
 		g.has_edge_bitmap_ = (BitmapType*)cache_aligned_xmalloc(local_bitmap_width*sizeof(BitmapType));
 		MPI_Reduce_scatter(g.row_bitmap_, g.has_edge_bitmap_, recvcounts, MpiTypeOf<BitmapType>::type, MPI_BOR, mpi.comm_2dr);
 		int64_t num_vertices = 0;
-#pragma omp parallel for reduction(+:num_vertices)
+		OMP_PAR_FOR(reduction(+:num_vertices))
 		for(int i = 0; i < local_bitmap_width; ++i) {
 			num_vertices += __builtin_popcountl(g.has_edge_bitmap_[i]);
 		}
+		OMP_PAR_END_FOR
 		int64_t tmp_send_num_vertices = num_vertices;
 		MPI_Allreduce(&tmp_send_num_vertices, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
 		VERVOSE(int64_t num_virtual_vertices = int64_t(1) << g.log_orig_global_verts_);
