@@ -85,6 +85,10 @@ public:
 
 	~EdgeListStorage()
 	{
+		clear();
+	}
+
+	void clear() {
 		if(edge_memory_ != NULL) { free(edge_memory_); edge_memory_ = NULL; }
 		if(data_in_file_ == false) {
 		}
