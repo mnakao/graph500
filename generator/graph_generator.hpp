@@ -38,7 +38,8 @@ public:
 	static const int CHUNK_SIZE = CHUNK_SIZE_;
 	typedef EdgeType edge_type;
 
-	EdgeListStorage(int64_t nLocalEdges, const char* filepath = NULL)
+	EdgeListStorage(int64_t nLocalEdges, const char* filepath = NULL,
+			int amode = MPI_MODE_CREATE | MPI_MODE_DELETE_ON_CLOSE)
 		: data_in_file_(false)
 		, edge_memory_(NULL)
 		, edge_file_(NULL)
@@ -55,31 +56,47 @@ public:
 		, write_buffer_filled_size_(0)
 		, write_buffer_size_(0)
 	{
-		edge_memory_size_ = nLocalEdges * 103 / 100 + CHUNK_SIZE; // add 3%
-#if VERVOSE_MODE
-		if(mpi.isMaster()) {
-			print_with_prefix("Allocating edge list memory (%"PRId64" * %d bytes)", edge_memory_size_*sizeof(EdgeType), mpi.size_2d);
+		if(nLocalEdges == 0 && filepath == NULL) {
+			if(mpi.isMaster()) {
+				print_with_prefix("Both nLocalEdges and filepath is NULL ...");
+			}
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
+
+		if(nLocalEdges > 0) {
+			edge_memory_size_ = nLocalEdges * 103 / 100 + CHUNK_SIZE; // add 3%
+#if VERVOSE_MODE
+			if(mpi.isMaster()) {
+				print_with_prefix("Allocating edge list memory (%"PRId64" * %d bytes)", edge_memory_size_*sizeof(EdgeType), mpi.size_2d);
+			}
 #endif
-		edge_memory_ = static_cast<EdgeType*>
-			(cache_aligned_xmalloc(edge_memory_size_*sizeof(EdgeType)));
+			edge_memory_ = static_cast<EdgeType*>
+				(cache_aligned_xmalloc(edge_memory_size_*sizeof(EdgeType)));
+		}
 
 		if(filepath == NULL) {
 			data_in_file_ = false;
 		}
 		else {
 			data_in_file_ = true;
-			sprintf(filepath_, "%s-%03d", filepath, mpi.rank_2d);
-			MPI_File_open(MPI_COMM_SELF, const_cast<char*>(filepath_),
-							MPI_MODE_RDWR |
-							MPI_MODE_CREATE |
-						//	MPI_MODE_EXCL |
-							MPI_MODE_DELETE_ON_CLOSE |
-							MPI_MODE_UNIQUE_OPEN,
+			sprintf(filepath_, "%s-%05d", filepath, mpi.rank_2d);
+			amode |=
+					MPI_MODE_RDWR |
+					MPI_MODE_UNIQUE_OPEN;
+			MPI_File_open(MPI_COMM_SELF, const_cast<char*>(filepath_), amode,
 							MPI_INFO_NULL, &edge_file_);
 			MPI_File_set_atomicity(edge_file_, 0);
 			MPI_File_set_view(edge_file_, 0,
 					MpiTypeOf<EdgeType>::type, MpiTypeOf<EdgeType>::type, const_cast<char*>("native"), MPI_INFO_NULL);
+
+			MPI_Offset fsize;
+			MPI_File_get_size(edge_file_, &fsize);
+			edge_filled_size_ = fsize / sizeof(EdgeType);
+
+			print_with_prefix("Edge Storage File Size: %d", edge_filled_size_);
+
+			MPI_Allreduce(&edge_filled_size_, &max_edge_size_among_all_procs_,
+					1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
 		}
 	}
 
@@ -95,6 +112,7 @@ public:
 		else {
 			MPI_File_close(&edge_file_); edge_file_ = NULL;
 			if(read_buffer_ != NULL) { free(read_buffer_); read_buffer_ = NULL; }
+			data_in_file_ = false;
 		}
 	}
 
@@ -189,6 +207,9 @@ public:
 		write_enabled_ = true;
 		write_offset_ = 0;
 		write_buffer_filled_size_ = 0;
+		if(data_in_file_) {
+			MPI_File_set_size(edge_file_, 0);
+		}
 	}
 
 	void write(EdgeType* edge_data, int count)
@@ -245,6 +266,7 @@ public:
 		int64_t written_size = write_offset_ + write_buffer_filled_size_;
 		MPI_Allreduce(&written_size, &max_edge_size_among_all_procs_,
 				1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
+
 	}
 
 	int64_t num_local_edges() { return num_local_edges_; }
