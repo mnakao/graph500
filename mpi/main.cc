@@ -36,7 +36,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 	using namespace PRM;
 	SET_AFFINITY;
 
-	double bfs_times[64], validate_times[64], edge_counts[64];
+	double bfs_times[NUM_BFS_ROOTS], validate_times[NUM_BFS_ROOTS], edge_counts[NUM_BFS_ROOTS];
 	LogFileFormat log = {0};
 	int root_start = read_log_file(&log, SCALE, edgefactor, bfs_times, validate_times, edge_counts);
 	if(mpi.isMaster() && root_start != 0)
@@ -106,35 +106,26 @@ void graph500_bfs(int SCALE, int edgefactor)
 	//for(int i = 0; i < num_bfs_roots; ++i) {
 		VERVOSE(print_max_memory_usage());
 
-		double min_bfs_time = 10000.0f;
-		int fastest_run = 0;
-		for(int c = 0; c < 8; ++c) {
-			if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
+		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
 #if ENABLE_FUJI_PROF
-			fapp_start("bfs", i, 1);
+		fapp_start("bfs", i, 1);
 #endif
-			MPI_Barrier(mpi.comm_2d);
-			PROF(profiling::g_pis.reset());
-			double cur_bfs_time = MPI_Wtime();
-			benchmark->run_bfs(bfs_roots[i], pred);
-			cur_bfs_time = MPI_Wtime() - cur_bfs_time;
+		MPI_Barrier(mpi.comm_2d);
+		PROF(profiling::g_pis.reset());
+		double cur_bfs_time = MPI_Wtime();
+		benchmark->run_bfs(bfs_roots[i], pred);
+		cur_bfs_time = MPI_Wtime() - cur_bfs_time;
 #if ENABLE_FUJI_PROF
-			fapp_stop("bfs", i, 1);
+		fapp_stop("bfs", i, 1);
 #endif
-			PROF(profiling::g_pis.printResult());
-			if(mpi.isMaster()) {
-				print_with_prefix("Time for BFS %d is %f", i, cur_bfs_time);
-				if(min_bfs_time > cur_bfs_time) {
-					min_bfs_time = cur_bfs_time;
-					fastest_run = c;
-				}
-			}
-			benchmark->get_pred(pred);
+		PROF(profiling::g_pis.printResult());
+		if(mpi.isMaster()) {
+			print_with_prefix("Time for BFS %d is %f", i, cur_bfs_time);
 		}
-		bfs_times[i] = min_bfs_time;
+		bfs_times[i] = cur_bfs_time;
+		benchmark->get_pred(pred);
 
 		if(mpi.isMaster()) {
-			print_with_prefix("Fastest Run is %d (%f)", fastest_run, min_bfs_time);
 			print_with_prefix("Validating BFS %d", i);
 		}
 
