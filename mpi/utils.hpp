@@ -240,7 +240,7 @@ FILE* get_imd_out_file() {
 	if(g_out_file == NULL) {
 		char buf[100];
 		sprintf(buf, "out.%d", mpi.rank);
-		g_out_file = fopen(buf, "w");
+		g_out_file = fopen(buf, "a");
 		if(g_out_file == NULL) {
 			return stderr;
 		}
@@ -3793,8 +3793,8 @@ int64_t pf_nedge[] = {
 	549752273512, // 35
 	1099505021204, // 36
 	0, // 37
-	0, // 38
-	0, // 39
+	4398023185000, // 38
+	8796049485700, // 39
 	0, // 40
 	0, // 41
 	0 // 42

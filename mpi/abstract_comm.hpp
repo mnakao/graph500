@@ -147,11 +147,14 @@ public:
 
 		for(int loop = 0; ; ++loop) {
 			USER_START(a2a_merge);
+			PROF(profiling::TimeKeeper tk_all);
+
 #pragma omp parallel
 			{
 				int* counts = scatter_.get_counts();
 				OMP_FOR(schedule(static))
 				for(int i = 0; i < comm_size_; ++i) {
+					PROF(profiling::TimeKeeper tk_all);
 					CommTarget& node = node_[i];
 					flush(node);
 					for(int b = 0; b < (int)node.send_data.size(); ++b) {
@@ -174,9 +177,11 @@ public:
 							break;
 						}
 					}
+					PROF(merge_thread_time_ += tk_all);
 				} // #pragma omp for schedule(static)
 				OMP_END_FOR
 			}
+			PROF(merge_par_reg_time_ += tk_all);
 
 			scatter_.sum();
 
@@ -186,12 +191,14 @@ public:
 				if(has_data == 0) break;
 			}
 
+			PROF(tk_all.getSpanAndReset());
 #pragma omp parallel
 			{
 				int* offsets = scatter_.get_offsets();
 				uint8_t* dst = (uint8_t*)buffer_provider_->second_buffer();
 				OMP_FOR(schedule(static))
 				for(int i = 0; i < comm_size_; ++i) {
+					PROF(profiling::TimeKeeper tk_all);
 					CommTarget& node = node_[i];
 					int& offset = offsets[i];
 					int count = 0;
@@ -233,9 +240,11 @@ public:
 						if(count + MINIMUM_POINTER_SPACE >= max_size) break;
 					}
 					node.send_data.clear();
+					PROF(merge_thread_time_ += tk_all);
 				} // #pragma omp for schedule(static)
 				OMP_END_FOR
 			} // #pragma omp parallel
+			PROF(merge_par_reg_time_ += tk_all);
 			USER_END(a2a_merge);
 
 			void* sendbuf = buffer_provider_->second_buffer();
@@ -385,6 +394,8 @@ public:
 #if PROFILING_MODE
 	void submit_prof_info(int level, bool with_ptr) {
 		merge_time_.submit("merge a2a data", level);
+		merge_par_reg_time_.submit("merge a2a parallel reg", level);
+		merge_thread_time_.submit("merge a2a thread", level);
 		comm_time_.submit("a2a comm", level);
 		recv_proc_time_.submit("proc recv data", level);
 		if(with_ptr) {
@@ -424,6 +435,8 @@ private:
 	ScatterContext scatter_;
 
 	PROF(profiling::TimeSpan merge_time_);
+	PROF(profiling::TimeSpan merge_par_reg_time_);
+	PROF(profiling::TimeSpan merge_thread_time_);
 	PROF(profiling::TimeSpan comm_time_);
 	PROF(profiling::TimeSpan recv_proc_time_);
 	PROF(profiling::TimeSpan recv_proc_large_time_);

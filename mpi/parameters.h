@@ -69,7 +69,7 @@
 // 0: disable, 1: 1D, 2: 2D
 #define ENABLE_MY_ALLGATHER 1
 #define ENABLE_INLINE_ATOMICS 0
-#define ENABLE_FUJI_PROF 0
+#define ENABLE_FUJI_PROF 1
 #define ENABLE_MY_BARRIER 1
 
 // root switch to on/off debug print

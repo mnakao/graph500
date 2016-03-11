@@ -978,6 +978,10 @@ public:
 
 	void top_down_parallel_section(bool bitmap_or_list) {
 		TRACER(td_par_sec);
+#if ENABLE_FUJI_PROF
+		fapp_start("top_down_ld", 0, 0);
+		fapp_start("graph_extract", 0, 0);
+#endif
 		PROF(profiling::TimeKeeper tk_all);
 		bool clear_packet_buffer = packet_buffer_is_dirty_;
 		packet_buffer_is_dirty_ = false;
@@ -995,6 +999,7 @@ public:
 		{
 			SET_OMP_AFFINITY;
 			PROF(profiling::TimeKeeper tk_all);
+			PROF(profiling::TimeSpan ts_all);
 			PROF(profiling::TimeSpan ts_commit);
 			VERVOSE(int64_t num_edge_relax = 0);
 			VERVOSE(int64_t num_large_edge = 0);
@@ -1123,7 +1128,9 @@ public:
 						VERVOSE(num_edge_relax += e_end - e_start + 1);
 					} // while(bit_flags != BitmapType(0)) {
 				} // #pragma omp for // implicit barrier
+				PROF(ts_all += tk_all);
 				OMP_END_FOR
+				PROF(extract_thread_wait_ += tk_all);
 			}
 			else {
 				TwodVertex* cq_list = (TwodVertex*)cq_list_;
@@ -1216,7 +1223,9 @@ public:
 						VERVOSE(num_edge_relax += e_end - e_start + 1);
 					} // if(row_bitmap_i & mask) {
 				} // #pragma omp for // implicit barrier
+				PROF(ts_all += tk_all);
 				OMP_END_FOR
+				PROF(extract_thread_wait_ += tk_all);
 			}
 
 			// flush buffer
@@ -1236,9 +1245,11 @@ public:
 					}
 				}
 			} // #pragma omp for
+			PROF(ts_all += tk_all);
 			OMP_END_FOR
+			PROF(extract_thread_wait_ += tk_all);
 
-			PROF(profiling::TimeSpan ts_all; ts_all += tk_all; ts_all -= ts_commit);
+			PROF(ts_all -= ts_commit);
 			PROF(extract_edge_time_ += ts_all);
 			PROF(commit_time_ += ts_commit);
 			VERVOSE(__sync_fetch_and_add(&num_edge_top_down_, num_edge_relax));
@@ -1247,6 +1258,10 @@ public:
 #undef IF_LARGE_EDGE
 #undef ELSE
 		PROF(parallel_reg_time_ += tk_all);
+#if ENABLE_FUJI_PROF
+		fapp_stop("top_down_ld", 0, 0);
+		fapp_stop("graph_extract", 0, 0);
+#endif
 		debug("finished parallel");
 	}
 
@@ -1254,7 +1269,16 @@ public:
 		TRACER(td);
 
 		td_comm_.prepare();
+#if ENABLE_FUJI_PROF
+		fapp_start("graph_extract3", 0, 0);
+		fapp_start("graph_extract2", 0, 0);
+#endif
 		top_down_parallel_section(bitmap_or_list_);
+#if ENABLE_FUJI_PROF
+		fapp_stop("graph_extract2", 0, 0);
+		MPI_Barrier(mpi.comm_2d);
+		fapp_stop("graph_extract3", 0, 0);
+#endif
 		td_comm_.run_with_ptr();
 
 		PROF(profiling::TimeKeeper tk_all);
@@ -2153,6 +2177,9 @@ public:
 #endif
 		int tid = omp_get_thread_num();
 		int num_threads = omp_get_num_threads();
+#if ENABLE_FUJI_PROF
+		if(tid == 0) fapp_start("graph_extract", 0, 0);
+#endif
 
 #if 1 // dynamic partitioning
 		int visited_count = 0;
@@ -2201,6 +2228,9 @@ public:
 		USER_END(bu_bmp_step);
 
 		thread_sync_.barrier();
+#if ENABLE_FUJI_PROF
+		if(tid == 0) fapp_stop("graph_extract", 0, 0);
+#endif
 
 		PROF(extract_thread_wait_ += tk_all);
 		return visited_count;
@@ -2240,6 +2270,9 @@ public:
 		assert (buffer->length == 0);
 		int num_send = 0;
 
+#if ENABLE_FUJI_PROF
+		fapp_start("graph_extract", 0, 0);
+#endif
 		int64_t begin, end;
 		get_partition(data.tag.length, phase_list, LOG_BFELL_SORT, max_threads, tid, begin, end);
 		int num_enabled = end - begin;
@@ -2359,6 +2392,9 @@ public:
 			assert (th_offset[max_threads] <= int(data.tag.length));
 		}
 		thread_sync_.barrier();
+#if ENABLE_FUJI_PROF
+		fapp_stop("graph_extract", 0, 0);
+#endif
 
 		USER_START(bu_list_write);
 		// make new list to send
@@ -2520,7 +2556,16 @@ public:
 		for(int i = 0; i < comm_size*max_threads; ++i) visited_count[i] = 0;
 
 		bu_comm_.prepare();
+#if ENABLE_FUJI_PROF
+		fapp_start("graph_extract3", 0, 0);
+		fapp_start("graph_extract2", 0, 0);
+#endif
 		bottom_up_bmp_parallel_section(visited_count);
+#if ENABLE_FUJI_PROF
+		fapp_stop("graph_extract2", 0, 0);
+		MPI_Barrier(mpi.comm_2d);
+		fapp_stop("graph_extract3", 0, 0);
+#endif
 		bu_comm_.run();
 
 		// gather visited_count
@@ -2668,7 +2713,16 @@ public:
 
 		bu_comm_.prepare();
 		int64_t num_blocks; int64_t num_vertexes;
+#if ENABLE_FUJI_PROF
+		fapp_start("graph_extract3", 0, 0);
+		fapp_start("graph_extract2", 0, 0);
+#endif
 		bottom_up_list_parallel_section(visited_count, vertex_enabled, num_blocks, num_vertexes);
+#if ENABLE_FUJI_PROF
+		fapp_stop("graph_extract2", 0, 0);
+		MPI_Barrier(mpi.comm_2d);
+		fapp_stop("graph_extract3", 0, 0);
+#endif
 		bu_comm_.run();
 
 		bottom_up_gather_nq_size(visited_count);
@@ -2932,11 +2986,10 @@ public:
 void BfsBase::run_bfs(int64_t root, int64_t* pred)
 {
 	SET_AFFINITY;
-#if ENABLE_FUJI_PROF
-	fapp_start("initialize", 0, 0);
-	start_collection("initialize");
-#endif
 	TRACER(run_bfs);
+#if ENABLE_FUJI_PROF
+	fapp_start("bfs_wo_conv", 0, 0);
+#endif
 	pred_ = pred;
 #if VERVOSE_MODE
 	double tmp = MPI_Wtime();
@@ -2974,12 +3027,6 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	expand_time += cur_expand_time; prev_time = tmp;
 #endif
 
-#if ENABLE_FUJI_PROF
-	stop_collection("initialize");
-	fapp_stop("initialize", 0, 0);
-	char *prof_mes[] = { "bottom-up", "top-down" };
-#endif
-
 	while(true) {
 		++current_level_;
 #if VERVOSE_MODE
@@ -2987,10 +3034,6 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		num_td_large_edge_ = 0;
 		num_edge_bottom_up_ = 0;
 #endif // #if VERVOSE_MODE
-#if ENABLE_FUJI_PROF
-		fapp_start(prof_mes[(int)forward_or_backward_], 0, 0);
-		start_collection(prof_mes[(int)forward_or_backward_]);
-#endif
 		TRACER(level);
 		// search phase //
 		int64_t prev_global_nq_size = global_nq_size_;
@@ -3070,17 +3113,9 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		num_edge_bottom_up_ = recv_num_edges[2];
 #endif // #if PROFILING_MODE
 #endif // #if VERVOSE_MODE
-#if ENABLE_FUJI_PROF
-		stop_collection(prof_mes[(int)forward_or_backward_]);
-		fapp_stop(prof_mes[(int)forward_or_backward_], 0, 0);
-#endif
 #if !VERVOSE_MODE
 		if(global_nq_size_ == 0)
 			break;
-#endif
-#if ENABLE_FUJI_PROF
-		fapp_start("expand", 0, 0);
-		start_collection("expand");
 #endif
 		int64_t global_unvisited_vertices = graph_.num_global_verts_ - global_visited_vertices;
 		next_bitmap_or_list = !forward_or_backward_;
@@ -3187,17 +3222,19 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		}
 		clear_nq_stack(); // currently, this is required only in the top-down phase
 
-#if ENABLE_FUJI_PROF
-		stop_collection("expand");
-		fapp_stop("expand", 0, 0);
-#endif
 #if VERVOSE_MODE
 		tmp = MPI_Wtime();
 		cur_expand_time = tmp - prev_time;
 		expand_time += cur_expand_time; prev_time = tmp;
 #endif
 	} // while(true) {
+#if ENABLE_FUJI_PROF
+	fapp_stop("bfs_wo_conv", 0, 0);
+#endif
 #if VERTEX_REORDERING && !EMBED_ORIG_PRED
+#if ENABLE_FUJI_PROF
+	fapp_start("convert_pred", 0, 0);
+#endif
 	// convert pred source vertex (reordered -> original)
 	MpiCol::gather_if(
 			PredConverter(
@@ -3207,6 +3244,16 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 					graph_.local_bits_),
 			graph_.pred_size(),
 			mpi.comm_2d);
+#if ENABLE_FUJI_PROF
+	fapp_stop("convert_pred", 0, 0);
+#endif
+#if VERVOSE_MODE
+	tmp = MPI_Wtime();
+	if(mpi.isMaster()) {
+		print_with_prefix("CONVERT_PRED Time: %f ms", (tmp - prev_time) * 1000.0);
+	}
+	prev_time = tmp;
+#endif
 #endif
 	clear_nq_stack();
 #if VERVOSE_MODE

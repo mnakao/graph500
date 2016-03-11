@@ -107,16 +107,16 @@ void graph500_bfs(int SCALE, int edgefactor)
 		VERVOSE(print_max_memory_usage());
 
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
-#if ENABLE_FUJI_PROF
-		fapp_start("bfs", i, 1);
-#endif
 		MPI_Barrier(mpi.comm_2d);
 		PROF(profiling::g_pis.reset());
+#if ENABLE_FUJI_PROF
+		fapp_start("bfs", 0, 0);
+#endif
 		double cur_bfs_time = MPI_Wtime();
 		benchmark->run_bfs(bfs_roots[i], pred);
 		cur_bfs_time = MPI_Wtime() - cur_bfs_time;
 #if ENABLE_FUJI_PROF
-		fapp_stop("bfs", i, 1);
+		fapp_stop("bfs", 0, 0);
 #endif
 		PROF(profiling::g_pis.printResult());
 		if(mpi.isMaster()) {
