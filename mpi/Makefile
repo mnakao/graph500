@@ -1,4 +1,5 @@
-SW =GNU3
+#SW =GNU3
+SW=FUGAKU
 VAMP = false
 SCOREP = false
 
@@ -72,6 +73,14 @@ endif
 CFLAGS := $(FCC_BASE) -g -O0
 LDFLAGS := $(CFLAGS)
 endif
+ifeq ($(SW), FUGAKU)
+MPICC := mpifccpx
+MPICPP := mpiFCCpx
+FCC_BASE := -Kopenmp -Drestrict=__restrict__  $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT)
+CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG
+LDFLAGS := $(CFLAGS) -Nfjomplib
+#LDFLAGS := $(CFLAGS)
+endif
 
 ifeq ($(SW), UVGNU3)
 MPICC := mpicc-gcc4.7
@@ -85,13 +94,22 @@ MPICPP := mpicxx-gcc4.7
 CFLAGS := $(GCC_BASE) -O0
 LIBS :=  $(LIBS) -lnuma -lmpi
 endif
+#ifeq ($(SW), INTEL3)
+#MPICC := icc
+#MPICPP := icpc
+#CFLAGS := -ipo -no-prec-div -openmp -g3 -Drestrict=__restrict__ -O3 -DNDEBUG
+##CFLAGS := -ipo -openmp -g3 -Drestrict=__restrict__ -O2 -DNDEBUG
+#NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
+#LDFLAGS := -openmp -g
+#LIBS := $(LIBS) -lnuma -lmpi
+#endif
 ifeq ($(SW), INTEL3)
-MPICC := icc
-MPICPP := icpc
-CFLAGS := -ipo -no-prec-div -openmp -g3 -Drestrict=__restrict__ -O3 -DNDEBUG
+MPICC := mpiicc
+MPICPP := mpiicpc
+CFLAGS := -ipo -no-prec-div -qopenmp -g3 -Drestrict=__restrict__ -O3 -DNDEBUG $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT)
 #CFLAGS := -ipo -openmp -g3 -Drestrict=__restrict__ -O2 -DNDEBUG
 NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
-LDFLAGS := -openmp -g
+LDFLAGS := -qopenmp -g
 LIBS := $(LIBS) -lnuma -lmpi
 endif
 ifeq ($(SW), INTEL0)

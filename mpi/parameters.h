@@ -108,7 +108,8 @@
 #define SGI_OMPLACE_BUG 0
 
 #ifdef __FUJITSU
-#	define ENABLE_FJMPI 1
+//#	define ENABLE_FJMPI 1
+#     define ENABLE_FJMPI 0
 #else // #ifdef __FUJITSU
 #	define ENABLE_FJMPI 0
 #	undef ENABLE_FUJI_PROF
@@ -134,10 +135,13 @@
 #	undef OPENMP_SUB_THREAD
 #	define OPENMP_SUB_THREAD 0
 #endif
-
+#ifdef __FUJITSU
+#define CACHE_LINE 256
+#define PAGE_SIZE 65536
+#else
 #define CACHE_LINE 128
 #define PAGE_SIZE 8192
-//#define PAGE_SIZE 16
+#endif
 
 //#define IMD_OUT get_imd_out_file()
 #define IMD_OUT stderr
