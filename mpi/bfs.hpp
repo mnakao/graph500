@@ -90,7 +90,6 @@ public:
 		, bu_comm_(mpi.comm_2dr, &bottom_up_comm_)
 		, denom_to_bottom_up_(DENOM_TOPDOWN_TO_BOTTOMUP)
 		, denom_bitmap_to_list_(DENOM_BITMAP_TO_LIST)
-		, thread_sync_(omp_get_max_threads())
 	{
 	}
 
@@ -1393,7 +1392,7 @@ public:
 			for(int i = 0; i < count_length; ++i) {
 				total_nq += phase_recv[i];
 			}
-			print_with_prefix("Bottom-Up: %"PRId64" vertexes found. Break down ...", total_nq);
+			print_with_prefix("Bottom-Up: %" PRId64 " vertexes found. Break down ...", total_nq);
 			for(int i = 0; i < count_length; ++i) {
 				print_with_prefix("step %d / %d  %f M Vertexes ( %f %% )",
 						i+1, count_length, to_mega(phase_recv[i]), (double)phase_recv[i] / (double)total_nq * 100.0);
@@ -1675,7 +1674,7 @@ public:
 #endif
 		VERVOSE(__sync_fetch_and_add(&num_edge_bottom_up_, tmp_edge_relax));
 		USER_END(bu_bmp_step);
-		thread_sync_.barrier();
+#pragma omp barrier
 		return visited_count;
 	}
 
@@ -1799,7 +1798,7 @@ public:
 		th_offset[tid+1] = num_enabled;
 		USER_END(bu_list_proc);
 		// TODO: measure wait time
-		thread_sync_.barrier();
+#pragma omp barrier
 #pragma omp master
 		{
 			TRACER(bu_list_single);
@@ -1809,7 +1808,7 @@ public:
 			}
 			assert (th_offset[max_threads] <= int(phase_size));
 		}
-		thread_sync_.barrier();
+#pragma omp barrier
 
 		USER_START(bu_list_write);
 		// make new list to send
@@ -1830,7 +1829,7 @@ public:
 		PROF(commit_time_ += ts_commit);
 		VERVOSE(__sync_fetch_and_add(&num_blocks, tmp_num_blocks));
 		VERVOSE(__sync_fetch_and_add(&num_edge_bottom_up_, tmp_edge_relax));
-		thread_sync_.barrier();
+#pragma omp barrier
 		return phase_size - th_offset[max_threads];
 	}
 
@@ -1988,7 +1987,7 @@ public:
 #ifndef NDEBUG
 		assert (buffer->length == 0);
 		assert (*process_counter == 0);
-		thread_sync_.barrier();
+#pragma omp barrier
 #endif
 		int tid = omp_get_thread_num();
 		int num_threads = omp_get_num_threads();
@@ -2030,9 +2029,7 @@ public:
 		PROF(commit_time_ += tk_all);
 #endif
 		USER_END(bu_bmp_step);
-
-		thread_sync_.barrier();
-
+#pragma omp barrier
 		PROF(extract_thread_wait_ += tk_all);
 		return visited_count;
 	}
@@ -2124,7 +2121,7 @@ public:
 		th_offset[tid+1] = num_enabled;
 		PROF(extract_edge_time_ += tk_all);
 		USER_END(bu_list_proc);
-		thread_sync_.barrier();
+#pragma omp barrier
 		PROF(extract_thread_wait_ += tk_all);
 #pragma omp master
 		{
@@ -2135,7 +2132,7 @@ public:
 			}
 			assert (th_offset[max_threads] <= int(data.tag.length));
 		}
-		thread_sync_.barrier();
+#pragma omp barrier
 
 		USER_START(bu_list_write);
 		// make new list to send
@@ -2152,7 +2149,7 @@ public:
 		PROF(commit_time_ += tk_all);
 		VERVOSE(__sync_fetch_and_add(&num_blocks, tmp_num_blocks));
 		VERVOSE(__sync_fetch_and_add(&num_edge_bottom_up_, tmp_edge_relax));
-		thread_sync_.barrier();
+#pragma omp barrier
 		return data.tag.length - th_offset[max_threads];
 	}
 #endif // #if BFELL
@@ -2243,7 +2240,7 @@ public:
 					}
 					process_counter = 0;
 				}
-				thread_sync_.barrier();
+#pragma omp barrier
 
 				int target_rank = data.tag.region_id / BU_SUBSTEP;
 				if(step >= BU_SUBSTEP && target_rank == mpi.rank_2dc) {
@@ -2254,7 +2251,7 @@ public:
 					for(int64_t i = 0; i < step_bitmap_width; ++i) {
 						dst[i] = src[i];
 					}
-					thread_sync_.barrier();
+#pragma omp barrier
 				}
 				else {
 					visited_count[data.tag.routed_count + tid * comm_size] +=
@@ -2276,7 +2273,7 @@ public:
 				bottom_up_substep_->finish();
 				PROF(comm_wait_time_ += tk_all);
 			}
-			thread_sync_.barrier();
+#pragma omp barrier
 
 		} // #pragma omp parallel
 		PROF(parallel_reg_time_ += tk_all);
@@ -2361,7 +2358,7 @@ public:
 						write_buffer = back_buffer;
 					}
 				}
-				thread_sync_.barrier(); // TODO: compare with omp barrier
+#pragma omp barrier
 
 				int target_rank = data.tag.region_id / BU_SUBSTEP;
 				TwodVertex* phase_list = (TwodVertex*)data.data;
@@ -2377,7 +2374,7 @@ public:
 					{
 						new_visited_list_size_[local_region_id] = data.tag.length;
 					}
-					thread_sync_.barrier();
+#pragma omp barrier
 				}
 				else {
 					// write sentinel value to the last
@@ -2414,7 +2411,7 @@ public:
 				bottom_up_substep_->finish();
 				PROF(comm_wait_time_ += tk_all);
 			}
-			thread_sync_.barrier();
+#pragma omp barrier
 
 		} // #pragma omp parallel
 		PROF(parallel_reg_time_ += tk_all);
@@ -2626,7 +2623,6 @@ public:
 	bool bitmap_or_list_;
 	bool growing_or_shrinking_;
 	bool packet_buffer_is_dirty_;
-	memory::SpinBarrier thread_sync_;
 
 	VERVOSE(int64_t num_edge_top_down_);
 	VERVOSE(int64_t num_td_large_edge_);
@@ -2845,13 +2841,13 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 			print_with_prefix("Fold Time: %f ms", cur_fold_time * 1000.0);
 			print_with_prefix("Level Total Time: %f ms", time_of_level * 1000.0);
 
-			print_with_prefix("NQ %"PRId64", 1/ %f, %f %% of global, 1/ %f, %f %% of Unvisited",
+			print_with_prefix("NQ %" PRId64 ", 1/ %f, %f %% of global, 1/ %f, %f %% of Unvisited",
 						global_nq_size_, 1/nq_rate, nq_rate*100, 1/nq_unvis_rate, nq_unvis_rate*100);
-			print_with_prefix("Unvisited %"PRId64", 1/ %f, %f %% of global",
+			print_with_prefix("Unvisited %" PRId64 ", 1/ %f, %f %% of global",
 					global_unvisited_vertices, 1/unvis_rate, unvis_rate*100);
 
 			int64_t edge_relaxed = forward_or_backward_ ? num_edge_top_down_ : num_edge_bottom_up_;
-			print_with_prefix("Edge relax: %"PRId64", %f %%, %f M/s (Level), %f M/s (Fold)",
+			print_with_prefix("Edge relax: %" PRId64 ", %f %%, %f M/s (Level), %f M/s (Fold)",
 					edge_relaxed, (double)edge_relaxed / graph_.num_global_edges_ * 100.0,
 					to_mega(edge_relaxed) / time_of_level,
 					to_mega(edge_relaxed) / cur_fold_time);

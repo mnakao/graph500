@@ -329,7 +329,7 @@ void* xMPI_Alloc_mem(size_t nbytes) {
   void* p = NULL;
   MPI_Alloc_mem(nbytes, MPI_INFO_NULL, &p);
   if (nbytes != 0 && !p) {
-	  throw_exception("MPI_Alloc_mem failed for size%zu (%"PRId64") byte(s)", nbytes, (int64_t)nbytes);
+	  throw_exception("MPI_Alloc_mem failed for size%zu (%" PRId64 ") byte(s)", nbytes, (int64_t)nbytes);
   }
 #if VERVOSE_MODE
   if(mpi.isMaster() && nbytes > 1024*1024) {
@@ -342,7 +342,7 @@ void* xMPI_Alloc_mem(size_t nbytes) {
 void* cache_aligned_xcalloc(const size_t size) {
     void* p = NULL;
 	if(posix_memalign(&p, CACHE_LINE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
+		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
 	VERVOSE(x_allocate_check(p));
 	memset(p, 0, size);
@@ -351,7 +351,7 @@ void* cache_aligned_xcalloc(const size_t size) {
 void* cache_aligned_xmalloc(const size_t size) {
 	void* p = NULL;
 	if(posix_memalign(&p, CACHE_LINE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
+		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
 	VERVOSE(x_allocate_check(p));
 	return p;
@@ -360,7 +360,7 @@ void* cache_aligned_xmalloc(const size_t size) {
 void* page_aligned_xcalloc(const size_t size) {
 	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
+		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
 	VERVOSE(x_allocate_check(p));
 	memset(p, 0, size);
@@ -369,7 +369,7 @@ void* page_aligned_xcalloc(const size_t size) {
 void* page_aligned_xmalloc(const size_t size) {
 	void* p = NULL;
 	if(posix_memalign(&p, PAGE_SIZE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%"PRId64") byte(s)", size, (int64_t)size);
+		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
 	VERVOSE(x_allocate_check(p));
 	return p;
@@ -2821,7 +2821,7 @@ public:
 		out_len = max_size;
 		head = sizeof(uint32_t);
 		tail = max_size - sizeof(PacketIndex);
-		outbuf = output;
+		outbuf = (uint8_t*)output;
 
 		assert ((max_size % sizeof(uint32_t)) == 0);
 		const int max_threads = omp_get_max_threads();

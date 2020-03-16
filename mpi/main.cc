@@ -148,7 +148,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 
 		if(mpi.isMaster()) {
 			print_with_prefix("Validate time for BFS %d is %f", i, validate_times[i]);
-			print_with_prefix("Number of traversed edges is %"PRId64"", edge_visit_count);
+			print_with_prefix("Number of traversed edges is %" PRId64 "", edge_visit_count);
 			print_with_prefix("TEPS for BFS %d is %g", i, edge_visit_count / bfs_times[i]);
 		}
 

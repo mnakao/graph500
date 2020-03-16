@@ -258,7 +258,7 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 			print_with_prefix("Filepath: %s 1 2 ...", edge_list->get_filepath());
 		}
 		print_with_prefix("Communication chunk size: %d", EdgeList::CHUNK_SIZE);
-		print_with_prefix("Generating graph: Total number of iterations: %"PRId64"", num_iterations);
+		print_with_prefix("Generating graph: Total number of iterations: %" PRId64 "", num_iterations);
 	}
 #if REPORT_GEN_RPGRESS
 	report->begin_progress();
@@ -279,14 +279,14 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 #if 0
 			for(int64_t i = start_edge; i < end_edge; ++i) {
 				if( edge_buffer[i-start_edge].weight_ != 0xBEEF ) {
-		//			print_with_prefix("Weight > 32: idx: %"PRId64"", i);
+		//			print_with_prefix("Weight > 32: idx: %" PRId64 "", i);
 				}
 			}
 #endif
 			edge_list->write(edge_buffer, end_edge - start_edge);
 
 			if(mpi.isMaster()) {
-				print_with_prefix("Time for iteration %"PRId64" is %f ", i, MPI_Wtime() - logging_time);
+				print_with_prefix("Time for iteration %" PRId64 " is %f ", i, MPI_Wtime() - logging_time);
 				logging_time = MPI_Wtime();
 			}
 #if REPORT_GEN_RPGRESS
