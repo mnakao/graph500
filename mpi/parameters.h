@@ -108,6 +108,10 @@
 #define SGI_OMPLACE_BUG 0
 
 #ifdef __FUJITSU
+
+#define LOW_LEVEL_FUNCTION 1
+#define STREAM_UPDATE 1
+
 //#	define ENABLE_FJMPI 1
 #     define ENABLE_FJMPI 0
 #else // #ifdef __FUJITSU
