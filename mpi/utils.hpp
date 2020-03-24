@@ -25,7 +25,7 @@
 #if BACKTRACE_ON_SIGNAL
 #include <signal.h>
 #endif
-#if ENABLE_FJMPI
+#if ENABLE_UTOFU
 #include <mpi-ext.h>
 #endif
 
@@ -1333,7 +1333,7 @@ static void setup_rank_map(COMM_2D& comm) {
 	}
 }
 
-#if ENABLE_FJMPI
+#if ENABLE_UTOFU
 static void parse_row_dims(bool* rdim, const char* input) {
 	memset(rdim, 0x00, sizeof(bool)*6);
 	while(*input) {
@@ -1375,12 +1375,13 @@ static void setup_2dcomm()
 	bool success = false;
 	mpi.isMultiDimAvailable = false;
 
-#if ENABLE_FJMPI
-	const char* tofu_6d = getenv("TOFU_6D");
+#if ENABLE_UTOFU
+	const char* tofu_6d = getenv("TOFU_6D");  // R-axis. e.g. TOFU_6D=yz
 	if(!success && tofu_6d) {
 		int rank6d[6];
 		int size6d[6];
-		FJMPI_Topology_rel_rank2xyzabc(mpi.rank, &rank6d[0], &rank6d[1], &rank6d[2], &rank6d[3], &rank6d[4], &rank6d[5]);
+		// FJMPI_Topology_rel_rank2xyzabc(mpi.rank, &rank6d[0], &rank6d[1], &rank6d[2], &rank6d[3], &rank6d[4], &rank6d[5]);
+		FJMPI_Topology_get_coords(MPI_COMM_WORLD, mpi.rank, FJMPI_TOFU_REL, 6, rank6d);
 		MPI_Allreduce(rank6d, size6d, 6, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 		int total = 1;
 		for(int i = 0; i < 6; ++i) {
@@ -1388,7 +1389,9 @@ static void setup_2dcomm()
 		}
 		if(mpi.isMaster()) print_with_prefix("Detected dimension %dx%dx%dx%dx%dx%d = %d", size6d[0], size6d[1], size6d[2], size6d[3], size6d[4], size6d[5], mpi.size);
 		if(total != mpi.size) {
-			if(mpi.isMaster()) print_with_prefix("Mismatch error!");
+			if(mpi.isMaster()) print_with_prefix("TOFU_6D Mismatch error!");
+			MPI_Finalize();
+			exit(0);
 		}
 		else {
 			bool rdim[6] = {0};
@@ -1422,7 +1425,7 @@ static void setup_2dcomm()
 			success = true;
 		}
 	}
-#endif // #if ENABLE_FJMPI
+#endif // #if ENABLE_UTOFU
 
 	const char* virt_4d = getenv("VIRT_4D");
 	if(!success && virt_4d) {

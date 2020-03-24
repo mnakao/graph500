@@ -44,6 +44,9 @@
 #define TOP_DOWN_RECV_LB 1
 #define BOTTOM_UP_OVERLAP_PFS 1
 
+// for Fugaku
+#define ENABLE_UTOFU 1
+
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
 // 0: disable, 1: 1D, 2: 2D
