@@ -3709,5 +3709,28 @@ int64_t pf_nedge[] = {
 	0, // 41
 	0 // 42
 };
-
 #endif /* UTILS_IMPL_HPP_ */
+
+#ifdef PROFILE_REGIONS
+#define NUM_RESIONS                13
+#define TD_EXPAND                   0
+#define TD_LOCAL_DISCOVERY          1
+#define TD_FOLD                     2
+#define TD_LOCAL_UPDATE             3
+#define BU_GATHER_FRONTIER          4
+#define BU_LOCAL_DISCOVERY          5
+#define BU_LOCAL_DISCOVERY_W_COMM   6
+#define BU_UPDATE_PARENTS           7
+#define BU_ROTATE_ALONG_ROW         8
+#define TOTAL_TIME_TD               9
+#define TOTAL_TIME_BU              10
+#define TOTAL_TIME                 11
+#define OTHER_TIME                 12
+#define CAT(t) t_max[t], t_min[t], t_ave[t], t_ave[t]/t_ave[TOTAL_TIME]*100
+extern void timer_clear();
+extern void timer_start(const int n);
+extern void timer_stop(const int n);
+extern double timer_read(const int n);
+extern void timer_print(double *, const int);
+#endif
+

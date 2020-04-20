@@ -41,7 +41,7 @@ CUOBJ := cuda_kernel.o
 LIBS := -lm
 
 ifeq ($(SW), GNU3)
-CFLAGS := $(GCC_BASE) -O3 -DNDEBUG
+CFLAGS := $(GCC_BASE) -O3 -DNDEBUG -DPROFILE_REGIONS
 NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LIBS := $(LIBS) -lnuma
 endif
@@ -77,7 +77,7 @@ ifeq ($(SW), FUGAKU)
 MPICC := mpifccpx
 MPICPP := mpiFCCpx
 FCC_BASE := -Kopenmp -Drestrict=__restrict__  $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT)
-CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG
+CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG -DPROFILE_REGIONS
 LDFLAGS := $(CFLAGS) -Nfjomplib
 #LDFLAGS := $(CFLAGS)
 endif

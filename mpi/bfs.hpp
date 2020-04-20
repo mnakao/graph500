@@ -1139,9 +1139,19 @@ public:
 		TRACER(td);
 
 		td_comm_.prepare();
+#ifdef PROFILE_REGIONS
+		timer_start(TD_LOCAL_DISCOVERY);
+#endif
 		top_down_parallel_section(bitmap_or_list_);
+#ifdef PROFILE_REGIONS
+		timer_stop(TD_LOCAL_DISCOVERY);
+		timer_start(TD_FOLD);
+#endif
 		td_comm_.run_with_ptr();
-
+#ifdef PROFILE_REGIONS
+		timer_stop(TD_FOLD);
+		timer_start(TD_LOCAL_UPDATE);
+#endif
 		PROF(profiling::TimeKeeper tk_all);
 		// flush NQ buffer and count NQ total
 		int max_threads = omp_get_max_threads();
@@ -1155,6 +1165,9 @@ public:
 			}
 			tlb->cur_buffer = NULL;
 		}
+#ifdef PROFILE_REGIONS
+		timer_stop(TD_LOCAL_UPDATE);
+#endif
 		int64_t send_nq_size = nq_size_;
 		PROF(seq_proc_time_ += tk_all);
 		PROF(MPI_Barrier(mpi.comm_2d));
@@ -2005,8 +2018,14 @@ public:
 			PROF(extract_edge_time_ += tk_all);
 
 			if(tid == 0) {
+#ifdef PROFILE_REGIONS
+      timer_start(BU_ROTATE_ALONG_ROW);
+#endif
 				// process async communication
 				bottom_up_substep_->probe();
+#ifdef PROFILE_REGIONS
+      timer_stop(BU_ROTATE_ALONG_ROW);
+#endif
 			}
 
 			visited_count += buffer->length;
@@ -2235,13 +2254,19 @@ public:
 					else {
 						// receive data
 						PROF(profiling::TimeKeeper tk_all);
+#ifdef PROFILE_REGIONS
+    timer_start(BU_ROTATE_ALONG_ROW);
+#endif
 						bottom_up_substep_->recv(&data);
+#ifdef PROFILE_REGIONS
+    timer_stop(BU_ROTATE_ALONG_ROW);
+#endif
+
 						PROF(comm_wait_time_ += tk_all);
 					}
 					process_counter = 0;
 				}
 #pragma omp barrier
-
 				int target_rank = data.tag.region_id / BU_SUBSTEP;
 				if(step >= BU_SUBSTEP && target_rank == mpi.rank_2dc) {
 					// This is rounded and came here.
@@ -2254,16 +2279,21 @@ public:
 #pragma omp barrier
 				}
 				else {
-					visited_count[data.tag.routed_count + tid * comm_size] +=
-							bottom_up_search_bitmap_process_step(
-									data, step_bitmap_width, &process_counter, target_rank);
+				  visited_count[data.tag.routed_count + tid * comm_size] +=
+					bottom_up_search_bitmap_process_step(data, step_bitmap_width, &process_counter, target_rank);
 					if(tid == 0) {
+#ifdef PROFILE_REGIONS
+    timer_start(BU_ROTATE_ALONG_ROW);
+#endif
 						if(step < BU_SUBSTEP) {
 							bottom_up_substep_->send_first(&data);
 						}
 						else {
 							bottom_up_substep_->send(&data);
 						}
+#ifdef PROFILE_REGIONS
+    timer_stop(BU_ROTATE_ALONG_ROW);
+#endif
 					}
 				}
 			}
@@ -2294,9 +2324,18 @@ public:
 		for(int i = 0; i < comm_size*max_threads; ++i) visited_count[i] = 0;
 
 		bu_comm_.prepare();
+#ifdef PROFILE_REGIONS
+		timer_start(BU_LOCAL_DISCOVERY_W_COMM);
+#endif
 		bottom_up_bmp_parallel_section(visited_count);
+#ifdef PROFILE_REGIONS
+		timer_stop(BU_LOCAL_DISCOVERY_W_COMM);
+		timer_start(BU_UPDATE_PARENTS);
+#endif
 		bu_comm_.run();
-
+#ifdef PROFILE_REGIONS
+		timer_stop(BU_UPDATE_PARENTS);
+#endif
 		// gather visited_count
 		for(int tid = 1; tid < max_threads; ++tid)
 			for(int i = 0; i < comm_size; ++i)
@@ -2353,13 +2392,18 @@ public:
 					else {
 						// receive data
 						PROF(profiling::TimeKeeper tk_all);
+#ifdef PROFILE_REGIONS
+    timer_start(BU_ROTATE_ALONG_ROW);
+#endif
 						bottom_up_substep_->recv(&data);
+#ifdef PROFILE_REGIONS
+    timer_stop(BU_ROTATE_ALONG_ROW);
+#endif
 						PROF(comm_wait_time_ += tk_all);
 						write_buffer = back_buffer;
 					}
 				}
 #pragma omp barrier
-
 				int target_rank = data.tag.region_id / BU_SUBSTEP;
 				TwodVertex* phase_list = (TwodVertex*)data.data;
 				if(step >= BU_SUBSTEP && target_rank == mpi.rank_2dc) {
@@ -2392,6 +2436,9 @@ public:
 						visited_count[data.tag.routed_count] += new_visited_cnt;
 						data.tag.length -= new_visited_cnt;
 
+#ifdef PROFILE_REGIONS
+    timer_start(BU_ROTATE_ALONG_ROW);
+#endif
 						if(step < BU_SUBSTEP) {
 							data.data = write_buffer;
 							bottom_up_substep_->send_first(&data);
@@ -2401,6 +2448,9 @@ public:
 							data.data = write_buffer;
 							bottom_up_substep_->send(&data);
 						}
+#ifdef PROFILE_REGIONS
+    timer_stop(BU_ROTATE_ALONG_ROW);
+#endif
 					}
 				}
 			}
@@ -2442,9 +2492,18 @@ public:
 
 		bu_comm_.prepare();
 		int64_t num_blocks; int64_t num_vertexes;
+#ifdef PROFILE_REGIONS
+		timer_start(BU_LOCAL_DISCOVERY_W_COMM);
+#endif
 		bottom_up_list_parallel_section(visited_count, vertex_enabled, num_blocks, num_vertexes);
+#ifdef PROFILE_REGIONS
+		timer_stop(BU_LOCAL_DISCOVERY_W_COMM);
+		timer_start(BU_UPDATE_PARENTS);
+#endif
 		bu_comm_.run();
-
+#ifdef PROFILE_REGIONS
+		timer_stop(BU_UPDATE_PARENTS);
+#endif
 		bottom_up_gather_nq_size(visited_count);
 		VERVOSE(botto_up_print_stt(num_blocks, num_vertexes, visited_count));
 		VERVOSE(bottom_up_substep_->print_stt());
@@ -2662,9 +2721,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	int64_t total_edge_top_down = 0;
 	int64_t total_edge_bottom_up = 0;
 #endif
-
 	initialize_memory(pred);
-
 #if VERVOSE_MODE
 	if(mpi.isMaster()) print_with_prefix("Time of initialize memory: %f ms", (MPI_Wtime() - prev_time) * 1000.0);
 	prev_time = MPI_Wtime();
@@ -2681,7 +2738,13 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	forward_or_backward_ = next_forward_or_backward;
 	bitmap_or_list_ = next_bitmap_or_list;
 	growing_or_shrinking_ = true;
+#ifdef PROFILE_REGIONS
+    timer_start(TD_EXPAND);
+#endif
 	first_expand(root);
+#ifdef PROFILE_REGIONS
+    timer_stop(TD_EXPAND);
+#endif
 
 #if VERVOSE_MODE
 	tmp = MPI_Wtime();
@@ -2721,7 +2784,13 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 			if(work_extra_buf_ != NULL) { free(work_extra_buf_); work_extra_buf_ = NULL; }
 		}
 		else { // backward
-			swap_visited_memory(prev_bitmap_or_list);
+#ifdef PROFILE_REGIONS
+		  timer_start(BU_LOCAL_DISCOVERY);
+#endif
+		  swap_visited_memory(prev_bitmap_or_list);
+#ifdef PROFILE_REGIONS
+		  timer_stop(BU_LOCAL_DISCOVERY);
+#endif
 			if(bitmap_or_list_) { // bitmap
 				bottom_up_search_bitmap();
 			}
@@ -2882,6 +2951,12 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		}
 #endif
 		// expand //
+#ifdef PROFILE_REGIONS
+		if(forward_or_backward_)
+		  timer_start(TD_EXPAND);
+		else
+		  timer_start(BU_GATHER_FRONTIER);
+#endif
 		if(next_forward_or_backward == forward_or_backward_) {
 			if(forward_or_backward_)
 				top_down_expand();
@@ -2894,6 +2969,12 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 				bottom_up_switch_expand(next_bitmap_or_list);
 		}
 		clear_nq_stack(); // currently, this is required only in the top-down phase
+#ifdef PROFILE_REGIONS
+		if(forward_or_backward_)
+		  timer_stop(TD_EXPAND);
+		else
+		  timer_stop(BU_GATHER_FRONTIER);
+#endif
 
 #if ENABLE_FUJI_PROF
 		stop_collection("expand");

@@ -102,6 +102,9 @@ void graph500_bfs(int SCALE, int edgefactor)
                MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
         }
 /////////////////////
+#ifdef PROFILE_REGIONS
+		timer_clear();
+#endif
 	for(int i = root_start; i < num_bfs_roots; ++i) {
 	//for(int i = 0; i < num_bfs_roots; ++i) {
 		VERVOSE(print_max_memory_usage());
@@ -171,6 +174,9 @@ void graph500_bfs(int SCALE, int edgefactor)
 	  fprintf(stdout, "redistribution_time:            %g\n", redistribution_time);
 	  print_bfs_result(num_bfs_roots, bfs_times, validate_times, edge_counts, result_ok);
 	}
+#ifdef PROFILE_REGIONS
+	timer_print(bfs_times, num_bfs_roots);
+#endif
 
 	delete benchmark;
 
@@ -222,11 +228,74 @@ int main(int argc, char** argv)
 	}
 
 	setup_globals(argc, argv, SCALE, edgefactor);
-
 	graph500_bfs(SCALE, edgefactor);
-
 	cleanup_globals();
 	return 0;
 }
 
+double elapsed[NUM_RESIONS], start[NUM_RESIONS];
+void timer_clear()
+{
+  for(int i=0;i<NUM_RESIONS;i++)
+    elapsed[i] = 0.0;
+}
 
+void timer_start(const int n)
+{
+  start[n] = MPI_Wtime();
+}
+
+void timer_stop(const int n)
+{
+  double now = MPI_Wtime();
+  double t = now - start[n];
+  elapsed[n] += t;
+}
+
+double timer_read(const int n)
+{
+  return(elapsed[n]);
+}
+
+void timer_print(double *bfs_times, const int num_bfs_roots)
+{
+  double t[NUM_RESIONS], t_max[NUM_RESIONS], t_min[NUM_RESIONS], t_ave[NUM_RESIONS];
+  for(int i=0;i<NUM_RESIONS;i++)
+    t[i] = timer_read(i);
+
+  t[TOTAL_TIME] = 0.0;
+  for(int i=0;i<num_bfs_roots;i++)
+	t[TOTAL_TIME] += bfs_times[i];
+
+  t[BU_LOCAL_DISCOVERY] = t[BU_LOCAL_DISCOVERY_W_COMM] - t[BU_ROTATE_ALONG_ROW];
+  t[TOTAL_TIME_TD]      = t[TD_EXPAND] + t[TD_LOCAL_DISCOVERY] + t[TD_FOLD] + t[TD_LOCAL_UPDATE];
+  t[TOTAL_TIME_BU]      = t[BU_GATHER_FRONTIER] + t[BU_LOCAL_DISCOVERY] + t[BU_UPDATE_PARENTS] + t[BU_ROTATE_ALONG_ROW];
+  t[OTHER_TIME]         = t[TOTAL_TIME] - (t[TOTAL_TIME_TD] + t[TOTAL_TIME_BU]);
+
+  MPI_Reduce(t, t_max, NUM_RESIONS, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+  MPI_Reduce(t, t_min, NUM_RESIONS, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+  MPI_Reduce(t, t_ave, NUM_RESIONS, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+  int size;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  for(int i=0;i<NUM_RESIONS;i++)
+    t_ave[i] /= size;
+
+  if(mpi.isMaster()){
+    printf("---\n");
+    printf("CATEGORY :                 MAX    MIN    AVE  AVE/TIME\n");
+    printf("TOTAL                 : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME));
+    printf(" - TOP_DOWN           : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME_TD));
+    printf("   - EXPAND           : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_EXPAND));
+    printf("   - LOCAL_DISCOVERY  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_LOCAL_DISCOVERY));
+    printf("   - FOLD             : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_FOLD));
+    printf("   - LOCAL_UPDATE     : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_LOCAL_UPDATE));
+    printf(" - BOTTOM_UP          : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME_BU));
+    printf("   - GATHER_FRONTIER  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_GATHER_FRONTIER));
+    printf("   - LOCAL_DISCOVERY  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_LOCAL_DISCOVERY));
+    printf("   - UPDATE_PARENTS   : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_UPDATE_PARENTS));
+    printf("   - ROTATE_ALONG_ROW : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_ROTATE_ALONG_ROW));
+    printf(" - OTHER              : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(OTHER_TIME));
+    fflush(stdout);
+  }
+}

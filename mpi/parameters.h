@@ -19,7 +19,7 @@
 // 0: MPI is single mode: Main -> MPI, Sub: OpenMP
 // 1: MPI is funneled mode: Main -> OpenMP, Sub: MPI
 // Since communication and computation is overlapped, we cannot have main thread do both tasks.
-#define MPI_FUNNELED 0
+#define MPI_FUNNELED 1
 #define OPENMP_SUB_THREAD 0
 
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
@@ -31,7 +31,7 @@
 #ifndef VERVOSE_MODE
 #define VERVOSE_MODE 1
 #endif
-#define PROFILING_MODE 1
+#define PROFILING_MODE 0
 #define REPORT_GEN_RPGRESS 0
 
 // General Optimizations
@@ -45,7 +45,7 @@
 #define BOTTOM_UP_OVERLAP_PFS 1
 
 // for Fugaku
-#define ENABLE_UTOFU 1
+#define ENABLE_UTOFU 0
 
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
