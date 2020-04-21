@@ -489,10 +489,14 @@ public:
 				int64_t root_local = vertex_local(root);
 				int64_t reordered = graph_.reorder_map_[root_local];
 				root_reordered = (reordered * mpi.size_2d) + root_owner;
-
+#ifdef PROFILE_REGIONS
+				timer_start(EXPAND_TIME);
+#endif
 				MPI_Bcast(&root_reordered, 1, MpiTypeOf<int64_t>::type,
 						root_c, mpi.comm_2dr);
-
+#ifdef PROFILE_REGIONS
+				timer_stop(EXPAND_TIME);
+#endif
 				// update pred
 				pred_[root_local] = root;
 
@@ -502,8 +506,14 @@ public:
 				((BitmapType*)new_visited_)[word_idx] |= BitmapType(1) << bit_idx;
 			}
 			else {
+#ifdef PROFILE_REGIONS
+			  timer_start(EXPAND_TIME);
+#endif
 				MPI_Bcast(&root_reordered, 1, MpiTypeOf<int64_t>::type,
 						root_c, mpi.comm_2dr);
+#ifdef PROFILE_REGIONS
+				 timer_stop(EXPAND_TIME);
+#endif
 			}
 
 			// update CQ
@@ -526,6 +536,9 @@ public:
 			BitmapType* recv_buffer = shared_visited_;
 			// TODO: asymmetric size for z. (MPI_Allgather -> MPI_Allgatherv or MpiCol::allgatherv ?)
 			int shared_bitmap_width = bitmap_width * mpi.size_z;
+#ifdef PROFILE_REGIONS
+			timer_start(EXPAND_TIME);
+#endif
 #if ENABLE_MY_ALLGATHER
 			if(mpi.isYdimAvailable()) {
 				if(mpi.isMaster()) print_with_prefix("Error: MY_ALLGATHER does not support shared memory Y dimension.");
@@ -542,6 +555,9 @@ public:
 #if VERVOSE_MODE
 			g_expand_bitmap_comm += shared_bitmap_width * mpi.size_y * sizeof(BitmapType);
 #endif
+#ifdef PROFILE_REGIONS
+			timer_stop(EXPAND_TIME);
+#endif
 		}
 		if(mpi.isYdimAvailable()) s_.sync->barrier();
 	}
@@ -552,6 +568,9 @@ public:
 		int bitmap_width = get_bitmap_size_local();
 		BitmapType* const bitmap = (BitmapType*)new_visited_;
 		BitmapType* recv_buffer = shared_visited_;
+#ifdef PROFILE_REGIONS
+		timer_start(EXPAND_TIME);
+#endif
 #if ENABLE_MY_ALLGATHER
 		if(mpi.isYdimAvailable()) {
 			if(mpi.isMaster()) print_with_prefix("Error: MY_ALLGATHER does not support shared memory Y dimension.");
@@ -565,6 +584,9 @@ public:
 		MPI_Allgather(bitmap, bitmap_width, get_mpi_type(bitmap[0]),
 				recv_buffer, bitmap_width, get_mpi_type(bitmap[0]), mpi.comm_2dr);
 #endif
+#ifdef PROFILE_REGIONS
+		timer_stop(EXPAND_TIME);
+#endif
 #if VERVOSE_MODE
 		g_expand_bitmap_comm += bitmap_width * mpi.size_2dc * sizeof(BitmapType);
 #endif
@@ -573,8 +595,14 @@ public:
 	int expand_visited_list(int node_nq_size) {
 		TRACER(expand_vis_list);
 		if(mpi.rank_z == 0 && mpi.comm_y != MPI_COMM_NULL) {
+#ifdef PROFILE_REGIONS
+		  timer_start(EXPAND_TIME);
+#endif
 			s_.offset[0] = MpiCol::allgatherv((TwodVertex*)visited_buffer_orig_,
 					 nq_recv_buf_, node_nq_size, mpi.comm_y, mpi.size_y);
+#ifdef PROFILE_REGIONS
+			timer_stop(EXPAND_TIME);
+#endif
 			VERVOSE(g_expand_list_comm += s_.offset[0] * sizeof(TwodVertex));
 		}
 		if(mpi.isYdimAvailable()) s_.sync->barrier();
@@ -651,6 +679,9 @@ public:
 		TwodVertex* recv_buf = (TwodVertex*)((int64_t(cq_size_)*int64_t(sizeof(TwodVertex)) > work_buf_size_) ?
 				(work_extra_buf_ = cache_aligned_xmalloc(cq_size_*sizeof(TwodVertex))) :
 				work_buf_);
+#ifdef PROFILE_REGIONS
+		timer_start(EXPAND_TIME);
+#endif
 #if ENABLE_MY_ALLGATHER == 1
 		MpiCol::my_allgatherv(nq, nq_size, recv_buf, recv_size, recv_off, mpi.comm_r);
 #elif ENABLE_MY_ALLGATHER == 2
@@ -658,6 +689,9 @@ public:
 #else
 		MPI_Allgatherv(nq, nq_size, MpiTypeOf<TwodVertex>::type,
 				recv_buf, recv_size, recv_off, MpiTypeOf<TwodVertex>::type, mpi.comm_r.comm);
+#endif
+#ifdef PROFILE_REGIONS
+		timer_stop(EXPAND_TIME);
 #endif
 		VERVOSE(g_expand_list_comm += cq_size_ * sizeof(TwodVertex));
 		cq_list_ = recv_buf;
@@ -679,8 +713,8 @@ public:
 		TRACER(td_sw_expand);
 		// expand NQ within a processor row
 		if(bitmap_or_list) {
-			// bitmap
-			expand_visited_bitmap();
+		  // bitmap
+		  expand_visited_bitmap();
 		}
 		else {
 			throw "Not implemented";
@@ -835,7 +869,7 @@ public:
 		return node_nq_size;
 	}
 
-	void bottom_up_expand_nq_list() {
+  void bottom_up_expand_nq_list() {
 		TRACER(bu_expand_nq_list);
 		assert (mpi.isYdimAvailable() || (visited_buffer_orig_ == visited_buffer_));
 		int lgl = graph_.local_bits_;
@@ -1139,19 +1173,9 @@ public:
 		TRACER(td);
 
 		td_comm_.prepare();
-#ifdef PROFILE_REGIONS
-		timer_start(TD_LOCAL_DISCOVERY);
-#endif
 		top_down_parallel_section(bitmap_or_list_);
-#ifdef PROFILE_REGIONS
-		timer_stop(TD_LOCAL_DISCOVERY);
-		timer_start(TD_FOLD);
-#endif
 		td_comm_.run_with_ptr();
-#ifdef PROFILE_REGIONS
-		timer_stop(TD_FOLD);
-		timer_start(TD_LOCAL_UPDATE);
-#endif
+
 		PROF(profiling::TimeKeeper tk_all);
 		// flush NQ buffer and count NQ total
 		int max_threads = omp_get_max_threads();
@@ -1165,9 +1189,7 @@ public:
 			}
 			tlb->cur_buffer = NULL;
 		}
-#ifdef PROFILE_REGIONS
-		timer_stop(TD_LOCAL_UPDATE);
-#endif
+
 		int64_t send_nq_size = nq_size_;
 		PROF(seq_proc_time_ += tk_all);
 		PROF(MPI_Barrier(mpi.comm_2d));
@@ -2019,12 +2041,12 @@ public:
 
 			if(tid == 0) {
 #ifdef PROFILE_REGIONS
-      timer_start(BU_ROTATE_ALONG_ROW);
+      timer_start(NBR_TIME);
 #endif
 				// process async communication
 				bottom_up_substep_->probe();
 #ifdef PROFILE_REGIONS
-      timer_stop(BU_ROTATE_ALONG_ROW);
+      timer_stop(NBR_TIME);
 #endif
 			}
 
@@ -2069,7 +2091,7 @@ public:
 		int max_threads = omp_get_num_threads();
 		TwodVertex* phase_list = (TwodVertex*)data.data;
 		TwodVertex phase_bmp_off = data.tag.region_id * step_bitmap_width;
-
+		
 		int lgl = graph_.local_bits_;
 		int r_bits = graph_.r_bits_;
 		TwodVertex L = graph_.num_local_verts_;
@@ -2255,11 +2277,11 @@ public:
 						// receive data
 						PROF(profiling::TimeKeeper tk_all);
 #ifdef PROFILE_REGIONS
-    timer_start(BU_ROTATE_ALONG_ROW);
+    timer_start(NBR_TIME);
 #endif
 						bottom_up_substep_->recv(&data);
 #ifdef PROFILE_REGIONS
-    timer_stop(BU_ROTATE_ALONG_ROW);
+    timer_stop(NBR_TIME);
 #endif
 
 						PROF(comm_wait_time_ += tk_all);
@@ -2283,7 +2305,7 @@ public:
 					bottom_up_search_bitmap_process_step(data, step_bitmap_width, &process_counter, target_rank);
 					if(tid == 0) {
 #ifdef PROFILE_REGIONS
-    timer_start(BU_ROTATE_ALONG_ROW);
+    timer_start(NBR_TIME);
 #endif
 						if(step < BU_SUBSTEP) {
 							bottom_up_substep_->send_first(&data);
@@ -2292,7 +2314,7 @@ public:
 							bottom_up_substep_->send(&data);
 						}
 #ifdef PROFILE_REGIONS
-    timer_stop(BU_ROTATE_ALONG_ROW);
+    timer_stop(NBR_TIME);
 #endif
 					}
 				}
@@ -2324,18 +2346,9 @@ public:
 		for(int i = 0; i < comm_size*max_threads; ++i) visited_count[i] = 0;
 
 		bu_comm_.prepare();
-#ifdef PROFILE_REGIONS
-		timer_start(BU_LOCAL_DISCOVERY_W_COMM);
-#endif
 		bottom_up_bmp_parallel_section(visited_count);
-#ifdef PROFILE_REGIONS
-		timer_stop(BU_LOCAL_DISCOVERY_W_COMM);
-		timer_start(BU_UPDATE_PARENTS);
-#endif
 		bu_comm_.run();
-#ifdef PROFILE_REGIONS
-		timer_stop(BU_UPDATE_PARENTS);
-#endif
+
 		// gather visited_count
 		for(int tid = 1; tid < max_threads; ++tid)
 			for(int i = 0; i < comm_size; ++i)
@@ -2393,11 +2406,11 @@ public:
 						// receive data
 						PROF(profiling::TimeKeeper tk_all);
 #ifdef PROFILE_REGIONS
-    timer_start(BU_ROTATE_ALONG_ROW);
+    timer_start(NBR_TIME);
 #endif
 						bottom_up_substep_->recv(&data);
 #ifdef PROFILE_REGIONS
-    timer_stop(BU_ROTATE_ALONG_ROW);
+    timer_stop(NBR_TIME);
 #endif
 						PROF(comm_wait_time_ += tk_all);
 						write_buffer = back_buffer;
@@ -2437,7 +2450,7 @@ public:
 						data.tag.length -= new_visited_cnt;
 
 #ifdef PROFILE_REGIONS
-    timer_start(BU_ROTATE_ALONG_ROW);
+    timer_start(NBR_TIME);
 #endif
 						if(step < BU_SUBSTEP) {
 							data.data = write_buffer;
@@ -2449,7 +2462,7 @@ public:
 							bottom_up_substep_->send(&data);
 						}
 #ifdef PROFILE_REGIONS
-    timer_stop(BU_ROTATE_ALONG_ROW);
+    timer_stop(NBR_TIME);
 #endif
 					}
 				}
@@ -2492,18 +2505,8 @@ public:
 
 		bu_comm_.prepare();
 		int64_t num_blocks; int64_t num_vertexes;
-#ifdef PROFILE_REGIONS
-		timer_start(BU_LOCAL_DISCOVERY_W_COMM);
-#endif
 		bottom_up_list_parallel_section(visited_count, vertex_enabled, num_blocks, num_vertexes);
-#ifdef PROFILE_REGIONS
-		timer_stop(BU_LOCAL_DISCOVERY_W_COMM);
-		timer_start(BU_UPDATE_PARENTS);
-#endif
 		bu_comm_.run();
-#ifdef PROFILE_REGIONS
-		timer_stop(BU_UPDATE_PARENTS);
-#endif
 		bottom_up_gather_nq_size(visited_count);
 		VERVOSE(botto_up_print_stt(num_blocks, num_vertexes, visited_count));
 		VERVOSE(bottom_up_substep_->print_stt());
@@ -2739,11 +2742,11 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	bitmap_or_list_ = next_bitmap_or_list;
 	growing_or_shrinking_ = true;
 #ifdef PROFILE_REGIONS
-    timer_start(TD_EXPAND);
+    timer_start(TD_TIME);
 #endif
 	first_expand(root);
 #ifdef PROFILE_REGIONS
-    timer_stop(TD_EXPAND);
+    timer_stop(TD_TIME);
 #endif
 
 #if VERVOSE_MODE
@@ -2777,28 +2780,33 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 
 		forward_or_backward_ = next_forward_or_backward;
 		bitmap_or_list_ = next_bitmap_or_list;
-
+		
+#ifdef PROFILE_REGIONS
+		if(forward_or_backward_)
+          timer_start(TD_TIME);
+		else
+		  timer_start(BU_TIME);
+#endif
 		if(forward_or_backward_) { // forward
-			top_down_search();
-			// release extra buffer
-			if(work_extra_buf_ != NULL) { free(work_extra_buf_); work_extra_buf_ = NULL; }
+		  top_down_search();
+		  // release extra buffer
+		  if(work_extra_buf_ != NULL) { free(work_extra_buf_); work_extra_buf_ = NULL; }
 		}
 		else { // backward
-#ifdef PROFILE_REGIONS
-		  timer_start(BU_LOCAL_DISCOVERY);
-#endif
 		  swap_visited_memory(prev_bitmap_or_list);
-#ifdef PROFILE_REGIONS
-		  timer_stop(BU_LOCAL_DISCOVERY);
-#endif
-			if(bitmap_or_list_) { // bitmap
-				bottom_up_search_bitmap();
-			}
-			else { // list
-				bottom_up_search_list();
-			}
+		  if(bitmap_or_list_) { // bitmap
+			bottom_up_search_bitmap();
+		  }
+		  else { // list
+			bottom_up_search_list();
+		  }
 		}
-
+#ifdef PROFILE_REGIONS
+		if(forward_or_backward_)
+          timer_stop(TD_TIME);
+		else
+		  timer_stop(BU_TIME);
+#endif
 		global_visited_vertices += global_nq_size_;
 
 #if VERVOSE_MODE
@@ -2953,9 +2961,9 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		// expand //
 #ifdef PROFILE_REGIONS
 		if(forward_or_backward_)
-		  timer_start(TD_EXPAND);
+		  timer_start(TD_TIME);
 		else
-		  timer_start(BU_GATHER_FRONTIER);
+		  timer_start(BU_TIME);
 #endif
 		if(next_forward_or_backward == forward_or_backward_) {
 			if(forward_or_backward_)
@@ -2971,9 +2979,9 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		clear_nq_stack(); // currently, this is required only in the top-down phase
 #ifdef PROFILE_REGIONS
 		if(forward_or_backward_)
-		  timer_stop(TD_EXPAND);
+		  timer_stop(TD_TIME);
 		else
-		  timer_stop(BU_GATHER_FRONTIER);
+		  timer_stop(BU_TIME);
 #endif
 
 #if ENABLE_FUJI_PROF

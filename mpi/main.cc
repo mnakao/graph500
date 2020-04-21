@@ -267,10 +267,8 @@ void timer_print(double *bfs_times, const int num_bfs_roots)
   for(int i=0;i<num_bfs_roots;i++)
 	t[TOTAL_TIME] += bfs_times[i];
 
-  t[BU_LOCAL_DISCOVERY] = t[BU_LOCAL_DISCOVERY_W_COMM] - t[BU_ROTATE_ALONG_ROW];
-  t[TOTAL_TIME_TD]      = t[TD_EXPAND] + t[TD_LOCAL_DISCOVERY] + t[TD_FOLD] + t[TD_LOCAL_UPDATE];
-  t[TOTAL_TIME_BU]      = t[BU_GATHER_FRONTIER] + t[BU_LOCAL_DISCOVERY] + t[BU_UPDATE_PARENTS] + t[BU_ROTATE_ALONG_ROW];
-  t[OTHER_TIME]         = t[TOTAL_TIME] - (t[TOTAL_TIME_TD] + t[TOTAL_TIME_BU]);
+  t[CALC_TIME]	= (t[TD_TIME] + t[BU_TIME]) - (t[EXPAND_TIME] + t[FOLD_TIME] + t[NBR_TIME]);
+  t[OTHER_TIME] = t[TOTAL_TIME] - (t[TD_TIME] + t[BU_TIME]);
 
   MPI_Reduce(t, t_max, NUM_RESIONS, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
   MPI_Reduce(t, t_min, NUM_RESIONS, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
@@ -284,18 +282,14 @@ void timer_print(double *bfs_times, const int num_bfs_roots)
   if(mpi.isMaster()){
     printf("---\n");
     printf("CATEGORY :                 MAX    MIN    AVE  AVE/TIME\n");
-    printf("TOTAL                 : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME));
-    printf(" - TOP_DOWN           : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME_TD));
-    printf("   - EXPAND           : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_EXPAND));
-    printf("   - LOCAL_DISCOVERY  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_LOCAL_DISCOVERY));
-    printf("   - FOLD             : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_FOLD));
-    printf("   - LOCAL_UPDATE     : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_LOCAL_UPDATE));
-    printf(" - BOTTOM_UP          : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME_BU));
-    printf("   - GATHER_FRONTIER  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_GATHER_FRONTIER));
-    printf("   - LOCAL_DISCOVERY  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_LOCAL_DISCOVERY));
-    printf("   - UPDATE_PARENTS   : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_UPDATE_PARENTS));
-    printf("   - ROTATE_ALONG_ROW : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_ROTATE_ALONG_ROW));
-    printf(" - OTHER              : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(OTHER_TIME));
+    printf("TOTAL                   : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME));
+    printf(" - TOP_DOWN             : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_TIME));
+    printf(" - BOTTOM_UP            : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_TIME));
+    printf("   - LOCAL_CALC         : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(CALC_TIME));
+    printf("   - EXPAND(allgather)  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(EXPAND_TIME));
+    printf("   - FOLD(alltoall)     : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(FOLD_TIME));
+    printf("   - NEIGHBOR(sendrecv) : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(NBR_TIME));
+    printf(" - OTHER                : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(OTHER_TIME));
     fflush(stdout);
   }
 }

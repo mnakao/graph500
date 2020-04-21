@@ -243,7 +243,13 @@ public:
 			PROF(merge_time_ += tk_all);
 			USER_START(a2a_comm);
 			VERVOSE(if(loop > 0 && mpi.isMaster()) print_with_prefix("Alltoall with pointer (Again)"));
+#ifdef PROFILE_REGIONS
+        timer_start(FOLD_TIME);
+#endif
 			scatter_.alltoallv(sendbuf, recvbuf, type, recvbufsize);
+#ifdef PROFILE_REGIONS
+        timer_stop(FOLD_TIME);
+#endif
 			PROF(comm_time_ += tk_all);
 			USER_END(a2a_comm);
 
@@ -320,7 +326,13 @@ public:
 		int recvbufsize = buffer_provider_->max_size();
 		PROF(merge_time_ += tk_all);
 		USER_START(a2a_comm);
+#ifdef PROFILE_REGIONS
+        timer_start(FOLD_TIME);
+#endif
 		scatter_.alltoallv(sendbuf, recvbuf, type, recvbufsize);
+#ifdef PROFILE_REGIONS
+        timer_stop(FOLD_TIME);
+#endif
 		PROF(comm_time_ += tk_all);
 		USER_END(a2a_comm);
 
