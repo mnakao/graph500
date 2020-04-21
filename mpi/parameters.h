@@ -50,7 +50,7 @@
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
 // 0: disable, 1: 1D, 2: 2D
-#define ENABLE_MY_ALLGATHER 1
+#define ENABLE_MY_ALLGATHER 0
 #define ENABLE_INLINE_ATOMICS 0
 #define ENABLE_FUJI_PROF 0
 
