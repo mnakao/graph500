@@ -1216,7 +1216,7 @@ private:
 
 #pragma omp parallel
 			{
-				int* offsets = scatter.get_offsets();
+				int* restrict offsets = scatter.get_offsets();
 				writeSendEdges(edge_data, edge_data_length, offsets, edges_to_send);
 			}
 

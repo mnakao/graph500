@@ -1493,7 +1493,7 @@ static void setup_2dcomm()
 		mpi.comm_r.rank = mpi.rank_2dc = mpi.rank / mpi.size_2dr;
 	}
 
-	if(mpi.isMaster()) print_with_prefix("Dimension: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
+	if(mpi.isMaster()) print_with_prefix("Dimension: (R x C) = (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 
 	mpi.isRowMajor = false;
 	if(getenv("INVERT_RC")) {

@@ -1,26 +1,20 @@
 #!/bin/bash
-#PJM --rsc-list "node=4"
-#PJM --rsc-list "rscunit=rscunit_ft01"
-#PJM --rsc-list "rscgrp=dvgb1152"
-#PJM --rsc-list "elapse=00:10:00"
-#PJM --mpi "proc=4"
-#####
-PROCS=4
-SCALE=23
-PROCS_PER_NODE=1
-####
-NODES=$(( $PROCS / $PROCS_PER_NODE ))
-THREADS=$(( 48 / $PROCS_PER_NODE ))
-#####
+#PJM -L "node=16x32"               # C x R
+#PJM -L "rscunit=rscunit_ft01"   # リソースユニットの指定
+#PJM -L "rscgrp=dvall"           # リソースグループの指定
+#PJM -L "elapse=0:15:00"
+#PJM --mpi "max-proc-per-node=1" # 1ノードあたりに生成するMPIプロセス数の上限値
+##PJM -s
 
-module load lang
-export OMP_NUM_THREADS=${THREADS}
-export MPI_NUM_NODE=${PROCS_PER_NODE}
-#export XOS_MMM_L_HPAGE_TYPE=none
-F=n${NODES}p${PROCS}t${THREADS}s${SCALE}
-EXE=./runnable
-for i in $(seq 4 10); do
-  mpiexec --stdout ${F}i${i}.out --stderr ${F}i${i}.err ${EXE} ${SCALE}
-done
+PROBLEM_SIZE=31
+R=32
+NUM_NODES=512
+NUM_PROCESSES=${NUM_NODES}
+################
+OUTPUT_FILE=n${NUM_NODES}p${NUM_PROCESSES}s${PROBLEM_SIZE}
+export OMP_NUM_THREADS=48
+export TWOD_R=${R}
+#mpiexec -std ${OUTPUT_FILE} ./runnable ${PROBLEM_SIZE}
+mpiexec -std ${OUTPUT_FILE} -mca mpi_print_stats 1 ./runnable ${PROBLEM_SIZE}
+echo $SECONDS >> ${OUTPUT_FILE}
 
-echo $SECONDS
