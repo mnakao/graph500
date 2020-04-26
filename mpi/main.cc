@@ -92,9 +92,15 @@ void graph500_bfs(int SCALE, int edgefactor)
         for(int c = root_start; time_left > 0.0; ++c) {
                 if(mpi.isMaster())  print_with_prefix("========== Pre Running BFS %d ==========", c);
                 MPI_Barrier(mpi.comm_2d);
+#if	FUGAKU_MPI_PRINT_STATS
+				FJMPI_Collection_start();
+#endif
                 double bfs_time = MPI_Wtime();
                 benchmark->run_bfs(bfs_roots[c % num_bfs_roots], pred);
                 bfs_time = MPI_Wtime() - bfs_time;
+#if FUGAKU_MPI_PRINT_STATS
+                FJMPI_Collection_stop();
+#endif
                 if(mpi.isMaster()) {
                         print_with_prefix("Time for BFS %d is %f", c, bfs_time);
                         time_left -= bfs_time;
@@ -176,6 +182,10 @@ void graph500_bfs(int SCALE, int edgefactor)
 	}
 #ifdef PROFILE_REGIONS
 	timer_print(bfs_times, num_bfs_roots);
+#endif
+
+#if FUGAKU_MPI_PRINT_STATS
+	FJMPI_Collection_print("Communication Statistics\n");
 #endif
 
 	delete benchmark;

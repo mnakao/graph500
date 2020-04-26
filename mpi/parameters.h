@@ -46,6 +46,7 @@
 
 // for Fugaku
 #define ENABLE_UTOFU 0
+#define FUGAKU_MPI_PRINT_STATS 0
 
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
