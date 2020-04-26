@@ -3712,15 +3712,16 @@ int64_t pf_nedge[] = {
 #endif /* UTILS_IMPL_HPP_ */
 
 #ifdef PROFILE_REGIONS
-#define NUM_RESIONS  8
-#define TD_TIME      0
-#define BU_TIME      1
-#define EXPAND_TIME  2
-#define FOLD_TIME    3
-#define NBR_TIME     4
-#define TOTAL_TIME   5
-#define CALC_TIME    6
-#define OTHER_TIME   7
+#define NUM_RESIONS    9
+#define TD_TIME        0
+#define BU_TIME        1
+#define EXPAND_TIME    2
+#define FOLD_TIME      3
+#define NBR_TIME       4
+#define TOTAL_TIME     5
+#define CALC_TIME      6
+#define IMBALANCE_TIME 7
+#define OTHER_TIME     8
 #define CAT(t) t_max[t], t_min[t], t_ave[t], t_ave[t]/t_ave[TOTAL_TIME]*100
 extern void timer_clear();
 extern void timer_start(const int n);

@@ -1194,6 +1194,11 @@ public:
 		PROF(seq_proc_time_ += tk_all);
 		PROF(MPI_Barrier(mpi.comm_2d));
 		PROF(fold_competion_wait_ += tk_all);
+#ifdef PROFILE_REGIONS
+		timer_start(IMBALANCE_TIME);
+		MPI_Barrier(mpi.comm_2d);
+		timer_stop(IMBALANCE_TIME);
+#endif
 		MPI_Allreduce(&nq_size_, &max_nq_size_, 1, MPI_INT, MPI_MAX, mpi.comm_2d);
 		MPI_Allreduce(&send_nq_size, &global_nq_size_, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
 		PROF(gather_nq_time_ += tk_all);
@@ -2196,6 +2201,11 @@ public:
 #endif // #if BFELL
 
 	void bottom_up_gather_nq_size(int* visited_count) {
+#ifdef PROFILE_REGIONS
+	  timer_start(IMBALANCE_TIME);
+	  MPI_Barrier(mpi.comm_2d);
+	  timer_stop(IMBALANCE_TIME);
+#endif
 		TRACER(bu_gather_info);
 		PROF(profiling::TimeKeeper tk_all);
 		PROF(MPI_Barrier(mpi.comm_2d));
