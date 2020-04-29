@@ -27,6 +27,8 @@
 #endif
 #if ENABLE_UTOFU
 #include <mpi-ext.h>
+#elif FUGAKU_MPI_PRINT_STATS
+#include <mpi-ext.h>
 #endif
 
 #include <sys/types.h>
