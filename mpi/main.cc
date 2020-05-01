@@ -277,7 +277,8 @@ void timer_print(double *bfs_times, const int num_bfs_roots)
   for(int i=0;i<num_bfs_roots;i++)
 	t[TOTAL_TIME] += bfs_times[i];
 
-  t[CALC_TIME]	= (t[TD_TIME] + t[BU_TIME]) - (t[EXPAND_TIME] + t[FOLD_TIME] + t[NBR_TIME]) - t[IMBALANCE_TIME];
+  double comm_time = t[TD_EXPAND_TIME] + t[BU_EXPAND_TIME] + t[TD_FOLD_TIME] + t[BU_FOLD_TIME] + t[BU_NBR_TIME];
+  t[CALC_TIME]	= (t[TD_TIME] + t[BU_TIME]) - comm_time - t[IMBALANCE_TIME];
   t[OTHER_TIME] = t[TOTAL_TIME] - (t[TD_TIME] + t[BU_TIME]);
 
   MPI_Reduce(t, t_max, NUM_RESIONS, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -292,15 +293,17 @@ void timer_print(double *bfs_times, const int num_bfs_roots)
   if(mpi.isMaster()){
     printf("---\n");
     printf("CATEGORY :                 MAX    MIN    AVE  AVE/TIME\n");
-    printf("TOTAL                   : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME));
-    printf(" - TOP_DOWN             : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_TIME));
-    printf(" - BOTTOM_UP            : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_TIME));
-    printf("   - LOCAL_CALC         : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(CALC_TIME));
-    printf("   - EXPAND(allgather)  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(EXPAND_TIME));
-    printf("   - FOLD(alltoall)     : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(FOLD_TIME));
-    printf("   - NEIGHBOR(sendrecv) : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(NBR_TIME));
-    printf("   - PROC_IMBALANCE     : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(IMBALANCE_TIME));
-    printf(" - OTHER                : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(OTHER_TIME));
+    printf("TOTAL                      : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TOTAL_TIME));
+    printf(" - TOP_DOWN                : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_TIME));
+    printf(" - BOTTOM_UP               : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_TIME));
+    printf("   - LOCAL_CALC            : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(CALC_TIME));
+    printf("   - TD_EXPAND(allgather)  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_EXPAND_TIME));
+    printf("   - BU_EXPAND(allgather)  : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_EXPAND_TIME));
+    printf("   - TD_FOLD(alltoall)     : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(TD_FOLD_TIME));
+    printf("   - BU_FOLD(alltoall)     : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_FOLD_TIME));
+    printf("   - BU_NEIGHBOR(sendrecv) : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_NBR_TIME));
+    printf("   - PROC_IMBALANCE        : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(IMBALANCE_TIME));
+    printf(" - OTHER                   : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(OTHER_TIME));
     fflush(stdout);
   }
 }

@@ -7,15 +7,17 @@
 
 #ifndef BFS_HPP_
 #define BFS_HPP_
-
 #include <pthread.h>
-
 #include <deque>
 
 #if CUDA_ENABLED
 #include "gpu_host.hpp"
 #endif
 
+#ifdef PROFILE_REGIONS
+static int current_expand = TD_EXPAND_TIME;
+int current_fold = TD_FOLD_TIME;
+#endif
 #include "utils.hpp"
 #include "fiber.hpp"
 #include "abstract_comm.hpp"
@@ -490,12 +492,12 @@ public:
 				int64_t reordered = graph_.reorder_map_[root_local];
 				root_reordered = (reordered * mpi.size_2d) + root_owner;
 #ifdef PROFILE_REGIONS
-				timer_start(EXPAND_TIME);
+				timer_start(current_expand);
 #endif
 				MPI_Bcast(&root_reordered, 1, MpiTypeOf<int64_t>::type,
 						root_c, mpi.comm_2dr);
 #ifdef PROFILE_REGIONS
-				timer_stop(EXPAND_TIME);
+				timer_stop(current_expand);
 #endif
 				// update pred
 				pred_[root_local] = root;
@@ -507,12 +509,12 @@ public:
 			}
 			else {
 #ifdef PROFILE_REGIONS
-			  timer_start(EXPAND_TIME);
+			  timer_start(current_expand);
 #endif
 				MPI_Bcast(&root_reordered, 1, MpiTypeOf<int64_t>::type,
 						root_c, mpi.comm_2dr);
 #ifdef PROFILE_REGIONS
-				 timer_stop(EXPAND_TIME);
+				 timer_stop(current_expand);
 #endif
 			}
 
@@ -537,7 +539,7 @@ public:
 			// TODO: asymmetric size for z. (MPI_Allgather -> MPI_Allgatherv or MpiCol::allgatherv ?)
 			int shared_bitmap_width = bitmap_width * mpi.size_z;
 #ifdef PROFILE_REGIONS
-			timer_start(EXPAND_TIME);
+			timer_start(current_expand);
 #endif
 #if ENABLE_MY_ALLGATHER
 			if(mpi.isYdimAvailable()) {
@@ -556,7 +558,7 @@ public:
 			g_expand_bitmap_comm += shared_bitmap_width * mpi.size_y * sizeof(BitmapType);
 #endif
 #ifdef PROFILE_REGIONS
-			timer_stop(EXPAND_TIME);
+			timer_stop(current_expand);
 #endif
 		}
 		if(mpi.isYdimAvailable()) s_.sync->barrier();
@@ -569,7 +571,7 @@ public:
 		BitmapType* const bitmap = (BitmapType*)new_visited_;
 		BitmapType* recv_buffer = shared_visited_;
 #ifdef PROFILE_REGIONS
-		timer_start(EXPAND_TIME);
+		timer_start(current_expand);
 #endif
 #if ENABLE_MY_ALLGATHER
 		if(mpi.isYdimAvailable()) {
@@ -585,7 +587,7 @@ public:
 				recv_buffer, bitmap_width, get_mpi_type(bitmap[0]), mpi.comm_2dr);
 #endif
 #ifdef PROFILE_REGIONS
-		timer_stop(EXPAND_TIME);
+		timer_stop(current_expand);
 #endif
 #if VERVOSE_MODE
 		g_expand_bitmap_comm += bitmap_width * mpi.size_2dc * sizeof(BitmapType);
@@ -596,12 +598,12 @@ public:
 		TRACER(expand_vis_list);
 		if(mpi.rank_z == 0 && mpi.comm_y != MPI_COMM_NULL) {
 #ifdef PROFILE_REGIONS
-		  timer_start(EXPAND_TIME);
+		  timer_start(current_expand);
 #endif
 			s_.offset[0] = MpiCol::allgatherv((TwodVertex*)visited_buffer_orig_,
 					 nq_recv_buf_, node_nq_size, mpi.comm_y, mpi.size_y);
 #ifdef PROFILE_REGIONS
-			timer_stop(EXPAND_TIME);
+			timer_stop(current_expand);
 #endif
 			VERVOSE(g_expand_list_comm += s_.offset[0] * sizeof(TwodVertex));
 		}
@@ -680,7 +682,7 @@ public:
 				(work_extra_buf_ = cache_aligned_xmalloc(cq_size_*sizeof(TwodVertex))) :
 				work_buf_);
 #ifdef PROFILE_REGIONS
-		timer_start(EXPAND_TIME);
+		timer_start(current_expand);
 #endif
 #if ENABLE_MY_ALLGATHER == 1
 		MpiCol::my_allgatherv(nq, nq_size, recv_buf, recv_size, recv_off, mpi.comm_r);
@@ -691,7 +693,7 @@ public:
 				recv_buf, recv_size, recv_off, MpiTypeOf<TwodVertex>::type, mpi.comm_r.comm);
 #endif
 #ifdef PROFILE_REGIONS
-		timer_stop(EXPAND_TIME);
+		timer_stop(current_expand);
 #endif
 		VERVOSE(g_expand_list_comm += cq_size_ * sizeof(TwodVertex));
 		cq_list_ = recv_buf;
@@ -2046,12 +2048,12 @@ public:
 
 			if(tid == 0) {
 #ifdef PROFILE_REGIONS
-      timer_start(NBR_TIME);
+      timer_start(BU_NBR_TIME);
 #endif
 				// process async communication
 				bottom_up_substep_->probe();
 #ifdef PROFILE_REGIONS
-      timer_stop(NBR_TIME);
+      timer_stop(BU_NBR_TIME);
 #endif
 			}
 
@@ -2287,11 +2289,11 @@ public:
 						// receive data
 						PROF(profiling::TimeKeeper tk_all);
 #ifdef PROFILE_REGIONS
-    timer_start(NBR_TIME);
+    timer_start(BU_NBR_TIME);
 #endif
 						bottom_up_substep_->recv(&data);
 #ifdef PROFILE_REGIONS
-    timer_stop(NBR_TIME);
+    timer_stop(BU_NBR_TIME);
 #endif
 
 						PROF(comm_wait_time_ += tk_all);
@@ -2315,7 +2317,7 @@ public:
 					bottom_up_search_bitmap_process_step(data, step_bitmap_width, &process_counter, target_rank);
 					if(tid == 0) {
 #ifdef PROFILE_REGIONS
-    timer_start(NBR_TIME);
+    timer_start(BU_NBR_TIME);
 #endif
 						if(step < BU_SUBSTEP) {
 							bottom_up_substep_->send_first(&data);
@@ -2324,7 +2326,7 @@ public:
 							bottom_up_substep_->send(&data);
 						}
 #ifdef PROFILE_REGIONS
-    timer_stop(NBR_TIME);
+    timer_stop(BU_NBR_TIME);
 #endif
 					}
 				}
@@ -2416,11 +2418,11 @@ public:
 						// receive data
 						PROF(profiling::TimeKeeper tk_all);
 #ifdef PROFILE_REGIONS
-    timer_start(NBR_TIME);
+    timer_start(BU_NBR_TIME);
 #endif
 						bottom_up_substep_->recv(&data);
 #ifdef PROFILE_REGIONS
-    timer_stop(NBR_TIME);
+    timer_stop(BU_NBR_TIME);
 #endif
 						PROF(comm_wait_time_ += tk_all);
 						write_buffer = back_buffer;
@@ -2460,7 +2462,7 @@ public:
 						data.tag.length -= new_visited_cnt;
 
 #ifdef PROFILE_REGIONS
-    timer_start(NBR_TIME);
+    timer_start(BU_NBR_TIME);
 #endif
 						if(step < BU_SUBSTEP) {
 							data.data = write_buffer;
@@ -2472,7 +2474,7 @@ public:
 							bottom_up_substep_->send(&data);
 						}
 #ifdef PROFILE_REGIONS
-    timer_stop(NBR_TIME);
+    timer_stop(BU_NBR_TIME);
 #endif
 					}
 				}
@@ -2772,6 +2774,10 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 #endif
 
 	while(true) {
+#ifdef PROFILE_REGIONS
+	  current_expand = (forward_or_backward_)? TD_EXPAND_TIME : BU_EXPAND_TIME;
+	  current_fold   = (forward_or_backward_)? TD_FOLD_TIME   : BU_FOLD_TIME;
+#endif
 		++current_level_;
 #if VERVOSE_MODE
 		num_edge_top_down_ = 0;
