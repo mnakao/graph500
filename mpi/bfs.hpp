@@ -9,7 +9,7 @@
 #define BFS_HPP_
 #include <pthread.h>
 #include <deque>
-
+extern int fb_count[2];
 #if CUDA_ENABLED
 #include "gpu_host.hpp"
 #endif
@@ -2795,6 +2795,7 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		bool prev_bitmap_or_list = bitmap_or_list_;
 
 		forward_or_backward_ = next_forward_or_backward;
+		fb_count[forward_or_backward_]++;
 		bitmap_or_list_ = next_bitmap_or_list;
 		
 #ifdef PROFILE_REGIONS
@@ -2885,37 +2886,48 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		fapp_start("expand", 0, 0);
 		start_collection("expand");
 #endif
-		int64_t global_unvisited_vertices = graph_.num_global_verts_ - global_visited_vertices;
-		next_bitmap_or_list = !forward_or_backward_;
-		if(growing_or_shrinking_ && global_nq_size_ > prev_global_nq_size) { // growing
-			if(forward_or_backward_ // forward ?
-				&& global_nq_size_ > graph_.num_global_verts_ / denom_to_bottom_up_ // NQ is large ?
-				) { // switch to backward
-				next_forward_or_backward = false;
-				packet_buffer_is_dirty_ = true;
-			}
+		if(mpi.isMaster()){
+		  if(forward_or_backward_)  printf("Top\n");
+		  else  printf("Bottom\n");
 		}
-		else { // shrinking
-			if(!forward_or_backward_  // backward ?
-				&& global_unvisited_vertices < int64_t(graph_.num_global_verts_ / DEMON_BOTTOMUP_TO_TOPDOWN) // NQ is small ?
-				) { // switch to topdown
-				next_forward_or_backward = true;
-				growing_or_shrinking_ = false;
+        int64_t global_unvisited_vertices = graph_.num_global_verts_ - global_visited_vertices;
+        next_bitmap_or_list = !forward_or_backward_;
+        if(growing_or_shrinking_ && global_nq_size_ > prev_global_nq_size) { // growing
+          if(mpi.isMaster()) printf("%f > %f : ", (double)global_nq_size_, graph_.num_global_verts_ / denom_to_bottom_up_);
+          if(forward_or_backward_ // forward ?
+             && global_nq_size_ > graph_.num_global_verts_ / denom_to_bottom_up_ // NQ is large ?
+             ) { // switch to backward
+            next_forward_or_backward = false;
+            packet_buffer_is_dirty_ = true;
+	    if(mpi.isMaster()) printf("true : %d\n", current_level_);
+          }
+	  else if(mpi.isMaster()) printf("false : %d\n", current_level_);
+        }
+        else { // shrinking
+          if(mpi.isMaster()) printf("%f < %f : ", (double)global_unvisited_vertices, graph_.num_global_verts_ / DEMON_BOTTOMUP_TO_TOPDOWN);
+          if(!forward_or_backward_  // backward ?
+             && global_unvisited_vertices < int64_t(graph_.num_global_verts_ / DEMON_BOTTOMUP_TO_TOPDOWN) // NQ is small ?
+             ) { // switch to topdown
+            next_forward_or_backward = true;
+            growing_or_shrinking_ = false;
+	    if(mpi.isMaster()) printf("true : %d\n", current_level_);
 
-				// Enabled if we compress lists with VLQ
-				//int max_capacity = vlq::BitmapEncoder::calc_capacity_of_values(
-				//		bitmap_width, NBPE, bitmap_width*sizeof(BitmapType));
-				//int threashold = std::min<int>(max_capacity, bitmap_width*sizeof(BitmapType)/2);
-				int bitmap_width = get_bitmap_size_local();
-				double threashold = bitmap_width*sizeof(BitmapType)/sizeof(TwodVertex)/denom_bitmap_to_list_;
-				next_bitmap_or_list = (max_nq_size_ >= threashold);
-			}
-		}
-		if(next_forward_or_backward == false) {
-			// bottom-up only with bitmap
-			// do not use top_down_switch_expand with list since it is very slow!!
-			next_bitmap_or_list = true;
-		}
+            // Enabled if we compress lists with VLQ
+            //int max_capacity = vlq::BitmapEncoder::calc_capacity_of_values(
+            //      bitmap_width, NBPE, bitmap_width*sizeof(BitmapType));
+            //int threashold = std::min<int>(max_capacity, bitmap_width*sizeof(BitmapType)/2);
+            int bitmap_width = get_bitmap_size_local();
+            double threashold = bitmap_width*sizeof(BitmapType)/sizeof(TwodVertex)/denom_bitmap_to_list_;
+            next_bitmap_or_list = (max_nq_size_ >= threashold);
+          }
+	  else if(mpi.isMaster()) printf("false : %d\n", current_level_);
+        }
+        if(next_forward_or_backward == false) {
+            // bottom-up only with bitmap
+            // do not use top_down_switch_expand with list since it is very slow!!
+            next_bitmap_or_list = true;
+        }
+
 
 #if VERVOSE_MODE
 		int64_t send_num_bufs[2] = { a2a_comm->get_last_send_size(), nq_empty_buffer_.size() };

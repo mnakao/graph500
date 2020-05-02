@@ -4,7 +4,7 @@
  *  Created on: Dec 9, 2011
  *      Author: koji
  */
-
+int fb_count[2] = {0, 0};
 // C includes
 #include <mpi.h>
 #include <stdio.h>
@@ -304,6 +304,7 @@ void timer_print(double *bfs_times, const int num_bfs_roots)
     printf("   - BU_NEIGHBOR(sendrecv) : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(BU_NBR_TIME));
     printf("   - PROC_IMBALANCE        : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(IMBALANCE_TIME));
     printf(" - OTHER                   : %6.2f %6.2f %6.2f (%6.2f%%)\n", CAT(OTHER_TIME));
+    printf("Top : %d, Bottom : %d\n", fb_count[1], fb_count[0]);
     fflush(stdout);
   }
 }
