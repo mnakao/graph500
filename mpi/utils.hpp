@@ -1427,8 +1427,52 @@ static void setup_2dcomm()
 			success = true;
 		}
 	}
-#endif // #if ENABLE_UTOFU
 
+	const char* tofu_3d_div_y = getenv("TOFU_3D_DIV_Y"); // Number of divisions for Y axis. e.g. When TOFU_3D_DIV_Y=4, (R x C) = (Z*4, X*Y/4)
+	if(!success && tofu_3d_div_y) {
+	  int div, size;
+	  sscanf(tofu_3d_div_y, "%d", &div);
+	  FJMPI_Topology_get_dimension(&size);
+	  if(size != 3){
+		if(mpi.isMaster())
+		  print_with_prefix("TOFU_3D_DIV_Y : dimension must be 3\n");
+		MPI_Finalize();
+		exit(1);
+	  }
+	  
+	  int X, Y, Z;
+	  FJMPI_Topology_get_shape(&X, &Y, &Z);
+	  if(Y%div != 0){
+		if(mpi.isMaster())
+		  print_with_prefix("TOFU_3D_DIV_Y : Y must be multiple of %d\n", div);
+		MPI_Finalize();
+		exit(1);
+	  }
+	  else if((Y/div)%2 != 0 && (Y/div) != 1){  // Y/div = 1 is OK because network topology is torus.
+		if(mpi.isMaster())
+		  print_with_prefix("TOFU_3D_DIV_Y : Y must be multiple of 2*%d\n", div);
+        MPI_Finalize();
+        exit(1);
+      }
+
+	  int DY = Y / div;
+	  mpi.comm_c.size = mpi.size_2dr = Z * div;
+	  mpi.comm_r.size = mpi.size_2dc = X * DY;
+	  if(mpi.isMaster())
+		print_with_prefix("Dimension (R x C) = %d x %d is mapped to (X x Y x Z) = %d x %d x %d\n", mpi.size_2dr, mpi.size_2dc, X, Y, Z);
+
+	  int x  = mpi.rank % X;
+	  int y  = (mpi.rank % (X*Y)) / X;
+	  mpi.comm_c.rank = mpi.rank_2dr = mpi.rank/(X*Y) + (mpi.rank%(X*Y))/(X*DY) * Z;
+	  if(x == 0 && y%DY == 0) mpi.comm_r.rank = mpi.rank_2dc = 0;
+	  else if(x == 0)         mpi.comm_r.rank = mpi.rank_2dc = X * DY - (y%DY);
+	  else if((y%DY)%2 == 0)  mpi.comm_r.rank = mpi.rank_2dc = (X-1) * (y%DY) + x;
+	  else	      	          mpi.comm_r.rank = mpi.rank_2dc = (X-1) * (y%DY) + (X-x);
+	  
+	  success = true;
+	}
+#endif // #if ENABLE_UTOFU
+	
 	const char* virt_4d = getenv("VIRT_4D");
 	if(!success && virt_4d) {
 		int RX, RY, CX, CY;
