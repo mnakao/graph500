@@ -1313,6 +1313,27 @@ static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c)
 	c.size = size;
 }
 
+/**
+ * Since the compute_rank() targets for torus topology, generated first/last ranks
+ * are adjacent in a torus manner. However, the Tofu network guarantees that 
+ * the X, Y, and Z axes are torus only if the whole system are used. When using 
+ * a partial Tofu network, its topology becomes a mesh (all 12 nodes connected by 
+ * a, b, and c axes are used. For example, when node="4x6x2:strict" in the job script,
+ * x,y,z,a,b,c = 2,2,1,2,3,2 nodes are used). The convert_rank_for_mesh() converts the 
+ * generated ranks so that the first/last ranks adjacent in a mesh manner. 
+ */
+static void convert_rank_for_mesh(COMM_2D& c) {
+  if(c.rank_x == 0 && c.rank_y == 0){
+	c.rank = 0;
+  }
+  else if(c.rank_x == 0){
+	c.rank = c.size_x * c.size_y - c.rank_y;
+  }
+  else{
+	c.rank -= (c.rank_y/2)*2;
+  }
+}
+
 static int compute_rank_2d(int x, int y, int sx, int sy) {
 	if(x >= sx) x -= sx;
 	if(x < 0) x += sx;
@@ -1410,9 +1431,25 @@ static void setup_2dcomm()
 					rs_c.push_back(rank6d[i]);
 				}
 			}
+
+			if(ss_r.back() != 1 && ss_r.back()%2 != 0){
+			  if(mpi.isMaster())
+				print_with_prefix("Last dimension of R must be multiple of 2. But it is %d.\n", ss_r.back());
+			  MPI_Finalize();
+			  exit(1);
+			}
+			else if(ss_c.back() != 1 && ss_c.back()%2 != 0){
+			  if(mpi.isMaster())
+				print_with_prefix("Last dimension of C must be multiple of 2. But it is %d,\n", ss_c.back());
+			  MPI_Finalize();
+			  exit(1);
+			}
+			  
 			compute_rank(ss_c, rs_c, mpi.comm_r);
 			if(mpi.isMaster()) print_dims("R: ", ss_r);
 			compute_rank(ss_r, rs_r, mpi.comm_c);
+			if(ss_r.size() != 1)
+			  convert_rank_for_mesh(mpi.comm_c); // Torus to Mesh for comm_c
 			if(mpi.isMaster()) print_dims("C: ", ss_c);
 
 			mpi.size_2dr = mpi.comm_c.size;
