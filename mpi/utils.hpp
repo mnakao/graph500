@@ -1313,6 +1313,7 @@ static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c)
 	c.size = size;
 }
 
+#if ENABLE_UTOFU
 /**
  * Since the compute_rank() targets for torus topology, generated first/last ranks
  * are adjacent in a torus manner. However, the Tofu network guarantees that 
@@ -1333,6 +1334,7 @@ static void convert_rank_for_mesh(COMM_2D& c) {
 	c.rank -= (c.rank_y/2)*2;
   }
 }
+#endif
 
 static int compute_rank_2d(int x, int y, int sx, int sy) {
 	if(x >= sx) x -= sx;
