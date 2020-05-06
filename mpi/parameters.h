@@ -45,8 +45,8 @@
 #define BOTTOM_UP_OVERLAP_PFS 1
 
 // for Fugaku
-#define ENABLE_UTOFU 0
-#define FUGAKU_MPI_PRINT_STATS 0
+#define ENABLE_UTOFU 1
+#define FUGAKU_MPI_PRINT_STATS 1
 
 // for K computer
 #define ENABLE_FJMPI_RDMA 0
@@ -82,13 +82,14 @@
 // But this is not true in the general case. BFS may generate wrong answer in some situation.
 #define INIT_PRED_ONCE 0
 
-#define PRE_EXEC_TIME 60 // 300 seconds
+#define PRE_EXEC_TIME 0 // 300 seconds
 
 #define BACKTRACE_ON_SIGNAL 0
 #define PRINT_BT_SIGNAL SIGTRAP
 
 // org = 1000
-#define DENOM_TOPDOWN_TO_BOTTOMUP 2000.0
+//#define DENOM_TOPDOWN_TO_BOTTOMUP 2000.0
+#define DENOM_TOPDOWN_TO_BOTTOMUP 15000.0
 #define DEMON_BOTTOMUP_TO_TOPDOWN 8.0
 #define DENOM_BITMAP_TO_LIST 2.0 // temp
 

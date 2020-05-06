@@ -1434,13 +1434,13 @@ static void setup_2dcomm()
 				}
 			}
 
-			if(ss_r.back() != 1 && ss_r.back()%2 != 0){
+			if(ss_r.size() != 1 && ss_r.back() != 1 && ss_r.back()%2 != 0){
 			  if(mpi.isMaster())
 				print_with_prefix("Last dimension of R must be multiple of 2. But it is %d.\n", ss_r.back());
 			  MPI_Finalize();
 			  exit(1);
 			}
-			else if(ss_c.back() != 1 && ss_c.back()%2 != 0){
+			else if(ss_c.size() != 1 && ss_c.back() != 1 && ss_c.back()%2 != 0){
 			  if(mpi.isMaster())
 				print_with_prefix("Last dimension of C must be multiple of 2. But it is %d,\n", ss_c.back());
 			  MPI_Finalize();
@@ -1450,8 +1450,8 @@ static void setup_2dcomm()
 			compute_rank(ss_c, rs_c, mpi.comm_r);
 			if(mpi.isMaster()) print_dims("R: ", ss_r);
 			compute_rank(ss_r, rs_r, mpi.comm_c);
-			if(ss_r.size() != 1)
-			  convert_rank_for_mesh(mpi.comm_c); // Torus to Mesh for comm_c
+			//			if(ss_r.size() != 1)
+			//			  convert_rank_for_mesh(mpi.comm_c); // Torus to Mesh for comm_c
 			if(mpi.isMaster()) print_dims("C: ", ss_c);
 
 			mpi.size_2dr = mpi.comm_c.size;
