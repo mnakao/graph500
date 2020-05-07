@@ -1402,9 +1402,9 @@ static void setup_2dcomm()
 
 #if ENABLE_UTOFU
 	const char* tofu_6d = getenv("TOFU_6D");  // R-axis. e.g. TOFU_6D=yz
+	int rank6d[6], size6d[6];
+	bool rdim[6] = {0};
 	if(!success && tofu_6d) {
-		int rank6d[6];
-		int size6d[6];
 		// FJMPI_Topology_rel_rank2xyzabc(mpi.rank, &rank6d[0], &rank6d[1], &rank6d[2], &rank6d[3], &rank6d[4], &rank6d[5]);
 		FJMPI_Topology_get_coords(MPI_COMM_WORLD, mpi.rank, FJMPI_TOFU_REL, 6, rank6d);
 		MPI_Allreduce(rank6d, size6d, 6, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -1419,7 +1419,6 @@ static void setup_2dcomm()
 			exit(0);
 		}
 		else {
-			bool rdim[6] = {0};
 			parse_row_dims(rdim, tofu_6d);
 			std::vector<int> ss_r, rs_r;
 			std::vector<int> ss_c, rs_c;
@@ -1596,6 +1595,33 @@ static void setup_2dcomm()
 	MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
 	mpi.comm_r.comm = mpi.comm_2dr;
 	MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
+
+#if ENABLE_UTOFU
+    if(tofu_6d) {
+	  int periods[6] = {(size6d[0] == 24), (size6d[1] == 23), (size6d[2] == 24), 
+						(size6d[3] ==  2), (size6d[4] ==  3), (size6d[5] ==  2)};
+	  int rdims = 0, cdims = 0, rsize[6], csize[6], rperiods[6], cperiods[6];
+	  for(int i=0;i<6;i++){
+		if(rdim[i]){
+		  rperiods[rdims] = periods[i];
+		  rsize[rdims++]  = size6d[i];
+		}
+		else{
+		  cperiods[cdims] = periods[i];
+		  csize[cdims++]  = size6d[i];
+		}
+	  }
+	  
+	  MPI_Comm tmp_comm;
+	  int reorder = 0;
+	  MPI_Cart_create(mpi.comm_2dc, rdims, rsize, rperiods, reorder, &tmp_comm);
+	  mpi.comm_c.comm = mpi.comm_2dc = tmp_comm;
+      MPI_Cart_create(mpi.comm_2dr, cdims, csize, cperiods, reorder, &tmp_comm);
+      mpi.comm_r.comm = mpi.comm_2dr = tmp_comm;
+	  MPI_Cart_create(mpi.comm_2d, 6, size6d, periods, reorder, &tmp_comm);
+	  mpi.comm_2d = tmp_comm;
+    }
+#endif
 
 	if(mpi.isMultiDimAvailable) {
 		setup_rank_map(mpi.comm_r);
