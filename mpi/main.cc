@@ -13,6 +13,9 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <math.h>
+#ifdef _FUGAKU_POWER_MEASUREMENT
+#include "pwr.h"
+#endif
 
 // C++ includes
 #include <string>
@@ -89,10 +92,39 @@ void graph500_bfs(int SCALE, int edgefactor)
 	benchmark->prepare_bfs();
 	
 	if(PRE_EXEC_TIME != 0){
-	  if(mpi.isMaster()){
-		time_t t = time(NULL);
-		print_with_prefix("Start energy loop : %s", ctime(&t));
+#ifdef _FUGAKU_POWER_MEASUREMENT
+	  PWR_Cntxt cntxt = NULL;
+	  PWR_Obj obj = NULL;
+	  int rc;
+	  double energy1 = 0.0;
+	  double energy2 = 0.0;
+	  double menergy1 = 0.0;
+	  double menergy2 = 0.0;
+	  double ave_power[2];
+	  double t_power[2];
+	  PWR_Time ts1 = 0;
+	  PWR_Time ts2 = 0;
+	  rc = PWR_CntxtInit(PWR_CNTXT_FX1000, PWR_ROLE_APP, "app", &cntxt);
+	  if (rc != PWR_RET_SUCCESS) {
+	    printf("CntxtInit Failed\n");
 	  }
+	  rc = PWR_CntxtGetObjByName(cntxt, "plat.node", &obj);
+	  if (rc != PWR_RET_SUCCESS) {
+	    printf("CntxtGetObjByName Failed\n");
+	  }
+	  rc = PWR_ObjAttrGetValue(obj, PWR_ATTR_MEASURED_ENERGY, &menergy1, &ts1);
+	  if (rc != PWR_RET_SUCCESS) {
+	    printf("ObjAttrGetValue Failed (rc = %d)\n", rc);
+	  }
+	  rc = PWR_ObjAttrGetValue(obj, PWR_ATTR_ENERGY, &energy1, NULL);
+	  if (rc != PWR_RET_SUCCESS) {
+	    printf("ObjAttrGetValue Failed (rc = %d)\n", rc);
+	  }
+#endif
+      if(mpi.isMaster()){
+        time_t t = time(NULL);
+        print_with_prefix("Start energy loop : %s", ctime(&t));
+      }
 	  double time_left = PRE_EXEC_TIME;
 	  for(int c = root_start; time_left > 0.0; ++c) {
 		if(mpi.isMaster())
@@ -107,10 +139,27 @@ void graph500_bfs(int SCALE, int edgefactor)
 		}
 		MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
 	  }
-	  if(mpi.isMaster()){
-		time_t t = time(NULL);
-		print_with_prefix("End energy loop : %s", ctime(&t));
+      if(mpi.isMaster()){
+        time_t t = time(NULL);
+        print_with_prefix("End energy loop : %s", ctime(&t));
+      }
+#ifdef _FUGAKU_POWER_MEASUREMENT
+	  rc = PWR_ObjAttrGetValue(obj, PWR_ATTR_MEASURED_ENERGY, &menergy2, &ts2);
+	  if (rc != PWR_RET_SUCCESS) {
+	    printf("ObjAttrGetValue Failed (rc = %d)\n", rc);
 	  }
+	  rc = PWR_ObjAttrGetValue(obj, PWR_ATTR_ENERGY, &energy2, NULL);
+	  if (rc != PWR_RET_SUCCESS) {
+	    printf("ObjAttrGetValue Failed (rc = %d)\n", rc);
+	  }
+	  ave_power[0] = (menergy2 - menergy1) / ((ts2 - ts1) / 1000000000.0);
+	  ave_power[1] = (energy2 - energy1) / ((ts2 - ts1) / 1000000000.0);
+	  MPI_Reduce(ave_power, t_power, 2, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+	  if(mpi.isMaster()){
+        print_with_prefix("total measured average power : %lf", t_power[0]);
+        print_with_prefix("total estimated average power : %lf", t_power[1]);
+	  }
+#endif
 	}
 /////////////////////
 #ifdef PROFILE_REGIONS

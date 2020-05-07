@@ -82,7 +82,7 @@
 // But this is not true in the general case. BFS may generate wrong answer in some situation.
 #define INIT_PRED_ONCE 0
 
-#define PRE_EXEC_TIME 0 // 300 seconds
+#define PRE_EXEC_TIME 300 // 0 or 300 seconds
 
 #define BACKTRACE_ON_SIGNAL 0
 #define PRINT_BT_SIGNAL SIGTRAP

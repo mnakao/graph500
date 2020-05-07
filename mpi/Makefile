@@ -7,6 +7,7 @@ SCOREP = false
 LDFLAGS := -fopenmp -g # -pg
 NVCCFLAGS := -Drestrict=__restrict__ -Xcompiler -fopenmp,-ffast-math,-Wall -arch=compute_20 -code=sm_20
 
+FUGAKU_POWER_MEASUREMENT=false
 VERBOSE = false
 VERTEX_REORDERING = 2
 REAL_BENCHMARK = false
@@ -20,6 +21,10 @@ ifeq ($(REAL_BENCHMARK), false)
 REAL_BENCHMARK_OPT =
 else
 REAL_BENCHMARK_OPT = -DREAL_BENCHMARK
+endif
+ifeq ($(FUGAKU_POWER_MEASUREMENT), true)
+FUGAKU_POWER_CFLAGS=-D_FUGAKU_POWER_MEASUREMENT
+FUGAKU_POWER_CLINK=-lpwr
 endif
 
 
@@ -77,8 +82,8 @@ ifeq ($(SW), FUGAKU)
 MPICC := mpifccpx
 MPICPP := mpiFCCpx
 FCC_BASE := -Kopenmp -Drestrict=__restrict__  $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT)
-CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG -DPROFILE_REGIONS
-LDFLAGS := $(CFLAGS) -Nfjomplib
+CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG -DPROFILE_REGIONS $(FUGAKU_POWER_CFLAGS)
+LDFLAGS := $(CFLAGS) -Nfjomplib $(FUGAKU_POWER_CLINK)
 #LDFLAGS := $(CFLAGS)
 endif
 
