@@ -87,20 +87,31 @@ void graph500_bfs(int SCALE, int edgefactor)
 		init_log(SCALE, edgefactor, generation_time, construction_time, redistribution_time, &log);
 
 	benchmark->prepare_bfs();
-// narashi
-		double time_left = PRE_EXEC_TIME;
-        for(int c = root_start; time_left > 0.0; ++c) {
-                if(mpi.isMaster())  print_with_prefix("========== Pre Running BFS %d ==========", c);
-                MPI_Barrier(mpi.comm_2d);
-                double bfs_time = MPI_Wtime();
-                benchmark->run_bfs(bfs_roots[c % num_bfs_roots], pred);
-                bfs_time = MPI_Wtime() - bfs_time;
-                if(mpi.isMaster()) {
-                        print_with_prefix("Time for BFS %d is %f", c, bfs_time);
-                        time_left -= bfs_time;
-                }
-               MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
-        }
+	
+	if(PRE_EXEC_TIME != 0){
+	  if(mpi.isMaster()){
+		time_t t = time(NULL);
+		print_with_prefix("Start energy loop : %s", ctime(&t));
+	  }
+	  double time_left = PRE_EXEC_TIME;
+	  for(int c = root_start; time_left > 0.0; ++c) {
+		if(mpi.isMaster())
+		  print_with_prefix("========== Pre Running BFS %d ==========", c);
+		MPI_Barrier(mpi.comm_2d);
+		double bfs_time = MPI_Wtime();
+		benchmark->run_bfs(bfs_roots[c % num_bfs_roots], pred);
+		bfs_time = MPI_Wtime() - bfs_time;
+		if(mpi.isMaster()) {
+		  print_with_prefix("Time for BFS %d is %f", c, bfs_time);
+		  time_left -= bfs_time;
+		}
+		MPI_Bcast(&time_left, 1, MPI_DOUBLE, 0, mpi.comm_2d);
+	  }
+	  if(mpi.isMaster()){
+		time_t t = time(NULL);
+		print_with_prefix("End energy loop : %s", ctime(&t));
+	  }
+	}
 /////////////////////
 #ifdef PROFILE_REGIONS
 	timer_clear();

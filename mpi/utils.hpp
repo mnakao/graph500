@@ -1313,6 +1313,29 @@ static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c)
 	c.size = size;
 }
 
+#if ENABLE_UTOFU
+/**
+ * Since the compute_rank() targets for torus topology, generated first/last ranks
+ * are adjacent in a torus manner. However, the Tofu network guarantees that 
+ * the X, Y, and Z axes are torus only if the whole system are used. When using 
+ * a partial Tofu network, its topology becomes a mesh (all 12 nodes connected by 
+ * a, b, and c axes are used. For example, when node="4x6x2:strict" in the job script,
+ * x,y,z,a,b,c = 2,2,1,2,3,2 nodes are used). The convert_rank_for_mesh() converts the 
+ * generated ranks so that the first/last ranks adjacent in a mesh manner. 
+ */
+static void convert_rank_for_mesh(COMM_2D& c) {
+  if(c.rank_x == 0 && c.rank_y == 0){
+	c.rank = 0;
+  }
+  else if(c.rank_x == 0){
+	c.rank = c.size_x * c.size_y - c.rank_y;
+  }
+  else{
+	c.rank -= (c.rank_y/2)*2;
+  }
+}
+#endif
+
 static int compute_rank_2d(int x, int y, int sx, int sy) {
 	if(x >= sx) x -= sx;
 	if(x < 0) x += sx;
@@ -1410,9 +1433,25 @@ static void setup_2dcomm()
 					rs_c.push_back(rank6d[i]);
 				}
 			}
+
+			if(ss_r.size() != 1 && ss_r.back() != 1 && ss_r.back()%2 != 0){
+			  if(mpi.isMaster())
+				print_with_prefix("Last dimension of R must be multiple of 2. But it is %d.\n", ss_r.back());
+			  MPI_Finalize();
+			  exit(1);
+			}
+			else if(ss_c.size() != 1 && ss_c.back() != 1 && ss_c.back()%2 != 0){
+			  if(mpi.isMaster())
+				print_with_prefix("Last dimension of C must be multiple of 2. But it is %d,\n", ss_c.back());
+			  MPI_Finalize();
+			  exit(1);
+			}
+			  
 			compute_rank(ss_c, rs_c, mpi.comm_r);
 			if(mpi.isMaster()) print_dims("R: ", ss_r);
 			compute_rank(ss_r, rs_r, mpi.comm_c);
+			//			if(ss_r.size() != 1)
+			//			  convert_rank_for_mesh(mpi.comm_c); // Torus to Mesh for comm_c
 			if(mpi.isMaster()) print_dims("C: ", ss_c);
 
 			mpi.size_2dr = mpi.comm_c.size;
@@ -1427,8 +1466,52 @@ static void setup_2dcomm()
 			success = true;
 		}
 	}
-#endif // #if ENABLE_UTOFU
 
+	const char* tofu_3d_div_y = getenv("TOFU_3D_DIV_Y"); // Number of divisions for Y axis. e.g. When TOFU_3D_DIV_Y=4, (R x C) = (Z*4, X*Y/4)
+	if(!success && tofu_3d_div_y) {
+	  int div, size;
+	  sscanf(tofu_3d_div_y, "%d", &div);
+	  FJMPI_Topology_get_dimension(&size);
+	  if(size != 3){
+		if(mpi.isMaster())
+		  print_with_prefix("TOFU_3D_DIV_Y : dimension must be 3\n");
+		MPI_Finalize();
+		exit(1);
+	  }
+	  
+	  int X, Y, Z;
+	  FJMPI_Topology_get_shape(&X, &Y, &Z);
+	  if(Y%div != 0){
+		if(mpi.isMaster())
+		  print_with_prefix("TOFU_3D_DIV_Y : Y must be multiple of %d\n", div);
+		MPI_Finalize();
+		exit(1);
+	  }
+	  else if((Y/div)%2 != 0 && (Y/div) != 1){  // Y/div = 1 is OK because network topology is torus.
+		if(mpi.isMaster())
+		  print_with_prefix("TOFU_3D_DIV_Y : Y must be multiple of 2*%d\n", div);
+        MPI_Finalize();
+        exit(1);
+      }
+
+	  int DY = Y / div;
+	  mpi.comm_c.size = mpi.size_2dr = Z * div;
+	  mpi.comm_r.size = mpi.size_2dc = X * DY;
+	  if(mpi.isMaster())
+		print_with_prefix("Dimension (R x C) = %d x %d is mapped to (X x Y x Z) = %d x %d x %d\n", mpi.size_2dr, mpi.size_2dc, X, Y, Z);
+
+	  int x  = mpi.rank % X;
+	  int y  = (mpi.rank % (X*Y)) / X;
+	  mpi.comm_c.rank = mpi.rank_2dr = mpi.rank/(X*Y) + (mpi.rank%(X*Y))/(X*DY) * Z;
+	  if(x == 0 && y%DY == 0) mpi.comm_r.rank = mpi.rank_2dc = 0;
+	  else if(x == 0)         mpi.comm_r.rank = mpi.rank_2dc = X * DY - (y%DY);
+	  else if((y%DY)%2 == 0)  mpi.comm_r.rank = mpi.rank_2dc = (X-1) * (y%DY) + x;
+	  else	      	          mpi.comm_r.rank = mpi.rank_2dc = (X-1) * (y%DY) + (X-x);
+	  
+	  success = true;
+	}
+#endif // #if ENABLE_UTOFU
+	
 	const char* virt_4d = getenv("VIRT_4D");
 	if(!success && virt_4d) {
 		int RX, RY, CX, CY;
