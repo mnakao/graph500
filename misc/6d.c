@@ -70,25 +70,5 @@ int main()
     }
   }
 
-  // 2 combination
-  for(int i=0;i<6;i++){
-    for(int j=i+1;j<6;j++){
-      for(int k=j+1;k<6;k++){
-		for(int m=k+1;m<6;m++){
-		  int R = size6d[i] * size6d[j] * size6d[k] * size6d[m];
-		  int C = 1;
-		  for(int n=0;n<6;n++)
-			if(i != n && j != n && k != n && m != n)
-			  C *= size6d[n];
-
-		  double diff = swap_diff(&R, &C);
-		  if(diff < min){
-			min = diff;
-			printf("diff = %.2f, R x C = %d x %d\n", diff, R, C);
-		  }
-      	}
-      }
-    }
-  }
   return 0;
 }
