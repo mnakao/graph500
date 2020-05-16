@@ -7,8 +7,6 @@
 #include "graph_constructor.hpp"
 #include "bfs.hpp"
 
-typedef BfsBase BfsOnCPU;
-
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
 {
@@ -48,7 +46,7 @@ int main(int argc, char** argv)
     EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
 																 (int64_t(1) << SCALE) * 16 / mpi.size_2d, getenv("TMPFILE"));
     generate_graph_spec2010(&edge_list, SCALE, 16);
-    BfsOnCPU* benchmark = new BfsOnCPU();
+    BfsBase* benchmark = new BfsBase();
     benchmark->construct(&edge_list);
 
     MPI_Finalize();
