@@ -75,13 +75,6 @@ public:
 		}
 	}
 
-	/**
-	 * Asynchronous send.
-	 * When the communicator receive data, it will call fold_received(FoldCommBuffer*) function.
-	 * To reduce the memory consumption, when the communicator detects stacked jobs,
-	 * it also process the tasks in the fiber_man_ except the tasks that have the lowest priority (0).
-	 * This feature realize the fixed memory consumption.
-	 */
 	void put(void* ptr, int length, int target)
 	{
 		if(length == 0) {
@@ -90,7 +83,6 @@ public:
 		}
 		CommTarget& node = node_[target];
 
-//#if ASYNC_COMM_LOCK_FREE
 		do {
 			int offset = __sync_fetch_and_add(&node.reserved_size_, length);
 			if(offset > buffer_size_) {
