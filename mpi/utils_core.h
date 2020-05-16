@@ -2,7 +2,6 @@
 #define UTILS_HPP_
 
 #include <stdint.h>
-#include <assert.h>
 #include <algorithm>
 #include <functional>
 using std::ptrdiff_t;
@@ -18,7 +17,6 @@ template <typename T> struct MpiTypeOf { };
 #define NLEADING_ZERO_BITSLL __builtin_clzll
 
 inline int get_msb_index(int64_t value) {
-	assert (value != 0);
 	return (sizeof(value)*8-1) - INT64_C(NLEADING_ZERO_BITS)(value);
 }
 

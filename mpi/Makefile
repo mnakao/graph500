@@ -1,7 +1,7 @@
 MPICC := mpifccpx
 MPICPP := mpiFCCpx
 FCC_BASE := -Kopenmp -Drestrict=__restrict__
-CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG
+CFLAGS := $(FCC_BASE) -Kfast -g
 LDFLAGS := $(CFLAGS) -Nfjomplib
 CPPFLAGS := $(CFLAGS)
 

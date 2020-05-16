@@ -1,18 +1,7 @@
 #ifndef UTILS_IMPL_HPP_
 #define UTILS_IMPL_HPP_
-#include <stdint.h>
-#include <stdarg.h>
-#include <stdlib.h>
-#include <malloc.h>
-#include <unistd.h>
-#include <sched.h>
 #include <omp.h>
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/shm.h>
-#include <algorithm>
 #include <vector>
-#include <deque>
 #include "primitives.hpp"
 #include "utils_core.h"
 
@@ -25,12 +14,6 @@ struct COMM_2D {
 	int size, size_x, size_y;
 	int* rank_map; // Index: rank_x + rank_y * size_x
 };
-
-static void swap(COMM_2D& a, COMM_2D& b) {
-	COMM_2D tmp = b;
-	b = a;
-	a = tmp;
-}
 
 struct MPI_GLOBALS {
 	int rank;
@@ -93,21 +76,6 @@ const MPI_Datatype MpiTypeOf<unsigned long>::type = MPI_UNSIGNED_LONG;
 template <> struct MpiTypeOf<unsigned long long> { static const MPI_Datatype type; };
 const MPI_Datatype MpiTypeOf<unsigned long long>::type = MPI_UNSIGNED_LONG_LONG;
 
-template <typename T> struct template_meta_helper { typedef void type; };
-template <typename T> MPI_Datatype get_mpi_type(T& instance) {
-	return MpiTypeOf<T>::type;
-}
-
-void throw_exception(const char* format, ...) {
-	char buf[300];
-	va_list arg;
-	va_start(arg, format);
-    vsnprintf(buf, sizeof(buf), format, arg);
-    va_end(arg);
-    fprintf(IMD_OUT, "[r:%d] %s\n", mpi.rank, buf);
-    throw buf;
-}
-
 void print_with_prefix(const char* format, ...) {
 	char buf[300];
 	va_list arg;
@@ -133,19 +101,6 @@ void* cache_aligned_xcalloc(const size_t size) {
 void* cache_aligned_xmalloc(const size_t size) {
 	void* p = NULL;
 	posix_memalign(&p, CACHE_LINE, size);
-	return p;
-}
-
-void* page_aligned_xcalloc(const size_t size) {
-	void* p = NULL;
-	posix_memalign(&p, PAGE_SIZE, size);
-	memset(p, 0, size);
-	return p;
-}
-void* page_aligned_xmalloc(const size_t size) {
-
-	void* p = NULL;
-	posix_memalign(&p, PAGE_SIZE, size);
 	return p;
 }
 
@@ -252,33 +207,11 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	mpi.rank_y = mpi.rank_2dr;
 	mpi.rank_z = 0;
 
-	// change default error handler
-	MPI_File_set_errhandler(MPI_FILE_NULL, MPI_ERRORS_ARE_FATAL);
-
 	UnweightedEdge::initialize();
 	UnweightedPackedEdge::initialize();
 }
 
 namespace MpiCol {
-template <typename T>
-int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
-	int recv_off[comm_size+1], recv_cnt[comm_size];
-	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
-	recv_off[0] = 0;
-	for(int i = 0; i < comm_size; ++i) {
-		recv_off[i+1] = recv_off[i] + recv_cnt[i];
-	}
-	MPI_Allgatherv(sendbuf, sendcount, MpiTypeOf<T>::type,
-			recvbuf, recv_cnt, recv_off, MpiTypeOf<T>::type, comm);
-	return recv_off[comm_size];
-}
-
-template <typename T>
-void alltoall(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm) {
-	MPI_Alltoall(sendbuf, sendcount, MpiTypeOf<T>::type,
-			recvbuf, sendcount, MpiTypeOf<T>::type, comm);
-}
-
 template <typename T>
 T* alltoallv(T* sendbuf, int* sendcount,
 		int* sendoffset, int* recvcount, int* recvoffset, MPI_Comm comm, int comm_size)
@@ -354,15 +287,13 @@ public:
 			for(int r = 0; r < num_partitions_; ++r) {
 				partition_offsets_[r + 1] = partition_offsets_[r] + partition_size_[r];
 			}
-			// assert (send_counts[size] == bufsize*2);
-			// compute offset of each threads
+
 	#pragma omp parallel for
 			for(int r = 0; r < num_partitions_; ++r) {
 				thread_offsets_[0*width + r] = partition_offsets_[r];
 				for(int t = 0; t < max_threads_; ++t) {
 					thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
 				}
-				assert (thread_offsets_[max_threads_*width + r] == partition_offsets_[r + 1]);
 			}
 			return partition_offsets_[num_partitions_];
 		}
@@ -378,16 +309,6 @@ public:
 	const T* get_partition_size() const { return partition_size_; }
 
 	bool check() const {
-#ifndef	NDEBUG
-		const int width = buffer_width_;
-		// check offset of each threads
-		for(int r = 0; r < num_partitions_; ++r) {
-			assert (thread_offsets_[0*width + r] == partition_offsets_[r] + thread_counts_[0*width + r]);
-			for(int t = 1; t < max_threads_; ++t) {
-				assert (thread_offsets_[t*width + r] == thread_offsets_[(t-1)*width + r] + thread_counts_[t*width + r]);
-			}
-		}
-#endif
 		return true;
 	}
 private:
@@ -455,15 +376,13 @@ public:
 		for(int r = 0; r < comm_size_; ++r) {
 			send_offsets_[r + 1] = send_offsets_[r] + send_counts_[r];
 		}
-		// assert (send_counts[size] == bufsize*2);
-		// compute offset of each threads
+
 #pragma omp parallel for if(comm_size_ > 1000)
 		for(int r = 0; r < comm_size_; ++r) {
 			thread_offsets_[0*width + r] = send_offsets_[r];
 			for(int t = 0; t < max_threads_; ++t) {
 				thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
 			}
-			assert (thread_offsets_[max_threads_*width + r] == send_offsets_[r + 1]);
 		}
 	}
 
@@ -473,16 +392,6 @@ public:
 
 	template <typename T>
 	T* scatter(T* send_data) {
-#ifndef	NDEBUG
-		const int width = buffer_width_;
-		// check offset of each threads
-		for(int r = 0; r < comm_size_; ++r) {
-			assert (thread_offsets_[0*width + r] == send_offsets_[r] + thread_counts_[0*width + r]);
-			for(int t = 1; t < max_threads_; ++t) {
-				assert (thread_offsets_[t*width + r] == thread_offsets_[(t-1)*width + r] + thread_counts_[t*width + r]);
-			}
-		}
-#endif
 		return MpiCol::alltoallv(send_data, send_counts_, send_offsets_,
 				recv_counts_, recv_offsets_, comm_, comm_size_);
 	}
@@ -610,7 +519,6 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 #pragma omp for schedule(static)
 		for (int i = 0; i < data_count; ++i) {
 			int pos = (offsets[mapping.target(i)])++;
-			assert (pos < data_count);
 			local_indices[i] = pos;
 			partitioned_data[pos] = mapping.get(i);
 			//// user defined ////
@@ -647,7 +555,6 @@ void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 
 } // namespace MpiCollective { //
 
-double to_mega(int64_t v) { return v / (1024.0*1024.0); }
 template <typename T> struct TypeName { };
 template <> struct TypeName<int8_t> { static const char* value; };
 const char* TypeName<int8_t>::value = "int8_t";
@@ -665,255 +572,5 @@ template <> struct TypeName<int64_t> { static const char* value; };
 const char* TypeName<int64_t>::value = "int64_t";
 template <> struct TypeName<uint64_t> { static const char* value; };
 const char* TypeName<uint64_t>::value = "uint64_t";
-
-namespace memory {
-
-template <typename T>
-class Pool {
-public:
-	Pool()
-	{
-	}
-	virtual ~Pool() {
-		clear_();
-	}
-
-	virtual T* get() {
-		if(free_list_.empty()) {
-			return allocate_new();
-		}
-		T* buffer = free_list_.back();
-		free_list_.pop_back();
-		return buffer;
-	}
-
-	virtual void free(T* buffer) {
-		free_list_.push_back(buffer);
-	}
-
-	virtual void clear() {
-		clear_();
-	}
-
-	bool empty() const {
-		return free_list_.size() == 0;
-	}
-
-	size_t size() const {
-		return free_list_.size();
-	}
-
-protected:
-	std::vector<T*> free_list_;
-
-	virtual T* allocate_new() {
-		return new (malloc(sizeof(T))) T();
-	}
-
-private:
-	void clear_() {
-		for(int i = 0; i < (int)free_list_.size(); ++i) {
-			free_list_[i]->~T();
-			::free(free_list_[i]);
-		}
-		free_list_.clear();
-	}
-};
-
-//! Only get() and free() are thread-safe. The other functions are NOT thread-safe.
-template <typename T>
-class ConcurrentPool : public Pool<T> {
-	typedef Pool<T> super_;
-public:
-	ConcurrentPool()
-		: Pool<T>()
-	{
-		pthread_mutex_init(&thread_sync_, NULL);
-	}
-	virtual ~ConcurrentPool()
-	{
-		pthread_mutex_lock(&thread_sync_);
-	}
-
-	virtual T* get() {
-		pthread_mutex_lock(&thread_sync_);
-		if(this->free_list_.empty()) {
-			pthread_mutex_unlock(&thread_sync_);
-			T* new_buffer = this->allocate_new();
-			return new_buffer;
-		}
-		T* buffer = this->free_list_.back();
-		this->free_list_.pop_back();
-		pthread_mutex_unlock(&thread_sync_);
-		return buffer;
-	}
-
-	virtual void free(T* buffer) {
-		pthread_mutex_lock(&thread_sync_);
-		this->free_list_.push_back(buffer);
-		pthread_mutex_unlock(&thread_sync_);
-	}
-
-	virtual void clear() {
-		pthread_mutex_lock(&thread_sync_);
-		super_::clear();
-		pthread_mutex_unlock(&thread_sync_);
-	}
-
-	/*
-	bool empty() const { return super_::empty(); }
-	size_t size() const { return super_::size(); }
-	void clear() { super_::clear(); }
-	*/
-protected:
-	pthread_mutex_t thread_sync_;
-};
-
-
-template <typename T>
-class Store {
-public:
-	Store() {
-	}
-	void init(Pool<T>* pool) {
-		pool_ = pool;
-		filled_length_ = 0;
-		buffer_length_ = 0;
-		resize_buffer(16);
-	}
-	~Store() {
-		for(int i = 0; i < filled_length_; ++i){
-			pool_->free(buffer_[i]);
-		}
-		filled_length_ = 0;
-		buffer_length_ = 0;
-		::free(buffer_); buffer_ = NULL;
-	}
-
-	void submit(T* value) {
-		const int offset = filled_length_++;
-
-		if(buffer_length_ == filled_length_)
-			expand();
-
-		buffer_[offset] = value;
-	}
-
-	void clear() {
-		for(int i = 0; i < filled_length_; ++i){
-			buffer_[i]->clear();
-			assert (buffer_[i]->size() == 0);
-			pool_->free(buffer_[i]);
-		}
-		filled_length_ = 0;
-	}
-
-	T* front() {
-		if(filled_length_ == 0) {
-			push();
-		}
-		return buffer_[filled_length_ - 1];
-	}
-
-	void push() {
-		submit(pool_->get());
-	}
-
-	int64_t size() const { return filled_length_; }
-	T* get(int index) const { return buffer_[index]; }
-private:
-
-	void resize_buffer(int allocation_size)
-	{
-		T** new_buffer = (T**)malloc(allocation_size*sizeof(buffer_[0]));
-		if(buffer_length_ != 0) {
-			memcpy(new_buffer, buffer_, filled_length_*sizeof(buffer_[0]));
-			::free(buffer_);
-		}
-		buffer_ = new_buffer;
-		buffer_length_ = allocation_size;
-	}
-
-	void expand()
-	{
-		if(filled_length_ == buffer_length_)
-			resize_buffer(std::max<int64_t>(buffer_length_*2, 16));
-	}
-
-	int64_t filled_length_;
-	int64_t buffer_length_;
-	T** buffer_;
-	Pool<T>* pool_;
-};
-
-template <typename T>
-class ConcurrentStack
-{
-public:
-	ConcurrentStack()
-	{
-		pthread_mutex_init(&thread_sync_, NULL);
-	}
-
-	~ConcurrentStack()
-	{
-		pthread_mutex_destroy(&thread_sync_);
-	}
-
-	void push(const T& d)
-	{
-		pthread_mutex_lock(&thread_sync_);
-		stack_.push_back(d);
-		pthread_mutex_unlock(&thread_sync_);
-	}
-
-	bool pop(T* ret)
-	{
-		pthread_mutex_lock(&thread_sync_);
-		if(stack_.size() == 0) {
-			pthread_mutex_unlock(&thread_sync_);
-			return false;
-		}
-		*ret = stack_.back(); stack_.pop_back();
-		pthread_mutex_unlock(&thread_sync_);
-		return true;
-	}
-
-	std::vector<T> stack_;
-	pthread_mutex_t thread_sync_;
-};
-
-struct SpinBarrier {
-	volatile int step, cnt;
-	int max;
-	explicit SpinBarrier(int num_threads) {
-		step = cnt = 0;
-		max = num_threads;
-	}
-  void barrier() {
-		int cur_step = step;
-		int wait_cnt = __sync_add_and_fetch(&cnt, 1);
-		assert (wait_cnt <= max);
-		if(wait_cnt == max) {
-			cnt = 0;
-			__sync_add_and_fetch(&step, 1);
-			return ;
-		}
-		while(step == cur_step) ;
-	}
-};
-
-void copy_mt(void* dst, void* src, size_t size) {
-#pragma omp parallel
-	{
-		int num_threads = omp_get_num_threads();
-		int tid = omp_get_thread_num();
-		int64_t i_start, i_end;
-		get_partition<int64_t>(size, num_threads, tid, i_start, i_end);
-		memcpy((int8_t*)dst + i_start, (int8_t*)src + i_start, i_end - i_start);
-	}
-}
-} // namespace memory
-
 #endif /* UTILS_IMPL_HPP_ */
 
