@@ -3,7 +3,6 @@
 #include <pthread.h>
 #include <deque>
 #include "utils.hpp"
-#include "fiber.hpp"
 #include "abstract_comm.hpp"
 
 #define debug(...) debug_print(BFSMN, __VA_ARGS__)

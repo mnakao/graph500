@@ -3,7 +3,6 @@
 
 #include <limits.h>
 #include "utils.hpp"
-#include "fiber.hpp"
 
 #define debug(...) debug_print(ABSCO, __VA_ARGS__)
 class AlltoallBufferHandler {

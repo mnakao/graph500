@@ -12,16 +12,10 @@ all: cpu
 cpu: $(OBJS)
 	$(MPICPP) $(LDFLAGS) -o runnable $(OBJS) $(LIBS)
 
-gnu_func.o: gnu_func.cc
-	cp ../../$*.o_ $*.o
-
-.SUFFIXES: .o .c .cpp .cc .cu
+.SUFFIXES: .o .c .cc
 
 .c.o:
 	$(MPICC) $(INC) -c $(CFLAGS) $< -o $*.o
-
-.cpp.o:
-	$(MPICPP) $(INC) -c $(CPPFLAGS) $< -o $*.o
 
 .cc.o:
 	$(MPICPP) $(INC) -c $(CPPFLAGS) $< -o $*.o
