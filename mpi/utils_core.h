@@ -1,43 +1,22 @@
-/*
- * utils_fwd.h
- *
- *  Created on: Dec 15, 2011
- *      Author: koji
- */
-
 #ifndef UTILS_HPP_
 #define UTILS_HPP_
 
 #include <stdint.h>
 #include <assert.h>
-
-
-// for sorting
 #include <algorithm>
 #include <functional>
-
 using std::ptrdiff_t;
 
 #ifdef __cplusplus
 #define restrict __restrict__
 #endif
 
-//-------------------------------------------------------------//
-// For generic typing
-//-------------------------------------------------------------//
-
 template <typename T> struct MpiTypeOf { };
 
-//-------------------------------------------------------------//
-// Bit manipulation functions
-//-------------------------------------------------------------//
-
-#if defined(__GNUC__)
 #define NLEADING_ZERO_BITS __builtin_clz
 #define NLEADING_ZERO_BITSL __builtin_clzl
 #define NLEADING_ZERO_BITSLL __builtin_clzll
 
-// If value = 0, the result is undefined.
 inline int get_msb_index(int64_t value) {
 	assert (value != 0);
 	return (sizeof(value)*8-1) - INT64_C(NLEADING_ZERO_BITS)(value);
@@ -46,40 +25,12 @@ inline int get_msb_index(int64_t value) {
 #undef NLEADING_ZERO_BITS
 #undef NLEADING_ZERO_BITSL
 #undef NLEADING_ZERO_BITSLL
-#endif // #ifdef __GNUC__
-
-#ifndef __sparc_v9__
-#define NEXT_BIT(flags__, flag__, mask__, idx__) do {\
-	idx__ = __builtin_ctzl(flags__);\
-	flag__ = BitmapType(1) << idx__;\
-	mask__ = flag__ - 1;\
-	flags__ &= ~flag__; } while(false)\
-
-#define __builtin_popcount32bit __builtin_popcount
-#define __builtin_popcount64bit __builtin_popcountl
-
-#define __builtin_ctz32bit __builtin_ctz
-#define __builtin_ctz64bit __builtin_ctzl
-
-#endif // #ifdef __sparc_v9__
-
-// Clear the bit size of each built-in function.
-#define __builtin_popcount THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
-#define __builtin_ctz THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
-
-//-------------------------------------------------------------//
-// Memory Allocation
-//-------------------------------------------------------------//
 
 void* xMPI_Alloc_mem(size_t nbytes);
 void* cache_aligned_xcalloc(const size_t size);
 void* cache_aligned_xmalloc(const size_t size);
 void* page_aligned_xcalloc(const size_t size);
 void* page_aligned_xmalloc(const size_t size);
-
-//-------------------------------------------------------------//
-// Sort
-//-------------------------------------------------------------//
 
 template <typename T1, typename T2>
 class pointer_pair_value
@@ -163,7 +114,6 @@ public:
 	// Supports offset dereference operator ([])
 	reference operator[](const difference_type n) { return reference(first[n], second[n]); }
 };
-
 template<typename IterKey, typename IterValue>
 void sort2(IterKey* begin_key, IterValue* begin_value, size_t count)
 {
@@ -179,10 +129,6 @@ void sort2(IterKey* begin_key, IterValue* begin_value, size_t count, Compare com
 		begin(begin_key, begin_value), end(begin_key + count, begin_value + count);
 	std::sort(begin, end, comp);
 }
-
-//-------------------------------------------------------------//
-// Other functions
-//-------------------------------------------------------------//
 
 struct SeparatedId {
 	uint64_t value;
@@ -200,8 +146,5 @@ struct SeparatedId {
 		return (mid_v << lgl) | low_v;
 	}
 };
-
-int64_t get_time_in_microsecond();
-FILE* get_imd_out_file();
 
 #endif /* UTILS_HPP_ */
