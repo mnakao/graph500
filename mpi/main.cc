@@ -12,10 +12,10 @@
 #include "utils.hpp"
 #include "../generator/graph_generator.hpp"
 #include "graph_constructor.hpp"
-#include "validate.hpp"
 #include "benchmark_helper.hpp"
 #include "bfs.hpp"
-#include "bfs_cpu.hpp"
+
+typedef BfsBase BfsOnCPU;
 
 int main(int argc, char** argv)
 {
