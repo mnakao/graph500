@@ -149,11 +149,9 @@ void graph500_bfs(int SCALE, int edgefactor)
 	for(int i = root_start; i < num_bfs_roots; ++i) {
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
 		MPI_Barrier(mpi.comm_2d);
-		PROF(profiling::g_pis.reset());
 		bfs_times[i] = MPI_Wtime();
 		benchmark->run_bfs(bfs_roots[i], pred);
 		bfs_times[i] = MPI_Wtime() - bfs_times[i];
-		PROF(profiling::g_pis.printResult());
 		if(mpi.isMaster()) {
 			print_with_prefix("Time for BFS %d is %f", i, bfs_times[i]);
 			print_with_prefix("Validating BFS %d", i);

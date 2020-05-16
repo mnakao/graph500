@@ -1,10 +1,3 @@
-/*
- * abstract_comm.hpp
- *
- *  Created on: 2014/05/17
- *      Author: ueno
- */
-
 #ifndef ABSTRACT_COMM_HPP_
 #define ABSTRACT_COMM_HPP_
 
@@ -66,7 +59,6 @@ public:
 		, buffer_provider_(buffer_provider_)
 		, scatter_(comm_)
 	{
-		CTRACER(AsyncA2A_construtor);
 		MPI_Comm_size(comm_, &comm_size_);
 		node_ = new CommTarget[comm_size_]();
 		d_ = new DynamicDataSet();
@@ -78,7 +70,6 @@ public:
 	}
 
 	void prepare() {
-		CTRACER(prepare);
 		debug("prepare idx=%d", sub_comm);
 		for(int i = 0; i < comm_size_; ++i) {
 			node_[i].reserved_size_ = node_[i].filled_size_ = buffer_size_;
@@ -94,7 +85,6 @@ public:
 	 */
 	void put(void* ptr, int length, int target)
 	{
-		CTRACER(comm_send);
 		if(length == 0) {
 			assert(length > 0);
 			return ;
@@ -137,14 +127,12 @@ public:
 	}
 
 	void run_with_ptr() {
-		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
 		int max_size = buffer_provider_->max_size() / (es * comm_size_);
 
 		const int MINIMUM_POINTER_SPACE = 40;
 
 		for(int loop = 0; ; ++loop) {
-			USER_START(a2a_merge);
 #pragma omp parallel
 			{
 				int* counts = scatter_.get_counts();
@@ -232,18 +220,12 @@ public:
 					node.send_data.clear();
 				} // #pragma omp for schedule(static)
 			} // #pragma omp parallel
-			USER_END(a2a_merge);
 
 			void* sendbuf = buffer_provider_->second_buffer();
 			void* recvbuf = buffer_provider_->clear_buffers();
 			MPI_Datatype type = buffer_provider_->data_type();
 			int recvbufsize = buffer_provider_->max_size();
-			PROF(merge_time_ += tk_all);
-			USER_START(a2a_comm);
 			scatter_.alltoallv(sendbuf, recvbuf, type, recvbufsize);
-			PROF(comm_time_ += tk_all);
-			USER_END(a2a_comm);
-
 			int* recv_offsets = scatter_.get_recv_offsets();
 
 #pragma omp parallel for
@@ -252,10 +234,7 @@ public:
 				int length = recv_offsets[i+1] - offset;
 				buffer_provider_->received(recvbuf, offset, length, i);
 			}
-			PROF(recv_proc_time_ += tk_all);
-
 			buffer_provider_->finish();
-			PROF(recv_proc_large_time_ += tk_all);
 		}
 
 		// clear
@@ -268,9 +247,7 @@ public:
 
 	void run() {
 		// merge
-		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
-		USER_START(a2a_merge);
 #pragma omp parallel
 		{
 			int* counts = scatter_.get_counts();
@@ -304,18 +281,12 @@ public:
 				node.send_data.clear();
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
-		USER_END(a2a_merge);
 
 		void* sendbuf = buffer_provider_->second_buffer();
 		void* recvbuf = buffer_provider_->clear_buffers();
 		MPI_Datatype type = buffer_provider_->data_type();
 		int recvbufsize = buffer_provider_->max_size();
-		PROF(merge_time_ += tk_all);
-		USER_START(a2a_comm);
 		scatter_.alltoallv(sendbuf, recvbuf, type, recvbufsize);
-		PROF(comm_time_ += tk_all);
-		USER_END(a2a_comm);
-
 		int* recv_offsets = scatter_.get_recv_offsets();
 
 #pragma omp parallel for schedule(dynamic,1)
@@ -324,18 +295,7 @@ public:
 			int length = recv_offsets[i+1] - offset;
 			buffer_provider_->received(recvbuf, offset, length, i);
 		}
-		PROF(recv_proc_time_ += tk_all);
 	}
-#if PROFILING_MODE
-	void submit_prof_info(int level, bool with_ptr) {
-		merge_time_.submit("merge a2a data", level);
-		comm_time_.submit("a2a comm", level);
-		recv_proc_time_.submit("proc recv data", level);
-		if(with_ptr) {
-			recv_proc_large_time_.submit("proc recv large data", level);
-		}
-	}
-#endif
 private:
 
 	struct DynamicDataSet {
@@ -354,11 +314,6 @@ private:
 	AlltoallBufferHandler* buffer_provider_;
 	ScatterContext scatter_;
 
-	PROF(profiling::TimeSpan merge_time_);
-	PROF(profiling::TimeSpan comm_time_);
-	PROF(profiling::TimeSpan recv_proc_time_);
-	PROF(profiling::TimeSpan recv_proc_large_time_);
-
 	void flush(CommTarget& node) {
 		if(node.cur_buf.ptr != NULL) {
 			node.cur_buf.length = node.filled_size_;
@@ -368,7 +323,6 @@ private:
 	}
 
 	void* get_send_buffer() {
-		CTRACER(get_send_buffer);
 		pthread_mutex_lock(&d_->thread_sync_);
 		void* ret = buffer_provider_->get_buffer();
 		pthread_mutex_unlock(&d_->thread_sync_);

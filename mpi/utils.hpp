@@ -11,9 +11,6 @@
 #include <numa.h>
 #endif
 #include <omp.h>
-#if BACKTRACE_ON_SIGNAL
-#include <signal.h>
-#endif
 
 #include <sys/types.h>
 #include <sys/time.h>
@@ -27,45 +24,6 @@
 #include "utils_core.h"
 #include "primitives.hpp"
 
-#if VTRACE
-#include "vt_user.h"
-#define USER_START(s) VT_USER_START(#s)
-#define USER_END(s) VT_USER_END(#s)
-#define TRACER(s) VT_TRACER(#s)
-#define CTRACER(s)
-#elif BACKTRACE_ON_SIGNAL
-extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD);
-
-struct ScopedRegion {
-	const char* name_;
-	int line_;
-	ScopedRegion(const char* name, int line) {
-		int flag = 102;
-		name_ = name;
-		line_ = line;
-		user_defined_proc(&flag, name_, &line_, NULL);
-	}
-	~ScopedRegion() {
-		int flag = 103;
-		user_defined_proc(&flag, name_, &line_, NULL);
-	}
-};
-
-#define USER_START(s) do { int line = __LINE__; int flag = 102;\
-		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
-#define USER_END(s) do { int line = __LINE__; int flag = 103;\
-		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
-#define TRACER(s) ScopedRegion my_trace_obj(__FILE__, __LINE__)
-
-#else // #if VTRACE
-#define USER_START(s)
-#define USER_END(s)
-#define TRACER(s)
-#define CTRACER(s)
-#endif // #if VTRACE
-
-#define PROF(s)
-
 void print_with_prefix(const char* format, ...);
 
 #if DEBUG_PRINT
@@ -78,13 +36,6 @@ void print_with_prefix(const char* format, ...);
 	(DEBUG_PRINT_ ## prefix)(#prefix " " __VA_ARGS__)
 #else
 #define debug_print(prefix, ...)
-#endif
-
-#if BACKTRACE_ON_SIGNAL
-namespace backtrace {
-void start_thread();
-void thread_join();
-}
 #endif
 
 struct COMM_2D {
@@ -1574,26 +1525,10 @@ void cleanup_2dcomm()
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 {
-#if BACKTRACE_ON_SIGNAL
-	{ // block PRINT_BT_SIGNAL so that only dedicated thread receive the signal
-		sigset_t set;
-		sigemptyset(&set);
-		sigaddset(&set, PRINT_BT_SIGNAL);
-		int s = pthread_sigmask(SIG_BLOCK, &set, NULL);
-		if(s != 0) throw_exception("failed to set sigmask");
-	}
-#endif
-#if MPI_FUNNELED
 	int reqeust_level = MPI_THREAD_FUNNELED;
-#else
-	int reqeust_level = MPI_THREAD_SINGLE;
-#endif
 	MPI_Init_thread(&argc, &argv, reqeust_level, &mpi.thread_level);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size);
-#if ENABLE_FJMPI_RDMA
-	FJMPI_Rdma_init();
-#endif
 #if PRINT_WITH_TIME
 	global_clock.init();
 #endif
@@ -1632,20 +1567,7 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 #endif
 	}
 
-#if BACKTRACE_ON_SIGNAL
-	backtrace::start_thread();
-#endif
-
-#if OPENMP_SUB_THREAD
-	omp_set_nested(1);
-#endif
-
-	if(getenv("THREED_MAP")) {
-		setup_2dcomm_on_3d();
-	}
-	else {
-		setup_2dcomm();
-	}
+	setup_2dcomm();
 
 	// Initialize comm_[yz]
 	mpi.comm_y = mpi.comm_2dc;
@@ -1709,7 +1631,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 namespace MpiCol {
 template <typename T>
 int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
-	TRACER(MpiCol::allgatherv);
 	int recv_off[comm_size+1], recv_cnt[comm_size];
 	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
 	recv_off[0] = 0;
@@ -3402,219 +3323,6 @@ private:
 
 } // namespace profiling
 
-#if BACKTRACE_ON_SIGNAL
-
-namespace backtrace {
-
-#define SPIN_LOCK(lock) pthread_mutex_lock(&(lock))
-#define SPIN_UNLOCK(lock) pthread_mutex_unlock(&(lock))
-
-struct StackFrame {
-	PROF(int64_t enter_clock;)
-	const char* name;
-	int line;
-};
-
-struct PrintBuffer {
-	char* buffer;
-	int length;
-	int capacity;
-
-	PrintBuffer() {
-		length = 0;
-		capacity = 16*1024*1024;
-		buffer = (char*)malloc(capacity);
-		buffer[0] = '\0';
-	}
-
-	~PrintBuffer() {
-		free(buffer); buffer = NULL;
-	}
-
-	void clear() {
-		length = 0;
-		buffer[0] = '\0';
-	}
-
-	void add(const char* fmt, va_list arg) {
-	}
-};
-
-struct ThreadStack {
-	int tid;
-	pthread_mutex_t* lock;
-	std::vector<StackFrame>* frames;
-	PrintBuffer* pbuf;
-};
-
-std::vector<ThreadStack>* thread_stacks = NULL;
-pthread_mutex_t thread_stack_lock = PTHREAD_MUTEX_INITIALIZER;
-volatile int next_thread_id = 0;
-volatile bool finish_backtrace_thread = false;
-pthread_t backtrace_thread;
-
-__thread bool disable_trace = false;
-__thread int thread_id = -1;
-__thread pthread_mutex_t stack_frame_lock = PTHREAD_MUTEX_INITIALIZER;
-__thread std::vector<StackFrame>* stack_frames = NULL;
-__thread PrintBuffer* pbuf;
-
-void* backtrace_thread_routine(void* p) {
-	char filename[300];
-	int print_count = 0;
-	sprintf(filename, "log-backtrace.%d", mpi.rank);
-	FILE* fp = fopen(filename, "w");
-	if(fp == NULL) {
-		throw_exception("failed to open the file %s", filename);
-	}
-	fprintf(fp, "===== Backtrace File Rank=%d =====\n", mpi.rank);
-
-	sigset_t set;
-	sigemptyset(&set);
-	sigaddset(&set, PRINT_BT_SIGNAL);
-
-	int sig;
-	while(sigwait(&set, &sig) == 0) {
-		if(finish_backtrace_thread) {
-			fclose(fp); fp = NULL;
-			return NULL;
-		}
-		fprintf(fp, "======= Print Backtrace (%d-th) =======\n", print_count++);
-
-		// disable tracing to avoid modifying data during printing
-		disable_trace = true;
-		SPIN_LOCK(thread_stack_lock);
-		if(thread_stacks != NULL) {
-			for(int i = 0; i < int(thread_stacks->size()); ++i) {
-				ThreadStack th = (*thread_stacks)[i];
-				SPIN_LOCK(*th.lock);
-				const std::vector<StackFrame>& frames = *(th.frames);
-				int num_frames = int(frames.size());
-				fprintf(fp, "Thread %d:\n", th.tid);
-				for(int s = 0; s < num_frames; ++s) {
-					const StackFrame& frame = frames[num_frames - s - 1];
-					fprintf(fp, "    %2d:"PROF("[%f]")" %s:%d\n", s,
-#if PROFILING_MODE
-							(double)frame.enter_clock / 1000000.0,
-#endif
-							frame.name, frame.line);
-				}
-				SPIN_UNLOCK(*th.lock);
-			}
-		}
-		SPIN_UNLOCK(thread_stack_lock);
-		// restart tracing
-		disable_trace = false;
-
-		fprintf(fp, "============= Backtrace end ===========\n");
-		fflush(fp);
-	}
-
-	throw_exception("Error on sigwait");
-	return NULL;
-}
-
-void buffered_print(const char* format, ...) {
-	char buf[300];
-	SPIN_LOCK(stack_frame_lock);
-	va_list arg;
-	va_start(arg, format);
-    vsnprintf(buf, sizeof(buf), format, arg);
-    va_end(arg);
-	if(pbuf->length + sizeof(buf) + 1 >= pbuf->capacity) {
-		pbuf->capacity *= 2;
-		pbuf->buffer = (char*)realloc(pbuf->buffer, pbuf->capacity);
-	}
-	pbuf->length += snprintf(pbuf->buffer + pbuf->length, sizeof(buf),
-			"[r:%d,%f] %s\n", mpi.rank, global_clock.get() / 1000000.0, buf);
-	SPIN_UNLOCK(stack_frame_lock);
-}
-
-void start_thread() {
-	pthread_create(&backtrace_thread, NULL, backtrace_thread_routine, NULL);
-}
-
-void thread_join() {
-	finish_backtrace_thread = true;
-	pthread_kill(backtrace_thread, PRINT_BT_SIGNAL);
-	pthread_join(backtrace_thread, NULL);
-	SPIN_LOCK(thread_stack_lock);
-	delete thread_stacks; thread_stacks = NULL;
-	SPIN_UNLOCK(thread_stack_lock);
-}
-
-} // namespace backtrace {
-
-extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD) {
-	using namespace backtrace;
-
-	if(disable_trace) {
-		return ;
-	}
-
-	if(thread_id == -1) {
-		// initialize thread local storage
-		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
-		stack_frames = new std::vector<StackFrame>();
-		pbuf = new PrintBuffer();
-		// add thread info to thread_stacks
-		ThreadStack th;
-		th.tid = thread_id;
-		th.lock = &stack_frame_lock;
-		th.frames = stack_frames;
-		th.pbuf = pbuf;
-
-		SPIN_LOCK(thread_stack_lock);
-		if(finish_backtrace_thread == false) {
-			if(thread_stacks == NULL) {
-				thread_stacks = new std::vector<ThreadStack>();
-			}
-			thread_stacks->push_back(th);
-		}
-		SPIN_UNLOCK(thread_stack_lock);
-	}
-
-	SPIN_LOCK(stack_frame_lock);
-	if(finish_backtrace_thread) {
-		if(stack_frames != NULL) {
-			delete stack_frames; stack_frames = NULL;
-			delete pbuf; pbuf = NULL;
-		}
-	}
-	else {
-		switch(*FLAG) {
-		case 2:
-		case 4:
-		case 102:
-		{
-			StackFrame frame;
-			PROF(frame.enter_clock = global_clock.get());
-			frame.name = NAME;
-			frame.line = *LINE;
-			stack_frames->push_back(frame);
-		}
-			break;
-		case 3:
-		case 5:
-		case 103:
-		{
-			assert(stack_frames->size() > 0);
-			stack_frames->pop_back();
-		}
-			break;
-		default:
-			break;
-		}
-	}
-	SPIN_UNLOCK(stack_frame_lock);
-}
-
-#undef SPIN_LOCK
-#undef SPIN_UNLOCK
-
-#endif // #if BACKTRACE_ON_SIGNAL
-
-/* edgefactor = 16, seed1 = 2, seed2 = 3 */
 int64_t pf_nedge[] = {
 	-1,
 	32, // 1

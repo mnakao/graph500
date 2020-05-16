@@ -237,7 +237,6 @@ private:
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
 {
-	TRACER(generation);
 	typedef typename EdgeList::edge_type EdgeType;
 	EdgeType* edge_buffer = static_cast<EdgeType*>
 						(cache_aligned_xmalloc(EdgeList::CHUNK_SIZE*sizeof(EdgeType)));
@@ -326,7 +325,6 @@ void generate_graph_spec2012(EdgeList* edge_list, int scale, int edge_factor, in
 template <typename EdgeList>
 void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has_weight dummy = 0)
 {
-	TRACER(redistribution);
 	typedef typename EdgeList::edge_type EdgeType;
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(

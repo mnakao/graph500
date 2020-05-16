@@ -1,6 +1,6 @@
 MPICC := mpifccpx
 MPICPP := mpiFCCpx
-FCC_BASE := -Kopenmp -Drestrict=__restrict__ -DVERTEX_REORDERING=2 -DVERVOSE_MODE=0
+FCC_BASE := -Kopenmp -Drestrict=__restrict__ -DVERTEX_REORDERING=2
 CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG
 LDFLAGS := $(CFLAGS) -Nfjomplib
 CPPFLAGS := $(CFLAGS)
