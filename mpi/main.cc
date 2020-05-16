@@ -8,7 +8,6 @@
 #include <string>
 #include "parameters.h"
 #include "utils_core.h"
-#include "primitives.hpp"
 #include "utils.hpp"
 #include "../generator/graph_generator.hpp"
 #include "graph_constructor.hpp"

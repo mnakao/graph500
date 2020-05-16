@@ -13,8 +13,8 @@
 #include <algorithm>
 #include <vector>
 #include <deque>
-#include "utils_core.h"
 #include "primitives.hpp"
+#include "utils_core.h"
 
 void print_with_prefix(const char* format, ...);
 #define debug_print(prefix, ...)
@@ -367,7 +367,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 
 	UnweightedEdge::initialize();
 	UnweightedPackedEdge::initialize();
-	WeightedEdge::initialize();
 
 	// check page size
 	if(mpi.isMaster()) {
