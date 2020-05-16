@@ -5,7 +5,22 @@
 #include "utils.hpp"
 #include "../generator/graph_generator.hpp"
 #include "graph_constructor.hpp"
-#include "bfs.hpp"
+
+class BfsBase
+{
+public:
+  BfsBase(){}
+  virtual ~BfsBase(){}
+
+  template <typename EdgeList>
+  void construct(EdgeList* edge_list)
+  {
+	int log_local_verts_unit = get_msb_index(std::max<int>(PRM::BFELL_SORT, PRM::NBPE) * 8);
+	detail::GraphConstructor2DCSR<EdgeList> constructor;
+	Graph2DCSR graph_;
+	constructor.construct(edge_list, log_local_verts_unit, graph_);
+  }
+};
 
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
