@@ -2,11 +2,39 @@
 #define UTILS_IMPL_HPP_
 #include <omp.h>
 #include <vector>
-#include "primitives.hpp"
 #include "utils_core.h"
 
 void print_with_prefix(const char* format, ...);
 #define debug_print(prefix, ...)
+
+struct UnweightedPackedEdge;
+template <> struct MpiTypeOf<UnweightedPackedEdge> { static MPI_Datatype type; };
+MPI_Datatype MpiTypeOf<UnweightedPackedEdge>::type = MPI_DATATYPE_NULL;
+
+struct UnweightedPackedEdge {
+  uint32_t v0_low_;
+  uint32_t v1_low_;
+  uint32_t high_;
+  typedef int no_weight;
+  int64_t v0() const { return (v0_low_ | (static_cast<int64_t>(high_ & 0xFFFF) << 32)); }
+  int64_t v1() const { return (v1_low_ | (static_cast<int64_t>(high_ >> 16) << 32)); }
+  void set(int64_t v0, int64_t v1) {
+	v0_low_ = static_cast<uint32_t>(v0);
+	v1_low_ = static_cast<uint32_t>(v1);
+	high_ = ((v0 >> 32) & 0xFFFF) | ((v1 >> 16) & 0xFFFF0000U);
+  }
+
+  static void initialize()
+  {
+	int block_length[] = {1, 1, 1};
+	MPI_Aint displs[] = {
+	  reinterpret_cast<MPI_Aint>(&(static_cast<UnweightedPackedEdge*>(NULL)->v0_low_)),
+	  reinterpret_cast<MPI_Aint>(&(static_cast<UnweightedPackedEdge*>(NULL)->v1_low_)),
+	  reinterpret_cast<MPI_Aint>(&(static_cast<UnweightedPackedEdge*>(NULL)->high_)) };
+	MPI_Type_create_hindexed(3, block_length, displs, MPI_UINT32_T, &MpiTypeOf<UnweightedPackedEdge>::type);
+	MPI_Type_commit(&MpiTypeOf<UnweightedPackedEdge>::type);
+  }
+};
 
 struct COMM_2D {
 	MPI_Comm comm;
@@ -207,7 +235,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	mpi.rank_y = mpi.rank_2dr;
 	mpi.rank_z = 0;
 
-	UnweightedEdge::initialize();
 	UnweightedPackedEdge::initialize();
 }
 
@@ -443,53 +470,6 @@ private:
 };
 
 namespace MpiCol {
-template <typename Mapping>
-void scatter(const Mapping mapping, int data_count, MPI_Comm comm)
-{
-	ScatterContext scatter(comm);
-	typename Mapping::send_type* restrict partitioned_data = static_cast<typename Mapping::send_type*>(
-						cache_aligned_xmalloc(data_count*sizeof(typename Mapping::send_type)));
-#pragma omp parallel
-	{
-		int* restrict counts = scatter.get_counts();
-
-#pragma omp for schedule(static)
-		for (int i = 0; i < data_count; ++i) {
-			(counts[mapping.target(i)])++;
-		} // #pragma omp for schedule(static)
-	}
-
-	scatter.sum();
-
-#pragma omp parallel
-	{
-		int* restrict offsets = scatter.get_offsets();
-
-#pragma omp for schedule(static)
-		for (int i = 0; i < data_count; ++i) {
-			partitioned_data[(offsets[mapping.target(i)])++] = mapping.get(i);
-		} // #pragma omp for schedule(static)
-	} // #pragma omp parallel
-
-	typename Mapping::send_type* recv_data = scatter.scatter(partitioned_data);
-	int recv_count = scatter.get_recv_count();
-	::free(partitioned_data); partitioned_data = NULL;
-
-	int i;
-#pragma omp parallel for lastprivate(i) schedule(static)
-	for(i = 0; i < (recv_count&(~3)); i += 4) {
-		mapping.set(i+0, recv_data[i+0]);
-		mapping.set(i+1, recv_data[i+1]);
-		mapping.set(i+2, recv_data[i+2]);
-		mapping.set(i+3, recv_data[i+3]);
-	} // #pragma omp parallel for
-	for( ; i < recv_count; ++i) {
-		mapping.set(i, recv_data[i]);
-	}
-
-	scatter.free(recv_data);
-}
-
 template <typename Mapping>
 void gather(const Mapping mapping, int data_count, MPI_Comm comm)
 {
