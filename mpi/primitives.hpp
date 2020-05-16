@@ -1,18 +1,5 @@
-/*
- * primitives.hpp
- *
- *  Created on: Dec 14, 2011
- *      Author: koji
- */
-
 #ifndef PRIMITIVES_HPP_
 #define PRIMITIVES_HPP_
-
-#include "mpi_workarounds.h"
-
-//-------------------------------------------------------------//
-// Edge Types
-//-------------------------------------------------------------//
 
 struct UnweightedEdge;
 template <> struct MpiTypeOf<UnweightedEdge> { static MPI_Datatype type; };

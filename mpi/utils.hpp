@@ -17,7 +17,6 @@
 #include <vector>
 #include <deque>
 
-#include "mpi_workarounds.h"
 #include "utils_core.h"
 #include "primitives.hpp"
 
