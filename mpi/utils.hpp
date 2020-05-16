@@ -1,10 +1,3 @@
-/*
- * utils.hpp
- *
- *  Created on: Dec 9, 2011
- *      Author: koji
- */
-
 #ifndef UTILS_IMPL_HPP_
 #define UTILS_IMPL_HPP_
 
@@ -12,15 +5,11 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <malloc.h>
-
-// for affinity setting //
 #include <unistd.h>
-
 #include <sched.h>
 #if NUMA_BIND
 #include <numa.h>
 #endif
-
 #include <omp.h>
 #if BACKTRACE_ON_SIGNAL
 #include <signal.h>
@@ -42,9 +31,6 @@
 #include "mpi_workarounds.h"
 #include "utils_core.h"
 #include "primitives.hpp"
-#if CUDA_ENABLED
-#include "gpu_host.hpp"
-#endif
 
 #if VTRACE
 #include "vt_user.h"
@@ -1752,53 +1738,9 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	if(getenv("NO_AFFINITY") == NULL) {
 		numa::set_affinity();
 	}
-
-#if CUDA_ENABLED
-	CudaStreamManager::initialize_cuda(g_GpuIndex);
-
-	MPI_INFO_ON_GPU mpig;
-	mpig.rank = mpi.rank;
-	mpig.size = mpi.size_;
-	mpig.rank_2d = mpi.rank_2d;
-	mpig.rank_2dr = mpi.rank_2dr;
-	mpig.rank_2dc = mpi.rank_2dc;
-	CudaStreamManager::begin_cuda();
-	CUDA_CHECK(cudaMemcpyToSymbol("mpig", &mpig, sizeof(mpig), 0, cudaMemcpyHostToDevice));
-	CudaStreamManager::end_cuda();
-#endif
 }
-
-void cleanup_globals()
-{
-#if NUMA_BIND
-#pragma omp parallel
-	numa::check_affinity_setting();
-#endif
-
-	cleanup_2dcomm();
-
-	UnweightedEdge::uninitialize();
-	UnweightedPackedEdge::uninitialize();
-	WeightedEdge::uninitialize();
-
-#if CUDA_ENABLED
-	CudaStreamManager::finalize_cuda();
-#endif
-#if BACKTRACE_ON_SIGNAL
-	backtrace::thread_join();
-#endif
-#if ENABLE_FJMPI_RDMA
-	FJMPI_Rdma_finalize();
-#endif
-	MPI_Finalize();
-}
-
-//-------------------------------------------------------------//
-// MPI helper
-//-------------------------------------------------------------//
 
 namespace MpiCol {
-
 template <typename T>
 int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
 	TRACER(MpiCol::allgatherv);
@@ -3764,25 +3706,4 @@ int64_t pf_nedge[] = {
 	0 // 42
 };
 #endif /* UTILS_IMPL_HPP_ */
-
-#ifdef PROFILE_REGIONS
-#define NUM_RESIONS    11
-#define TD_TIME         0
-#define BU_TIME         1
-#define TD_EXPAND_TIME  2
-#define BU_EXPAND_TIME  3
-#define TD_FOLD_TIME    4
-#define BU_FOLD_TIME    5
-#define BU_NBR_TIME     6
-#define TOTAL_TIME      7
-#define CALC_TIME       8
-#define IMBALANCE_TIME  9
-#define OTHER_TIME     10
-#define CAT(t) t_max[t], t_min[t], t_ave[t], t_ave[t]/t_ave[TOTAL_TIME]*100
-extern void timer_clear();
-extern void timer_start(const int n);
-extern void timer_stop(const int n);
-extern double timer_read(const int n);
-extern void timer_print(double *, const int);
-#endif
 

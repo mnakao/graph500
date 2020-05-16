@@ -1,15 +1,14 @@
-BINS := runnable
-OBJS := main.o low_level_func.o ../generator/splittable_mrg.o
 MPICC := mpifccpx
 MPICPP := mpiFCCpx
-FCC_BASE := -Kopenmp -Drestrict=__restrict__ -DVERTEX_REORDERING=2
-CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG -DPROFILE_REGIONS
+FCC_BASE := -Kopenmp -Drestrict=__restrict__ -DVERTEX_REORDERING=2 -DVERVOSE_MODE=0
+CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG
 LDFLAGS := $(CFLAGS) -Nfjomplib
-
 CPPFLAGS := $(CFLAGS)
 
-all: cpu
+BINS := runnable
+OBJS := main.o low_level_func.o ../generator/splittable_mrg.o
 
+all: cpu
 cpu: $(OBJS)
 	$(MPICPP) $(LDFLAGS) -o runnable $(OBJS) $(LIBS)
 

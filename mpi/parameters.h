@@ -1,10 +1,3 @@
-/*
- * parameters.h
- *
- *  Created on: Mar 2, 2012
- *      Author: koji
- */
-
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
@@ -93,10 +86,6 @@
 #define DEMON_BOTTOMUP_TO_TOPDOWN 8.0
 #define DENOM_BITMAP_TO_LIST 2.0 // temp
 
-#define CUDA_ENABLED 0
-#define CUDA_COMPUTE_EXCLUSIVE_THREAD_MODE 0
-#define CUDA_CHECK_PRINT_RANK
-
 // atomic level of scanning Shared Visited
 // 0: no atomic operation
 // 1: non atomic read and atomic write
@@ -106,7 +95,6 @@
 #define SIMPLE_FOLD_COMM 1
 #define KD_PRINT 0
 
-#define DISABLE_CUDA_CONCCURENT 0
 #define NETWORK_PROBLEM_AYALISYS 0
 #define WITH_VALGRIND 0
 
@@ -167,17 +155,8 @@ namespace PRM { //
 #define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
-#ifdef REAL_BENCHMARK
-	NUM_BFS_ROOTS = 64, // spec: 64
-#else
 	NUM_BFS_ROOTS = 16,
-#endif
-#if CUDA_ENABLED
-	PACKET_LENGTH = 256,
-	LOG_PACKET_LENGTH = 8,
-#else
 	PACKET_LENGTH = 1024,
-#endif
 	COMM_BUFFER_SIZE = 32*1024, // !!IMPORTANT VALUE!!
 	PRE_ALLOCATE_COMM_BUFFER = 14,
 	SEND_BUFFER_LIMIT = 6,
@@ -213,42 +192,6 @@ enum {
 #ifdef __cplusplus
 } // namespace PRM {
 
-namespace GPU_PARAMS {
-enum {
-	LOG_WARP_SIZE = 5, // 32
-	LOG_WARPS_PER_BLOCK = 3, // 8
-	LOOPS_PER_THREAD = 8,
-	ACTIVE_THREAD_BLOCKS = 64,
-	NUMBER_CUDA_STREAMS = 4,
-
-	// Dynamic Scheduling
-	DS_TILE_SCALE = 16,
-	DS_BLOCK_SCALE = 8,
-	BLOCKS_PER_LAUNCH_RATE = 8*1024, // for debug
-
-	EXPAND_DECODE_BLOCK_LENGTH = 16*1024*1024, // 64MB
-	EXPAND_STREAM_BLOCK_LENGTH = EXPAND_DECODE_BLOCK_LENGTH * 2, // 32MB
-	EXPAND_PACKET_LIST_LENGTH = EXPAND_DECODE_BLOCK_LENGTH / PRM::PACKET_LENGTH * 2,
-
-	LOG_PACKING_EDGE_LISTS = 5, // 2^5 = 32 // for debug
-	LOG_CQ_SUMMARIZING = LOG_WARP_SIZE, // 32 ( number of threads in a warp )
-
-	// non-parameters
-	WARP_SIZE = 1 << LOG_WARP_SIZE,
-	WARPS_PER_BLOCK = 1 << LOG_WARPS_PER_BLOCK,
-	LOG_THREADS_PER_BLOCK = LOG_WARP_SIZE + LOG_WARPS_PER_BLOCK,
-	THREADS_PER_BLOCK = WARP_SIZE*WARPS_PER_BLOCK,
-	// Number of max threads launched by 1 GPU kernel.
-	MAX_ACTIVE_WARPS = WARPS_PER_BLOCK*ACTIVE_THREAD_BLOCKS,
-	TEMP_BUFFER_LINES = MAX_ACTIVE_WARPS*LOOPS_PER_THREAD,
-
-	READ_GRAPH_OUTBUF_SIZE = THREADS_PER_BLOCK * BLOCKS_PER_LAUNCH_RATE * 2,
-//	READ_GRAPH_OUTBUF_SIZE = THREADS_PER_BLOCK * BLOCKS_PER_LAUNCH_RATE / 2,
-
-	NUMBER_PACKING_EDGE_LISTS = (1 << LOG_PACKING_EDGE_LISTS),
-	NUMBER_CQ_SUMMARIZING = (1 << LOG_CQ_SUMMARIZING),
-};
-} // namespace GPU_PARAMS {
 #endif // #ifdef __cplusplus
 
 #endif /* PARAMETERS_H_ */

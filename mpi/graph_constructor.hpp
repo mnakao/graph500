@@ -573,47 +573,6 @@ public:
 		if(mpi.isMaster()) print_with_prefix("Graph construction complete.");
 	}
 
-	void copy_to_gpu(GraphType& g, bool graph_on_gpu_) {
-#if CUDA_ENABLED
-		// transfer data to GPU
-		const int64_t num_columns = (int64_t(1) << g.log_edge_lists());
-		const int64_t index_size = g.row_starts_[num_columns];
-		const int64_t num_local_vertices = (int64_t(1) << g.log_local_verts());
-
-		CudaStreamManager::begin_cuda();
-		if(graph_on_gpu_) {
-			CUDA_CHECK(cudaMalloc((void**)&g.dev_row_starts_,
-					sizeof(g.dev_row_starts_[0])*(num_columns+2)));
-			CUDA_CHECK(cudaMalloc((void**)&g.dev_edge_array_high_,
-					sizeof(g.dev_edge_array_high_[0])*index_size));
-			CUDA_CHECK(cudaMalloc((void**)&g.dev_edge_array_low_,
-					sizeof(g.dev_edge_array_low_[0])*index_size));
-		}
-		else {
-			g.dev_row_starts_ = NULL;
-			g.dev_edge_array_high_ = NULL;
-			g.dev_edge_array_low_ = NULL;
-		}
-		CUDA_CHECK(cudaMalloc((void**)&g.dev_invert_vertex_mapping_,
-				sizeof(g.dev_invert_vertex_mapping_[0])*num_local_vertices));
-
-		if(graph_on_gpu_) {
-			CUDA_CHECK(cudaMemcpy(g.dev_row_starts_, g.row_starts_,
-					sizeof(g.dev_row_starts_[0])*(num_columns+1), cudaMemcpyHostToDevice));
-			CUDA_CHECK(cudaMemcpy(g.dev_edge_array_high_, g.edge_array_.get_ptr_high(),
-					sizeof(g.dev_edge_array_high_[0])*index_size, cudaMemcpyHostToDevice));
-			CUDA_CHECK(cudaMemcpy(g.dev_edge_array_low_, g.edge_array_.get_ptr_low(),
-					sizeof(g.dev_edge_array_low_[0])*index_size, cudaMemcpyHostToDevice));
-			// add an empty column
-			CUDA_CHECK(cudaMemcpy(g.dev_row_starts_ + num_columns + 1, &index_size,
-					sizeof(g.dev_row_starts_[0]), cudaMemcpyHostToDevice));
-		}
-		CUDA_CHECK(cudaMemcpy(g.dev_invert_vertex_mapping_, g.invert_vertex_mapping_,
-				sizeof(g.dev_invert_vertex_mapping_[0])*num_local_vertices, cudaMemcpyHostToDevice));
-		CudaStreamManager::end_cuda();
-#endif
-	}
-
 private:
 
 	// step1: for computing degree order

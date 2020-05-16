@@ -146,31 +146,15 @@ void graph500_bfs(int SCALE, int edgefactor)
 #endif
 	}
 /////////////////////
-#ifdef PROFILE_REGIONS
-	timer_clear();
-#endif
 	for(int i = root_start; i < num_bfs_roots; ++i) {
-	//for(int i = 0; i < num_bfs_roots; ++i) {
 		VERVOSE(print_max_memory_usage());
 
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
-#if ENABLE_FUJI_PROF
-		fapp_start("bfs", i, 1);
-#endif
 		MPI_Barrier(mpi.comm_2d);
-#if FUGAKU_MPI_PRINT_STATS
-		FJMPI_Collection_start();
-#endif
 		PROF(profiling::g_pis.reset());
 		bfs_times[i] = MPI_Wtime();
 		benchmark->run_bfs(bfs_roots[i], pred);
 		bfs_times[i] = MPI_Wtime() - bfs_times[i];
-#if FUGAKU_MPI_PRINT_STATS
-                FJMPI_Collection_stop();
-#endif
-#if ENABLE_FUJI_PROF
-		fapp_stop("bfs", i, 1);
-#endif
 		PROF(profiling::g_pis.printResult());
 		if(mpi.isMaster()) {
 			print_with_prefix("Time for BFS %d is %f", i, bfs_times[i]);
@@ -213,141 +197,16 @@ void graph500_bfs(int SCALE, int edgefactor)
 	}
 	benchmark->end_bfs();
 
-	if(mpi.isMaster()) {
-	  fprintf(stdout, "============= Result ==============\n");
-	  fprintf(stdout, "SCALE:                          %d\n", SCALE);
-	  fprintf(stdout, "edgefactor:                     %d\n", edgefactor);
-	  fprintf(stdout, "NBFS:                           %d\n", num_bfs_roots);
-	  fprintf(stdout, "graph_generation:               %g\n", generation_time);
-	  fprintf(stdout, "num_mpi_processes:              %d\n", mpi.size_2d);
-	  fprintf(stdout, "construction_time:              %g\n", construction_time);
-	  fprintf(stdout, "redistribution_time:            %g\n", redistribution_time);
-	  print_bfs_result(num_bfs_roots, bfs_times, validate_times, edge_counts, result_ok);
-	}
-#ifdef PROFILE_REGIONS
-	timer_print(bfs_times, num_bfs_roots);
-#endif
-
-#if FUGAKU_MPI_PRINT_STATS
-	FJMPI_Collection_print("Communication Statistics\n");
-#endif
-
 	delete benchmark;
 
 	free(pred);
 }
-#if 0
-void test02(int SCALE, int edgefactor)
-{
-	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
-			(INT64_C(1) << SCALE) * edgefactor / mpi.size, getenv("TMPFILE"));
-	RmatGraphGenerator<UnweightedPackedEdge> graph_generator(
-//	RandomGraphGenerator<UnweightedPackedEdge> graph_generator(
-				SCALE, edgefactor, 2, 3, InitialEdgeType::NONE);
-	Graph2DCSR<Pack40bit, uint32_t> graph;
-
-	double generation_time = MPI_Wtime();
-	generate_graph(&edge_list, &graph_generator);
-	generation_time = MPI_Wtime() - generation_time;
-
-	double construction_time = MPI_Wtime();
-	construct_graph(&edge_list, true, graph);
-	construction_time = MPI_Wtime() - construction_time;
-
-	if(mpi.isMaster()) {
-		print_with_prefix("TEST02");
-		fprintf(stdout, "SCALE:                          %d\n", SCALE);
-		fprintf(stdout, "edgefactor:                     %d\n", edgefactor);
-		fprintf(stdout, "graph_generation:               %g\n", generation_time);
-		fprintf(stdout, "num_mpi_processes:              %d\n", mpi.size);
-		fprintf(stdout, "construction_time:              %g\n", construction_time);
-	}
-}
-#endif
 
 int main(int argc, char** argv)
 {
-	// Parse arguments.
 	int SCALE = 16;
-	int edgefactor = 16; // nedges / nvertices, i.e., 2*avg. degree
 	if (argc >= 2) SCALE = atoi(argv[1]);
-	if (argc >= 3) edgefactor = atoi(argv[2]);
-	if (argc <= 1 || argc >= 4 || SCALE == 0 || edgefactor == 0) {
-		fprintf(IMD_OUT, "Usage: %s SCALE edgefactor\n"
-				"SCALE = log_2(# vertices) [integer, required]\n"
-				"edgefactor = (# edges) / (# vertices) = .5 * (average vertex degree) [integer, defaults to 16]\n"
-				"(Random number seed are in main.c)\n",
-				argv[0]);
-		return 0;
-	}
-
-	setup_globals(argc, argv, SCALE, edgefactor);
-	graph500_bfs(SCALE, edgefactor);
-	cleanup_globals();
+	setup_globals(argc, argv, SCALE, 16);
+	graph500_bfs(SCALE, 16);
 	return 0;
-}
-
-double elapsed[NUM_RESIONS], start[NUM_RESIONS];
-void timer_clear()
-{
-  for(int i=0;i<NUM_RESIONS;i++)
-    elapsed[i] = 0.0;
-}
-
-void timer_start(const int n)
-{
-  start[n] = MPI_Wtime();
-}
-
-void timer_stop(const int n)
-{
-  double now = MPI_Wtime();
-  double t = now - start[n];
-  elapsed[n] += t;
-}
-
-double timer_read(const int n)
-{
-  return(elapsed[n]);
-}
-
-void timer_print(double *bfs_times, const int num_bfs_roots)
-{
-  double t[NUM_RESIONS], t_max[NUM_RESIONS], t_min[NUM_RESIONS], t_ave[NUM_RESIONS];
-  for(int i=0;i<NUM_RESIONS;i++)
-    t[i] = timer_read(i);
-
-  t[TOTAL_TIME] = 0.0;
-  for(int i=0;i<num_bfs_roots;i++)
-	t[TOTAL_TIME] += bfs_times[i];
-
-  double comm_time = t[TD_EXPAND_TIME] + t[BU_EXPAND_TIME] + t[TD_FOLD_TIME] + t[BU_FOLD_TIME] + t[BU_NBR_TIME];
-  t[CALC_TIME]	= (t[TD_TIME] + t[BU_TIME]) - comm_time - t[IMBALANCE_TIME];
-  t[OTHER_TIME] = t[TOTAL_TIME] - (t[TD_TIME] + t[BU_TIME]);
-
-  MPI_Reduce(t, t_max, NUM_RESIONS, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-  MPI_Reduce(t, t_min, NUM_RESIONS, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
-  MPI_Reduce(t, t_ave, NUM_RESIONS, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-
-  int size;
-  MPI_Comm_size(MPI_COMM_WORLD, &size);
-  for(int i=0;i<NUM_RESIONS;i++)
-    t_ave[i] /= size;
-
-  if(mpi.isMaster()){
-    printf("---\n");
-    printf("CATEGORY :                 :   MAX    MIN    AVE   AVE/TIME\n");
-    printf("TOTAL                      : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TOTAL_TIME));
-    printf(" - TOP_DOWN                : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TD_TIME));
-    printf(" - BOTTOM_UP               : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_TIME));
-    printf("   - LOCAL_CALC            : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(CALC_TIME));
-    printf("   - TD_EXPAND(allgather)  : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TD_EXPAND_TIME));
-    printf("   - BU_EXPAND(allgather)  : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_EXPAND_TIME));
-    printf("   - TD_FOLD(alltoall)     : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TD_FOLD_TIME));
-    printf("   - BU_FOLD(alltoall)     : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_FOLD_TIME));
-    printf("   - BU_NEIGHBOR(sendrecv) : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_NBR_TIME));
-    printf("   - PROC_IMBALANCE        : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(IMBALANCE_TIME));
-    printf(" - OTHER                   : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(OTHER_TIME));
-    fflush(stdout);
-  }
 }

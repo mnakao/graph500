@@ -38,7 +38,6 @@ void cu_initialize_memory(
 		memset_gpu<uint32_t>(cq_summary, 0, summary_size, streams[5 % num_streams]);
 		memset_gpu<uint32_t>(cq_bitmap, 0, bitmap_size_v0, streams[6 % num_streams]);
 	}
-	CUDA_CHECK(cudaThreadSynchronize());
 }
 
 __global__ void initialize_create_column_list(
@@ -923,7 +922,6 @@ void cu_clear_nq(
 {
 	memset_gpu<uint32_t>(nq_bitmap, 0, bitmap_size_visited, streams[0 % num_streams]);
 	memset_gpu<uint32_t>(nq_sorted_bitmap, 0, bitmap_size_visited, streams[1 % num_streams]);
-	CUDA_CHECK(cudaThreadSynchronize());
 }
 
 __global__ void update_bitmap_kernel_with_summary(

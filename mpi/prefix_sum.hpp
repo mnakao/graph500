@@ -480,12 +480,10 @@ PrefixSumGPU<T>::PrefixSumGPU(int64_t max_length, int num_partitions)
 	int num_active_ctas = num_ctas_per_sm * dev_prop.multiProcessorCount;
 	num_launch_ctas_ = MAX_ACTIVE_CTAS / num_active_ctas * num_active_ctas;
 	max_length_ = (max_length + MAX - 1) & (-MAX);
-	CUDA_CHECK(cudaMalloc((void**)&dev_array_, sizeof(T)*num_partitions_*(max_length_ + PADDING + MAX_ACTIVE_CTAS)));
 }
 template <typename T>
 PrefixSumGPU<T>::~PrefixSumGPU()
 {
-	CUDA_CHECK(cudaFree(dev_array_));
 }
 
 #define STREAM_I (streams ? streams[i % num_streams] : NULL)
