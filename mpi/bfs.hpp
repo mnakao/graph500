@@ -5,9 +5,22 @@
 #include "utils.hpp"
 #include "fiber.hpp"
 #include "abstract_comm.hpp"
-#include "low_level_func.h"
 
 #define debug(...) debug_print(BFSMN, __VA_ARGS__)
+
+struct LocalPacket {
+  enum {
+	TOP_DOWN_LENGTH = PRM::PACKET_LENGTH/sizeof(uint32_t),
+	BOTTOM_UP_LENGTH = PRM::PACKET_LENGTH/sizeof(int64_t)
+  };
+  int length;
+  int64_t src;
+  union {
+	uint32_t t[TOP_DOWN_LENGTH];
+	int64_t b[BOTTOM_UP_LENGTH];
+  } data;
+};
+
 class BfsBase
 {
 	typedef BfsBase ThisType;

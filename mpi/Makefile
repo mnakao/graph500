@@ -6,7 +6,7 @@ LDFLAGS := $(CFLAGS) -Nfjomplib
 CPPFLAGS := $(CFLAGS)
 
 BINS := runnable
-OBJS := main.o low_level_func.o ../generator/splittable_mrg.o
+OBJS := main.o ../generator/splittable_mrg.o
 
 all: cpu
 cpu: $(OBJS)
