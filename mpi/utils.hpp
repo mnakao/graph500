@@ -7,9 +7,6 @@
 #include <malloc.h>
 #include <unistd.h>
 #include <sched.h>
-#if NUMA_BIND
-#include <numa.h>
-#endif
 #include <omp.h>
 
 #include <sys/types.h>
@@ -284,92 +281,12 @@ void* page_aligned_xmalloc(const size_t size) {
 }
 
 
-#if SHARED_MEMORY
-void* shared_malloc(size_t nbytes) {
-	MPI_Comm comm = mpi.comm_z;
-	int rank; MPI_Comm_rank(comm, &rank);
-	key_t shm_key;
-	int shmid = -1;
-	void* addr = NULL;
-
-	if(rank == 0) {
-		timeval tv; gettimeofday(&tv, NULL);
-		shm_key = tv.tv_usec;
-		for(int i = 0; i < 1000; ++i) {
-			shmid = shmget(++shm_key, nbytes,
-					IPC_CREAT | IPC_EXCL | 0600);
-			if(shmid != -1) break;
-#ifndef NDEBUG
-			perror("shmget try");
-#endif
-		}
-		if(shmid == -1) {
-			perror("shmget");
-			MPI_Abort(MPI_COMM_WORLD, 1);
-		}
-		addr = shmat(shmid, NULL, 0);
-		if(addr == (void*)-1) {
-			perror("Shared memory attach failure");
-			addr = NULL;
-		}
-	}
-
-	MPI_Bcast(&shm_key, 1, MpiTypeOf<key_t>::type, 0, comm);
-
-	if(rank != 0) {
-		shmid = shmget(shm_key, 0, 0);
-		if(shmid == -1) {
-			perror("shmget");
-		}
-		else {
-		addr = shmat(shmid, NULL, 0);
-			if(addr == (void*)-1) {
-				perror("Shared memory attach failure");
-				addr = NULL;
-			}
-		}
-	}
-
-	MPI_Barrier(comm);
-
-	if(rank == 0) {
-		// release the memory when the last process is detached.
-		if(shmctl(shmid, IPC_RMID, NULL) == -1) {
-			perror("shmctl(shmid, IPC_RMID, NULL)");
-		}
-	}
-	return addr;
-}
-
-void shared_free(void* shm) {
-	if(shmdt(shm) == -1) {
-		perror("shmdt(shm)");
-	}
-}
-
-void test_shared_memory() {
-	int* mem = (int*)shared_malloc(sizeof(int));
-	int ref_val = 0;
-	if(mpi.rank_z == 0) {
-		*mem = ref_val = mpi.rank;
-	}
-	MPI_Bcast(&ref_val, 1, MpiTypeOf<int>::type, 0, mpi.comm_z);
-	int result = (*mem == ref_val), global_result;
-	shared_free(mem);
-	MPI_Allreduce(&result, &global_result, 1, MpiTypeOf<int>::type, MPI_LOR, MPI_COMM_WORLD);
-	if(global_result == false) {
-		if(mpi.isMaster()) print_with_prefix("Shared memory test failed!! Please, check MPI_NUM_NODE.");
-		MPI_Abort(MPI_COMM_WORLD, 1);
-	}
-}
-#else // #if SHARED_MEMORY
 void* shared_malloc(size_t size) {
 	return page_aligned_xcalloc(size);
 }
 void shared_free(void* shm) {
 	free(shm);
 }
-#endif // #if SHARED_MEMORY
 
 //-------------------------------------------------------------//
 // Other functions
@@ -1037,35 +954,6 @@ void set_affinity()
 	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
 	g_GpuIndex = proc_rank;
 
-	if(mpi.isRmaster()) {
-		print_with_prefix("process distribution : %s", dist_round_robin ? "round robin" : "partition");
-	}
-#if SHARED_MEMORY
-	if(max_procs_per_node > 1 && max_procs_per_node != 3) {
-		mpi.size_z = max_procs_per_node;
-		mpi.rank_z = proc_rank;
-
-		// create comm_z
-		if(mpi.size_z > 1) {
-			if(dist_round_robin) {
-				MPI_Comm_split(MPI_COMM_WORLD, mpi.rank % num_node, mpi.rank_z, &mpi.comm_z);
-			}
-			else {
-				MPI_Comm_split(MPI_COMM_WORLD, mpi.rank / max_procs_per_node, mpi.rank_z, &mpi.comm_z);
-			}
-
-			// test shared memory
-			test_shared_memory();
-
-			// create comm_y
-			if(dist_round_robin == false && mpi.isRowMajor == false) {
-				mpi.rank_y = mpi.rank_2dc / mpi.size_z;
-				mpi.size_y = mpi.size_2dr / mpi.size_z;
-				MPI_Comm_split(mpi.comm_2dc, mpi.rank_z, mpi.rank_2dc / mpi.size_z, &mpi.comm_y);
-			}
-		}
-	}
-#endif
 	const char* core_bind = getenv("CORE_BIND");
 	if(core_bind != NULL) {
 		affinity_mode = (AffinityMode)atoi(core_bind);
@@ -1086,94 +974,7 @@ void set_affinity()
 		core_affinity_enabled = true;
 		core_binding = new SimpleCoreBinding();
 	}
-#if NUMA_BIND
-	if(core_binding == NULL) {
-		AutoDetectCoreBinding* topology = new AutoDetectCoreBinding(max_procs_per_node, proc_rank);
-		if(max_procs_per_node > 1) {
-			if(max_procs_per_node == 3) {
-				if(numa_available() < 0) {
-					print_with_prefix("No NUMA support available on this system.");
-				}
-				else {
-					int NUM_SOCKET = numa_max_node() + 1;
-					if(proc_rank < NUM_SOCKET) {
-						numa_set_preferred(proc_rank);
-						numa_run_on_node(proc_rank);
-					}
-					else {
-						cpu_set_t set; CPU_ZERO(&set);
-						for(int i = 0; i < topology->num_procs; i++) {
-							CPU_SET(i, &set);
-						}
-						sched_setaffinity(0, sizeof(set), &set);
-					}
-					if(NUM_SOCKET != topology->num_numa_nodes) {
-						if(mpi.isMaster()) print_with_prefix("Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)",
-								NUM_SOCKET, topology->num_numa_nodes);
-					}
-				}
-				/*
-				cpu_set_t set; CPU_ZERO(&set);
-				if(proc_rank < topology->num_numa_nodes) {
-					for(int core = 0; core < topology->num_cores_within_numa; core++)
-						for(int smt = 0; smt < topology->num_cores_within_numa; smt++)
-							CPU_SET(topology->cpu(proc_rank, core, smt), &set);
-				}
-				else {
-					for(int i = 0; i < topology->num_procs; i++)
-						CPU_SET(i, &set);
-				}
-				sched_setaffinity(0, sizeof(set), &set);
-				*/
-				// disable core binding
-				delete topology; topology = NULL;
 
-				if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
-				  print_with_prefix("affinity for executing 3 processed per node is enabled.");
-				}
-			}
-			else {
-				if(numa_available() < 0) {
-					print_with_prefix("No NUMA support available on this system.");
-					return ;
-				}
-				int NUM_SOCKET = numa_max_node() + 1;
-				if(NUM_SOCKET != topology->num_numa_nodes) {
-					if(mpi.isRmaster()) print_with_prefix("Warning: # of NUMA nodes from the libnuma does not match ours. (libnuma = %d, ours = %d)",
-							NUM_SOCKET, topology->num_numa_nodes);
-				}
-
-				// set default affinity to numa node
-				numa_run_on_node(proc_rank % NUM_SOCKET);
-
-				// memory affinity
-				numa_set_preferred(proc_rank % NUM_SOCKET);
-
-				core_affinity_enabled = true;
-				if(mpi.isRmaster()) print_with_prefix("Core affinity is enabled");
-
-				if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
-				  print_with_prefix("NUMA node affinity is enabled.");
-				}
-			}
-		}
-		// failed to detect CPU topology or there is only one process here
-		else {
-			if(mpi.isRmaster()) { /* print from max rank node for easy debugging */
-			  print_with_prefix("affinity is disabled.");
-			}
-			cpu_set_t set; CPU_ZERO(&set);
-			for(int i = 0; i < topology->num_procs; i++) {
-				CPU_SET(i, &set);
-			}
-			sched_setaffinity(0, sizeof(set), &set);
-		}
-		core_binding = topology;
-	}
-#endif // #if NUMA_BIND
-	if(mpi.isMaster()) {
-		  print_with_prefix("Y dimension is %s", mpi.isYdimAvailable() ? "Enabled" : "Disabled");
-	}
 	// set main thread's affinity
 	set_core_affinity();
 	next_base_thread_id = num_bfs_threads+(is_extra_omp?1:0);
@@ -1363,54 +1164,6 @@ static void setup_2dcomm()
 		setup_rank_map(mpi.comm_r);
 		setup_rank_map(mpi.comm_c);
 	}
-}
-
-// assume rank = XYZ
-static void setup_2dcomm_on_3d()
-{
-	const char* treed_map_str = getenv("THREED_MAP");
-	if(treed_map_str) {
-		int X, Y, Z1, Z2;
-		sscanf(treed_map_str, "%dx%dx%dx%d", &X, &Y, &Z1, &Z2);
-		mpi.size_2dr = X * Z1;
-		mpi.size_2dc = Y * Z2;
-
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Dimension: (%dx%dx%dx%d) -> (%dx%d)\n", X, Y, Z1, Z2, mpi.size_2dr, mpi.size_2dc);
-		if(mpi.size != mpi.size_2dr * mpi.size_2dc) {
-			if(mpi.isMaster()) fprintf(IMD_OUT, "Error: # of processes does not match\n");
-			MPI_Abort(MPI_COMM_WORLD, 1);
-		}
-
-		int x, y, z1, z2;
-		x = mpi.rank % X;
-		y = (mpi.rank / X) % Y;
-		z1 = (mpi.rank / (X*Y)) % Z1;
-		z2 = mpi.rank / (X*Y*Z1);
-		mpi.rank_2dr = z1 * X + x;
-		mpi.rank_2dc = z2 * Y + y;
-
-		mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
-		mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
-		MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dc, mpi.rank_2dr, &mpi.comm_2dc);
-		MPI_Comm_split(MPI_COMM_WORLD, mpi.rank_2dr, mpi.rank_2dc, &mpi.comm_2dr);
-		MPI_Comm_split(MPI_COMM_WORLD, 0, mpi.rank_2d, &mpi.comm_2d);
-	}
-	else {
-		if(mpi.isMaster()) fprintf(IMD_OUT, "Program error.\n");
-		MPI_Abort(MPI_COMM_WORLD, 1);
-	}
-
-}
-
-void cleanup_2dcomm()
-{
-	if(mpi.isMultiDimAvailable) {
-		free(mpi.comm_r.rank_map);
-		free(mpi.comm_c.rank_map);
-	}
-	MPI_Comm_free(&mpi.comm_2dr);
-	MPI_Comm_free(&mpi.comm_2dc);
-	close_imd_out_file();
 }
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)

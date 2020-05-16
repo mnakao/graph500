@@ -1,10 +1,6 @@
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
-// for the systems that contains NUMA nodes
-#define NUMA_BIND 0
-#define SHARED_MEMORY 0
-
 #define CPU_BIND_CHECK 0
 #define PRINT_BINDING 0
 

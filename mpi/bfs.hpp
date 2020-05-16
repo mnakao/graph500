@@ -97,7 +97,6 @@ public:
 	}
 
 	void prepare_bfs() {
-		printInformation();
 		allocate_memory();
 	}
 
@@ -1894,11 +1893,6 @@ public:
 		int src_;
 	};
 
-	static void printInformation()
-	{
-		if(mpi.isMaster() == false) return ;
-		using namespace PRM;
-	}
 	void prepare_sssp() { }
 	void run_sssp(int64_t root, int64_t* pred) { }
 	void end_sssp() { }
