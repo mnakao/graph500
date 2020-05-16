@@ -24,12 +24,6 @@ inline int get_msb_index(int64_t value) {
 #undef NLEADING_ZERO_BITSL
 #undef NLEADING_ZERO_BITSLL
 
-void* xMPI_Alloc_mem(size_t nbytes);
-void* cache_aligned_xcalloc(const size_t size);
-void* cache_aligned_xmalloc(const size_t size);
-void* page_aligned_xcalloc(const size_t size);
-void* page_aligned_xmalloc(const size_t size);
-
 template <typename T1, typename T2>
 class pointer_pair_value
 {

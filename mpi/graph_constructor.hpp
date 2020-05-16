@@ -812,10 +812,7 @@ private:
 		free(src_vertexes_); src_vertexes_ = NULL;
 
 		g.row_starts_ = row_starts;
-#if ISOLATE_FIRST_EDGE
 		isolateFirstEdge(g);
-#endif // #if ISOLATE_FIRST_EDGE || DEGREE_ORDER
-
 	}
 
 	// using SFINAE
