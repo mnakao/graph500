@@ -64,41 +64,7 @@ typedef struct mrg_transition_matrix {
 } mrg_transition_matrix;
 
 /* r may alias st */
-#ifdef __MTA__
-#pragma mta inline
-#endif
 static void mrg_apply_transition(const mrg_transition_matrix* restrict mat, const mrg_state* restrict st, mrg_state* r) {
-#ifdef __MTA__
-  uint_fast64_t s = mat->s;
-  uint_fast64_t t = mat->t;
-  uint_fast64_t u = mat->u;
-  uint_fast64_t v = mat->v;
-  uint_fast64_t w = mat->w;
-  uint_fast64_t z1 = st->z1;
-  uint_fast64_t z2 = st->z2;
-  uint_fast64_t z3 = st->z3;
-  uint_fast64_t z4 = st->z4;
-  uint_fast64_t z5 = st->z5;
-  uint_fast64_t temp = s * z1 + t * z2 + u * z3 + v * z4;
-  r->z5 = mod_down(mod_down_fast(temp) + w * z5);
-  uint_fast64_t a = mod_down(107374182 * s + t);
-  uint_fast64_t sy = mod_down(104480 * s);
-  r->z4 = mod_down(mod_down_fast(a * z1 + u * z2 + v * z3) + w * z4 + sy * z5);
-  uint_fast64_t b = mod_down(107374182 * a + u);
-  uint_fast64_t ay = mod_down(104480 * a);
-  r->z3 = mod_down(mod_down_fast(b * z1 + v * z2 + w * z3) + sy * z4 + ay * z5);
-  uint_fast64_t c = mod_down(107374182 * b + v);
-  uint_fast64_t by = mod_down(104480 * b);
-  r->z2 = mod_down(mod_down_fast(c * z1 + w * z2 + sy * z3) + ay * z4 + by * z5);
-  uint_fast64_t d = mod_down(107374182 * c + w);
-  uint_fast64_t cy = mod_down(104480 * c);
-  r->z1 = mod_down(mod_down_fast(d * z1 + sy * z2 + ay * z3) + by * z4 + cy * z5);
-/* A^n = [d   s*y a*y b*y c*y]                                           */
-/*       [c   w   s*y a*y b*y]                                           */
-/*       [b   v   w   s*y a*y]                                           */
-/*       [a   u   v   w   s*y]                                           */
-/*       [s   t   u   v   w  ]                                           */
-#else
   uint_fast32_t o1 = mod_mac_y(mod_mul(mat->d, st->z1), mod_mac4(0, mat->s, st->z2, mat->a, st->z3, mat->b, st->z4, mat->c, st->z5));
   uint_fast32_t o2 = mod_mac_y(mod_mac2(0, mat->c, st->z1, mat->w, st->z2), mod_mac3(0, mat->s, st->z3, mat->a, st->z4, mat->b, st->z5));
   uint_fast32_t o3 = mod_mac_y(mod_mac3(0, mat->b, st->z1, mat->v, st->z2, mat->w, st->z3), mod_mac2(0, mat->s, st->z4, mat->a, st->z5));
@@ -109,19 +75,12 @@ static void mrg_apply_transition(const mrg_transition_matrix* restrict mat, cons
   r->z3 = o3;
   r->z4 = o4;
   r->z5 = o5;
-#endif
 }
 
-#ifdef __MTA__
-#pragma mta inline
-#endif
 static void mrg_step(const mrg_transition_matrix* mat, mrg_state* state) {
   mrg_apply_transition(mat, state, state);
 }
 
-#ifdef __MTA__
-#pragma mta inline
-#endif
 static void mrg_orig_step(mrg_state* state) { /* Use original A, not fully optimized yet */
   uint_fast32_t new_elt = mod_mac_y(mod_mul_x(state->z1), state->z5);
   state->z5 = state->z4;

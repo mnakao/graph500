@@ -1,27 +1,8 @@
-/* Copyright (C) 2010 The Trustees of Indiana University.                  */
-/*                                                                         */
-/* Use, modification and distribution is subject to the Boost Software     */
-/* License, Version 1.0. (See accompanying file LICENSE_1_0.txt or copy at */
-/* http://www.boost.org/LICENSE_1_0.txt)                                   */
-/*                                                                         */
-/*  Authors: Jeremiah Willcock                                             */
-/*           Andrew Lumsdaine                                              */
-
 #ifndef MOD_ARITH_64BIT_H
 #define MOD_ARITH_64BIT_H
 
 #include <stdint.h>
 #include <assert.h>
-
-/* Various modular arithmetic operations for modulus 2^31-1 (0x7FFFFFFF).
- * These may need to be tweaked to get acceptable performance on some platforms
- * (especially ones without conditional moves). */
-
-static inline uint_fast32_t mod_add(uint_fast32_t a, uint_fast32_t b) {
-  assert (a <= 0x7FFFFFFE);
-  assert (b <= 0x7FFFFFFE);
-  return (a + b) % 0x7FFFFFFF;
-}
 
 static inline uint_fast32_t mod_mul(uint_fast32_t a, uint_fast32_t b) {
   assert (a <= 0x7FFFFFFE);
@@ -69,17 +50,8 @@ static inline uint_fast32_t mod_mac4(uint_fast32_t sum, uint_fast32_t a, uint_fa
   return (uint_fast32_t)(((uint_fast64_t)a * b + (uint_fast64_t)c * d + (uint_fast64_t)e * f + (uint_fast64_t)g * h + sum) % 0x7FFFFFFF);
 }
 
-/* The two constants x and y are special cases because they are easier to
- * multiply by on 32-bit systems.  They are used as multipliers in the random
- * number generator.  The techniques for fast multiplication by these
- * particular values are in L'Ecuyer's papers; we don't use them yet. */
-
 static inline uint_fast32_t mod_mul_x(uint_fast32_t a) {
   return mod_mul(a, 107374182);
-}
-
-static inline uint_fast32_t mod_mul_y(uint_fast32_t a) {
-  return mod_mul(a, 104480);
 }
 
 static inline uint_fast32_t mod_mac_y(uint_fast32_t sum, uint_fast32_t a) {
