@@ -175,41 +175,30 @@ void print_max_memory_usage() {
 void* xMPI_Alloc_mem(size_t nbytes) {
   void* p = NULL;
   MPI_Alloc_mem(nbytes, MPI_INFO_NULL, &p);
-  if (nbytes != 0 && !p) {
-	  throw_exception("MPI_Alloc_mem failed for size%zu (%" PRId64 ") byte(s)", nbytes, (int64_t)nbytes);
-  }
   return p;
 }
 
 void* cache_aligned_xcalloc(const size_t size) {
     void* p = NULL;
-	if(posix_memalign(&p, CACHE_LINE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
-	}
+	posix_memalign(&p, CACHE_LINE, size);
 	memset(p, 0, size);
 	return p;
 }
 void* cache_aligned_xmalloc(const size_t size) {
 	void* p = NULL;
-	if(posix_memalign(&p, CACHE_LINE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
-	}
+	posix_memalign(&p, CACHE_LINE, size);
 	return p;
 }
 
 void* page_aligned_xcalloc(const size_t size) {
 	void* p = NULL;
-	if(posix_memalign(&p, PAGE_SIZE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
-	}
+	posix_memalign(&p, PAGE_SIZE, size);
 	memset(p, 0, size);
 	return p;
 }
 void* page_aligned_xmalloc(const size_t size) {
 	void* p = NULL;
-	if(posix_memalign(&p, PAGE_SIZE, size)){
-		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
-	}
+	posix_memalign(&p, PAGE_SIZE, size);
 	return p;
 }
 
