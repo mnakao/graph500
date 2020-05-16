@@ -98,11 +98,6 @@ void print_bfs_result(
 	  fprintf(stdout, "max_validate:                   %.12g\n", stats[s_maximum]);
 	  fprintf(stdout, "mean_validate:                  %.12g\n", stats[s_mean]);
 	  fprintf(stdout, "stddev_validate:                %.12g\n", stats[s_std]);
-#if 0
-	  for (i = 0; i < num_bfs_roots; ++i) {
-		fprintf(stdout, "Run %3d:                        %g s, validation %g s\n", i + 1, bfs_times[i], validate_times[i]);
-	  }
-#endif
 	}
 }
 

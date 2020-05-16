@@ -394,24 +394,7 @@ struct SeparatedId {
 	}
 };
 
-struct MPI_INFO_ON_GPU {
-	int rank;
-	int size;
-	int rank_2d;
-	int rank_2dr;
-	int rank_2dc;
-};
-
 int64_t get_time_in_microsecond();
 FILE* get_imd_out_file();
-
-#if ENABLE_FUJI_PROF
-extern "C" {
-void fapp_start(const char *, int , int);
-void fapp_stop(const  char *, int , int);
-void start_collection(const char *);
-void stop_collection(const char *);
-}
-#endif
 
 #endif /* UTILS_HPP_ */

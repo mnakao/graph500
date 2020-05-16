@@ -1,111 +1,7 @@
-/*
- * benchmark_helper.hpp
- *
- *  Created on: Mar 3, 2012
- *      Author: koji
- */
-/* Copyright (C) 2009-2010 The Trustees of Indiana University.             */
-/*                                                                         */
-/* Use, modification and distribution is subject to the Boost Software     */
-/* License, Version 1.0. (See accompanying file LICENSE_1_0.txt or copy at */
-/* http://www.boost.org/LICENSE_1_0.txt)                                   */
-/*                                                                         */
-/*  Authors: Jeremiah Willcock                                             */
-/*           Andrew Lumsdaine                                              */
-
 #ifndef BENCHMARK_HELPER_HPP_
 #define BENCHMARK_HELPER_HPP_
 
 #include "logfile.h"
-
-#if ENABLE_FJMPI_RDMA
-#include <mpi-ext.h>
-
-// Progress report for K computer
-class ProgressReport
-{
-public:
-	ProgressReport(int max_progress)
-		: max_progress_(max_progress)
-	{
-		if(mpi.isMaster()) {
-			g_progress_ = new int[mpi.size_2d]();
-			FJMPI_Rdma_reg_mem(0, g_progress_, sizeof(int)*mpi.size_2d);
-		}
-		local_send_address_ = FJMPI_Rdma_reg_mem(1, &my_progress_, sizeof(int));
-		MPI_Barrier(MPI_COMM_WORLD);
-		remote_write_address_ = FJMPI_Rdma_get_remote_addr(0, 0) + sizeof(int)*mpi.rank_2d;
-	}
-	~ProgressReport() {
-		if(mpi.isMaster()) {
-			FJMPI_Rdma_dereg_mem(0);
-		}
-		FJMPI_Rdma_dereg_mem(1);
-	}
-	void begin_progress() {
-		my_progress_ = 0;
-		if(mpi.isMaster()) {
-			pthread_create(&thread_, NULL, update_status_thread, this);
-			print_with_prefix("Begin Reporting Progress. Info: Rank is 2D rank.");
-		}
-	}
-	void advace() {
-		++my_progress_;
-		FJMPI_Rdma_put(0, 0, remote_write_address_, local_send_address_, sizeof(int),
-				FJMPI_RDMA_LOCAL_NIC0 | FJMPI_RDMA_IMMEDIATE_RETURN);
-		while(FJMPI_Rdma_poll_cq(FJMPI_RDMA_LOCAL_NIC0, NULL)) ;
-	}
-	void end_progress() {
-		if(mpi.isMaster()) {
-			pthread_join(thread_, NULL);
-		}
-		MPI_Barrier(MPI_COMM_WORLD);
-		while(FJMPI_Rdma_poll_cq(FJMPI_RDMA_LOCAL_NIC0, NULL)) ;
-	}
-
-private:
-	pthread_t thread_;
-	int max_progress_;
-	int my_progress_;
-	int* g_progress_; // length=mpi.size
-	uint64_t local_send_address_;
-	uint64_t remote_write_address_;
-
-	static void* update_status_thread(void* this_) {
-		static_cast<ProgressReport*>(this_)->update_status();
-		return NULL;
-	}
-
-	void update_status() {
-		int* tmp_progress = new int[mpi.size_2d];
-		int* node_list = new int[mpi.size_2d];
-		double print_time = MPI_Wtime();
-		while(true) {
-			usleep(400*1000); // sleep 400 ms
-			if(MPI_Wtime() - print_time >= 2.0) {
-				print_time = MPI_Wtime();
-				for(int i = 0; i < mpi.size_2d; ++i) {
-					tmp_progress[i] = g_progress_[i];
-					node_list[i] = i;
-				}
-				sort2(tmp_progress, node_list, mpi.size_2d);
-				print_prefix();
-				fprintf(IMD_OUT, "(Rank,Iter)=");
-				for(int i = 0; i < std::min(mpi.size_2d, 8); ++i) {
-					fprintf(IMD_OUT, "(%d,%d)", node_list[i], tmp_progress[i]);
-				}
-				fprintf(IMD_OUT, "\n");
-				if(tmp_progress[0] == max_progress_) {
-					break;
-				}
-			}
-		}
-		delete [] tmp_progress;
-		delete [] node_list;
-	}
-};
-
-#else // #if ENABLE_FJMPI_RDMA
 
 class ProgressReport
 {
@@ -232,7 +128,6 @@ private:
 	int* recv_buf_; // length=mpi.size
 	int* g_progress_; // length=mpi.size
 };
-#endif // #if ENABLE_FJMPI_RDMA
 
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
@@ -275,13 +170,6 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 		// There is the implicit barrier on the end of for loops.
 #pragma omp master
 		{
-#if 0
-			for(int64_t i = start_edge; i < end_edge; ++i) {
-				if( edge_buffer[i-start_edge].weight_ != 0xBEEF ) {
-		//			print_with_prefix("Weight > 32: idx: %" PRId64 "", i);
-				}
-			}
-#endif
 			edge_list->write(edge_buffer, end_edge - start_edge);
 
 			if(mpi.isMaster()) {
