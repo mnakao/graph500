@@ -21,18 +21,7 @@
 #include "primitives.hpp"
 
 void print_with_prefix(const char* format, ...);
-
-#if DEBUG_PRINT
-#define DEBUG_PRINT_SWITCH_0(...)
-#define DEBUG_PRINT_SWITCH_1(...) print_with_prefix(__VA_ARGS__)
-#define DEBUG_PRINT_SWITCH_2(...) do{if(mpi.isMaster())print_with_prefix(__VA_ARGS__);}while(0)
-#define MAKE_DEBUG_PRINT_SWITCH(val) MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val)
-#define MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val) DEBUG_PRINT_SWITCH_ ## val
-#define debug_print(prefix, ...) MAKE_DEBUG_PRINT_SWITCH\
-	(DEBUG_PRINT_ ## prefix)(#prefix " " __VA_ARGS__)
-#else
 #define debug_print(prefix, ...)
-#endif
 
 struct COMM_2D {
 	MPI_Comm comm;
@@ -342,34 +331,11 @@ void get_partition(int64_t size, T* sorted, int log_blk,
 		while(end < size && (sorted[end] >> log_blk) == piv) ++end;
 	}
 }
-/*
-template <typename T>
-void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value,
-		int64_t min_blk_size, int num_part, int part_idx, T*& begin, T*& end)
-{
-	T blk_size = std::max(min_blk_size, (max_value - min_value + num_part - 1) / num_part);
-	int64_t begin_value = min_value + blk_size * part_idx;
-	int64_t end_value = begin_value + blk_size;
-	begin = std::lower_bound(sorted, sorted + size, begin_value);
-	end = std::lower_bound(sorted, sorted + size, end_value);
-}
-*/
-
-//-------------------------------------------------------------//
-// CPU Affinity Setting
-//-------------------------------------------------------------//
-
-int g_GpuIndex = -1;
 
 namespace numa {
-
 int num_omp_threads = 2; // # of threads available
 int num_bfs_threads = 1; // # of threads for BFS
-#if OPENMP_SUB_THREAD
-bool is_extra_omp = true;
-#else
 bool is_extra_omp = false;
-#endif
 int next_base_thread_id = 0;
 int next_thread_id = 1;
 
@@ -762,11 +728,6 @@ void internal_set_core_affinity(int cpu) {
 	sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
 	sleep(0);
 	initialize_core_id();
-#if PRINT_BINDING
-	std::string str_affinity;
-	cpu_set_to_string(&initial_affinity, str_affinity, sysconf(_SC_NPROCESSORS_CONF));
-	print_with_prefix("th:%d thread started [%s](%d)", thread_id, str_affinity.c_str(), cpu);
-#endif // #if PRINT_BINDING
 	check_affinity_setting();
 }
 
@@ -796,10 +757,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 	bool core_affinity = false, process_affinity = false;
 	int num_procs = sysconf(_SC_NPROCESSORS_CONF);
 
-#if SGI_OMPLACE_BUG
-	launch_dummy_thread(1);
-#endif // #if SGI_OMPLACE_BUG
-
 #pragma omp parallel num_threads(num_omp_threads) reduction(|:core_affinity, process_affinity)
 	{
 		thread_id = omp_get_thread_num();
@@ -814,9 +771,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 		if(cnt == 1) {
 			// Core affinity is set
 			core_affinity = true;
-#if PRINT_BINDING
-			print_current_binding("detected core binding");
-#endif
 			for(int i = 0; i < num_procs; i++) {
 				if(CPU_ISSET(i, &set)) {
 					cpu_set[thread_id] = i;
@@ -828,9 +782,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 		else if(cnt >= total_threads) {
 			// Process affinity is set.
 			process_affinity = true;
-#if PRINT_BINDING
-			print_current_binding("detected process binding");
-#endif
 			if(thread_id == 0) {
 				int cpu_idx = 0;
 				for(int i = 0; i < num_procs; i++) {
@@ -845,9 +796,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 		}
 		else {
 			// Affinity is set ???
-#if PRINT_BINDING
-			print_current_binding("??? binding");
-#endif
 			core_affinity = process_affinity = true;
 		}
 	}
@@ -888,20 +836,10 @@ void set_core_affinity() {
 				internal_set_core_affinity(cpu);
 			}
 		}
-		else {
-#if PRINT_BINDING
-			print_current_binding("started");
-#endif
-		}
 		if((mpi.thread_level == MPI_THREAD_SINGLE) || thread_id == 0) {
 			omp_set_num_threads(num_bfs_threads);
 		}
 	}
-#if CPU_BIND_CHECK
-	else if(core_affinity_enabled) {
-		ensure_my_apic_id();
-	}
-#endif
 }
 
 void set_omp_core_affinity() {
@@ -920,16 +858,8 @@ void set_omp_core_affinity() {
 		}
 		else {
 			thread_id = __sync_fetch_and_add(&next_thread_id, 1);
-#if PRINT_BINDING
-			print_current_binding("started");
-#endif
 		}
 	}
-#if CPU_BIND_CHECK
-	else if(core_affinity_enabled) {
-		ensure_my_apic_id();
-	}
-#endif
 }
 
 #define SET_AFFINITY numa::set_core_affinity()
@@ -951,7 +881,6 @@ void set_affinity()
 	const char* dist_round_robin = getenv("MPI_ROUND_ROBIN");
 	int max_procs_per_node = (mpi.size + num_node - 1) / num_node;
 	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
-	g_GpuIndex = proc_rank;
 
 	const char* core_bind = getenv("CORE_BIND");
 	if(core_bind != NULL) {
@@ -1175,39 +1104,11 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	global_clock.init();
 #endif
 
-	const char* prov_str = "unknown";
-	switch(mpi.thread_level) {
-	case MPI_THREAD_SINGLE:
-		prov_str = "MPI_THREAD_SINGLE";
-		break;
-	case MPI_THREAD_FUNNELED:
-		prov_str = "MPI_THREAD_FUNNELED";
-		break;
-	case MPI_THREAD_SERIALIZED:
-		prov_str = "MPI_THREAD_SERIALIZED";
-		break;
-	case MPI_THREAD_MULTIPLE:
-		prov_str = "MPI_THREAD_MULTIPLE";
-		break;
-	}
-
-	if(mpi.isMaster()) {
-		print_with_prefix("Graph500 Benchmark: SCALE: %d, edgefactor: %d %s", SCALE, edgefactor,
-#ifdef NDEBUG
-				""
-#else
-				"(Debug Mode)"
-#endif
-		);
-		print_with_prefix("Running Binary: %s", argv[0]);
-		print_with_prefix("Provided MPI thread mode: %s", prov_str);
-		print_with_prefix("Pre running time will be %d seconds", PRE_EXEC_TIME);
 #if PRINT_WITH_TIME
 		char buf[200];
 		strftime(buf, sizeof(buf), "%Y/%m/%d %A %H:%M:%S %Z", localtime(&global_clock.l.tv_sec));
 		print_with_prefix("Clock started at %s\n", buf);
 #endif
-	}
 
 	setup_2dcomm();
 

@@ -314,13 +314,7 @@ private:
 			vertexes_[i] = i;
 		}
 
-		// sort by degree
-#if VERTEX_REORDERING == 2
 		sort2(degree, vertexes_, num_verts, std::greater<int64_t>());
-#elif VERTEX_REORDERING == 1
-		sort2(degree, vertexes_, num_verts, ZeroOrElseComparator<int64_t>());
-#endif
-
 		max_local_verts_ = 0;
 		for(int64_t i = num_verts-1; i >= 0; --i) {
 			if(degree[i] != 0) {
@@ -733,14 +727,6 @@ private:
 
 			scatter.sum();
 
-#if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) print_with_prefix("MPI_Allreduce...");
-#endif
-
-#if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) print_with_prefix("OK! ");
-#endif
-
 			const int local_bits = org_local_bits_;
 #pragma omp parallel
 			{
@@ -761,16 +747,7 @@ private:
 				} // #pragma omp for schedule(static)
 			} // #pragma omp parallel
 
-#if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) print_with_prefix("MPI_Alltoall...");
-#endif
-
 			int64_t* recv_edges = scatter.scatter(edges_to_send);
-
-#if NETWORK_PROBLEM_AYALISYS
-			if(mpi.isMaster()) print_with_prefix("OK! ");
-#endif
-
 			const int64_t num_recv_edges = scatter.get_recv_count();
 			degree_calc_->add(recv_edges, num_recv_edges);
 
