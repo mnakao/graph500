@@ -1,11 +1,3 @@
-/*
- * main.cc
- *
- *  Created on: Dec 9, 2011
- *      Author: koji
- */
-
-// C includes
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,13 +5,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <math.h>
-#ifdef _FUGAKU_POWER_MEASUREMENT
-#include "pwr.h"
-#endif
-
-// C++ includes
 #include <string>
-
 #include "parameters.h"
 #include "utils_core.h"
 #include "primitives.hpp"
@@ -30,9 +16,6 @@
 #include "benchmark_helper.hpp"
 #include "bfs.hpp"
 #include "bfs_cpu.hpp"
-#if CUDA_ENABLED
-#include "bfs_gpu.hpp"
-#endif
 
 void graph500_bfs(int SCALE, int edgefactor)
 {
@@ -46,7 +29,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 		print_with_prefix("Resume from %d th run", root_start);
 
 	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
-//	EdgeListStorage<UnweightedPackedEdge, 512*1024> edge_list(
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
 	BfsOnCPU::printInformation();
@@ -61,6 +43,8 @@ void graph500_bfs(int SCALE, int edgefactor)
 	BfsOnCPU* benchmark = new BfsOnCPU();
 	double construction_time = MPI_Wtime();
 	benchmark->construct(&edge_list);
+	MPI_Finalize();
+	exit(0);
 	construction_time = MPI_Wtime() - construction_time;
 
 	if(mpi.isMaster()) print_with_prefix("Redistributing edge list...");

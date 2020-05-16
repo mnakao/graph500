@@ -52,12 +52,6 @@
 #define USER_END(s) VT_USER_END(#s)
 #define TRACER(s) VT_TRACER(#s)
 #define CTRACER(s)
-#elif SCOREP
-#include <scorep/SCOREP_User.h>
-#define USER_START(s) SCOREP_USER_REGION_DEFINE( scorep_region_##s ); SCOREP_USER_REGION_BEGIN( scorep_region_##s, #s, SCOREP_USER_REGION_TYPE_COMMON )
-#define USER_END(s) SCOREP_USER_REGION_END( scorep_region_##s )
-#define TRACER(s) SCOREP_USER_REGION( #s, SCOREP_USER_REGION_TYPE_COMMON )
-#define CTRACER(s)
 #elif BACKTRACE_ON_SIGNAL
 extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD);
 
