@@ -140,8 +140,6 @@ public:
 		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
 		int max_size = buffer_provider_->max_size() / (es * comm_size_);
-		VERVOSE(last_send_size_ = 0);
-		VERVOSE(last_recv_size_ = 0);
 
 		const int MINIMUM_POINTER_SPACE = 40;
 
@@ -242,13 +240,9 @@ public:
 			int recvbufsize = buffer_provider_->max_size();
 			PROF(merge_time_ += tk_all);
 			USER_START(a2a_comm);
-			VERVOSE(if(loop > 0 && mpi.isMaster()) print_with_prefix("Alltoall with pointer (Again)"));
 			scatter_.alltoallv(sendbuf, recvbuf, type, recvbufsize);
 			PROF(comm_time_ += tk_all);
 			USER_END(a2a_comm);
-
-			VERVOSE(last_send_size_ += scatter_.get_send_count() * es);
-			VERVOSE(last_recv_size_ += scatter_.get_recv_count() * es);
 
 			int* recv_offsets = scatter_.get_recv_offsets();
 
@@ -276,8 +270,6 @@ public:
 		// merge
 		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
-		VERVOSE(last_send_size_ = 0);
-		VERVOSE(last_recv_size_ = 0);
 		USER_START(a2a_merge);
 #pragma omp parallel
 		{
@@ -324,9 +316,6 @@ public:
 		PROF(comm_time_ += tk_all);
 		USER_END(a2a_comm);
 
-		VERVOSE(last_send_size_ = scatter_.get_send_count() * es);
-		VERVOSE(last_recv_size_ = scatter_.get_recv_count() * es);
-
 		int* recv_offsets = scatter_.get_recv_offsets();
 
 #pragma omp parallel for schedule(dynamic,1)
@@ -345,12 +334,7 @@ public:
 		if(with_ptr) {
 			recv_proc_large_time_.submit("proc recv large data", level);
 		}
-		VERVOSE(profiling::g_pis.submitCounter(last_send_size_, "a2a send data", level);)
-		VERVOSE(profiling::g_pis.submitCounter(last_recv_size_, "a2a recv data", level);)
 	}
-#endif
-#if VERVOSE_MODE
-	int get_last_send_size() { return last_send_size_; }
 #endif
 private:
 
@@ -374,8 +358,6 @@ private:
 	PROF(profiling::TimeSpan comm_time_);
 	PROF(profiling::TimeSpan recv_proc_time_);
 	PROF(profiling::TimeSpan recv_proc_large_time_);
-	VERVOSE(int last_send_size_);
-	VERVOSE(int last_recv_size_);
 
 	void flush(CommTarget& node) {
 		if(node.cur_buf.ptr != NULL) {

@@ -21,9 +21,6 @@
 
 // General Settings
 #define PRINT_WITH_TIME 1
-#ifndef VERVOSE_MODE
-#define VERVOSE_MODE 1
-#endif
 #define PROFILING_MODE 0
 #define REPORT_GEN_RPGRESS 0
 
@@ -38,8 +35,8 @@
 #define BOTTOM_UP_OVERLAP_PFS 1
 
 // for Fugaku
-#define ENABLE_UTOFU 1
-#define FUGAKU_MPI_PRINT_STATS 1
+#define ENABLE_UTOFU 0
+#define FUGAKU_MPI_PRINT_STATS 0
 
 // for K computer
 #define ENABLE_FJMPI_RDMA 0

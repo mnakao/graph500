@@ -376,7 +376,6 @@ public:
 			MPI_Request* req_ptr = this->req + buf_idx * 2;
 			int tag = (next_send < total_phase-2) ? 0 : 1; // last data?
 			MPI_Isend(buffers[buf_idx], data_size[buf_idx], type, this->send_to, tag, this->mpi_comm, req_ptr);
-			VERVOSE(g_bu_list_comm += data_size[buf_idx] * sizeof(BitmapType));
 			debug("send %d", data_size[buf_idx]);
 			++next_send;
 		}
