@@ -5,7 +5,6 @@
 #include "utils.hpp"
 #include "fiber.hpp"
 #include "abstract_comm.hpp"
-#include "bottom_up_comm.hpp"
 #include "low_level_func.h"
 
 #define debug(...) debug_print(BFSMN, __VA_ARGS__)
@@ -66,8 +65,7 @@ public:
 	};
 
 	BfsBase()
-		: bottom_up_substep_(NULL)
-		, top_down_comm_(this)
+	  : top_down_comm_(this)
 		, bottom_up_comm_(this)
 		, td_comm_(mpi.comm_2dc, &top_down_comm_)
 		, bu_comm_(mpi.comm_2dr, &bottom_up_comm_)
@@ -78,7 +76,6 @@ public:
 
 	virtual ~BfsBase()
 	{
-		delete bottom_up_substep_; bottom_up_substep_ = NULL;
 	}
 
 	template <typename EdgeList>
@@ -250,8 +247,6 @@ public:
 			  { }
 
 		virtual void received(void* buf, int offset, int length, int src) {
-			BottomUpReceiver recv(this->this_, (int64_t*)buf + offset, length, src);
-			recv.run();
 		}
 	};
 
@@ -837,177 +832,11 @@ public:
 		buffer->length = num_send;
 	}
 
-	// returns the number of vertices found in this step.
-	int bottom_up_search_bitmap_process_step(
-			BottomUpSubstepData& data,
-			int step_bitmap_width,
-			volatile int* process_counter,
-			int target_rank)
-	{
-		BitmapType* phase_bitmap = (BitmapType*)data.data;
-		int phase_bmp_off = data.tag.region_id * step_bitmap_width;
-		//TwodVertex L = graph_.num_local_verts_;
-		//TwodVertex phase_vertex_off = L / BU_SUBSTEP * (data.tag.region_id % BU_SUBSTEP);
-		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
-		LocalPacket* buffer = tlb->fold_packet;
-#ifndef NDEBUG
-		assert (buffer->length == 0);
-		assert (*process_counter == 0);
-#pragma omp barrier
-#endif
-		int tid = omp_get_thread_num();
-		int num_threads = omp_get_num_threads();
-
-#if 1 // dynamic partitioning
-		int visited_count = 0;
-		int block_width = step_bitmap_width / 40 + 1;
-		while(true) {
-			int off_start = __sync_fetch_and_add(process_counter, block_width);
-			if(off_start >= step_bitmap_width) break; // finish
-			int off_end = std::min(step_bitmap_width, off_start + block_width);
-
-			bottom_up_search_bitmap_process_block(phase_bitmap,
-					off_start, off_end, phase_bmp_off, buffer);
-
-			if(tid == 0) {
-				// process async communication
-				bottom_up_substep_->probe();
-			}
-
-			visited_count += buffer->length;
-			flush_bottom_up_send_buffer(buffer, target_rank);
-		}
-#else // static partitioning
-		int width_per_thread = (step_bitmap_width + num_threads - 1) / num_threads;
-		int off_start = std::min(step_bitmap_width, width_per_thread * tid);
-		int off_end = std::min(step_bitmap_width, off_start + width_per_thread);
-
-		bottom_up_search_bitmap_process_block(phase_bitmap,
-				off_start, off_end, phase_bmp_off, buffer);
-
-		int visited_count = buffer->length / 2;
-		flush_bottom_up_send_buffer(buffer, target_rank);
-#endif
-#pragma omp barrier
-		return visited_count;
-	}
-
-
-	void bottom_up_bmp_parallel_section(int *visited_count) {
-		int bitmap_width = get_bitmap_size_local();
-		int step_bitmap_width = bitmap_width / BU_SUBSTEP;
-		assert (work_buf_size_ >= bitmap_width * PRM::BOTTOM_UP_BUFFER);
-		int buffer_count = work_buf_size_ / (step_bitmap_width * sizeof(BitmapType));
-		BitmapType* bitmap_buffer[buffer_count];
-		get_visited_pointers(bitmap_buffer, buffer_count, work_buf_, BU_SUBSTEP);
-		BitmapType *new_vis[BU_SUBSTEP];
-		get_visited_pointers(new_vis, BU_SUBSTEP, new_visited_, BU_SUBSTEP);
-		int comm_size = mpi.size_2dc;
-		volatile int process_counter = 0;
-
-		// since the first 4 buffer contains initial data, skip this region
-		bottom_up_substep_->begin(bitmap_buffer + BU_SUBSTEP, buffer_count - BU_SUBSTEP,
-				step_bitmap_width);
-
-		BottomUpSubstepData data;
-		int total_steps = (comm_size+1)*BU_SUBSTEP;
-
-#pragma omp parallel
-		{
-			SET_OMP_AFFINITY;
-			int tid = omp_get_thread_num();
-			for(int step = 0; step < total_steps; ++step) {
-				if(tid == 0) {
-					if(step < BU_SUBSTEP) {
-						data.data = bitmap_buffer[step];
-						data.tag.length = step_bitmap_width;
-						data.tag.region_id = mpi.rank_2dc * BU_SUBSTEP + step;
-						data.tag.routed_count = 0;
-						// route is set by communication lib
-					}
-					else {
-						// receive data
-						bottom_up_substep_->recv(&data);
-					}
-					process_counter = 0;
-				}
-#pragma omp barrier
-				int target_rank = data.tag.region_id / BU_SUBSTEP;
-				if(step >= BU_SUBSTEP && target_rank == mpi.rank_2dc) {
-					// This is rounded and came here.
-					BitmapType* src = (BitmapType*)data.data;
-					BitmapType* dst = new_vis[data.tag.region_id % BU_SUBSTEP];
-#pragma omp for
-					for(int64_t i = 0; i < step_bitmap_width; ++i) {
-						dst[i] = src[i];
-					}
-#pragma omp barrier
-				}
-				else {
-				  visited_count[data.tag.routed_count + tid * comm_size] +=
-					bottom_up_search_bitmap_process_step(data, step_bitmap_width, &process_counter, target_rank);
-					if(tid == 0) {
-						if(step < BU_SUBSTEP) {
-							bottom_up_substep_->send_first(&data);
-						}
-						else {
-							bottom_up_substep_->send(&data);
-						}
-					}
-				}
-			}
-			// wait for local_visited is received.
-			if(tid == 0) {
-				bottom_up_substep_->finish();
-			}
-#pragma omp barrier
-
-		} // #pragma omp parallel
-	}
-
-	struct BottomUpBitmapParallelSection : public Runnable {
-		ThisType* this_; int* visited_count;
-		BottomUpBitmapParallelSection(ThisType* this__, int* visited_count_)
-			: this_(this__), visited_count(visited_count_) { }
-		virtual void run() { this_->bottom_up_bmp_parallel_section(visited_count); }
-	};
-
-	struct BottomUpReceiver : public Runnable {
-		BottomUpReceiver(ThisType* this_, int64_t* buffer_, int length_, int src_)
-			: this_(this_), buffer_(buffer_), length_(length_), src_(src_) { }
-		virtual void run() {
-			int P = mpi.size_2d;
-			int r_bits = this_->graph_.r_bits_;
-			int64_t r_mask = ((1 << r_bits) - 1);
-			int orig_lgl = this_->graph_.orig_local_bits_;
-			LocalVertex lmask = (LocalVertex(1) << orig_lgl) - 1;
-			int64_t cshifted = src_ * mpi.size_2dr;
-			int64_t levelshifted = int64_t(this_->current_level_) << 48;
-			int64_t* buffer = buffer_;
-			int length = length_;
-			int64_t* pred = this_->pred_;
-			for(int i = 0; i < length; ++i) {
-				int64_t v = buffer[i];
-				int64_t pred_dst = v >> orig_lgl;
-				LocalVertex tgt_local = v & lmask;
-				int64_t pred_v = ((pred_dst >> r_bits) * P +
-						cshifted + (pred_dst & r_mask)) | levelshifted;
-				assert (this_->pred_[tgt_local] == -1);
-				pred[tgt_local] = pred_v;
-			}
-		}
-		ThisType* const this_;
-		int64_t* buffer_;
-		int length_;
-		int src_;
-	};
-
 	void prepare_sssp() { }
 	void run_sssp(int64_t root, int64_t* pred) { }
 	void end_sssp() { }
 
 	// members
-	MpiBottomUpSubstepComm* bottom_up_substep_;
 	CommBufferPool a2a_comm_buf_;
 	TopDownCommHandler top_down_comm_;
 	BottomUpCommHandler bottom_up_comm_;
