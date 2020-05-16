@@ -22,7 +22,6 @@ int main(int argc, char** argv)
 	int SCALE = 16;
 	if (argc >= 2) SCALE = atoi(argv[1]);
 	setup_globals(argc, argv, SCALE, 16);
-    SET_AFFINITY;
     EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
 																 (int64_t(1) << SCALE) * 16 / mpi.size_2d, getenv("TMPFILE"));
     generate_graph_spec2010(&edge_list, SCALE, 16);
