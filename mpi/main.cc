@@ -350,20 +350,23 @@ void timer_print(double *bfs_times, const int num_bfs_roots)
   for(int i=0;i<NUM_RESIONS;i++)
     t_ave[i] /= size;
 
+  fflush(stdout);
+  MPI_Barrier(MPI_COMM_WORLD);
   if(mpi.isMaster()){
     printf("---\n");
     printf("CATEGORY :                 :   MAX    MIN    AVE   AVE/TIME\n");
-    printf("TOTAL                      : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TOTAL_TIME));
-    printf(" - TOP_DOWN                : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TD_TIME));
-    printf(" - BOTTOM_UP               : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_TIME));
-    printf("   - LOCAL_CALC            : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(CALC_TIME));
-    printf("   - TD_EXPAND(allgather)  : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TD_EXPAND_TIME));
-    printf("   - BU_EXPAND(allgather)  : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_EXPAND_TIME));
-    printf("   - TD_FOLD(alltoall)     : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(TD_FOLD_TIME));
-    printf("   - BU_FOLD(alltoall)     : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_FOLD_TIME));
-    printf("   - BU_NEIGHBOR(sendrecv) : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(BU_NBR_TIME));
-    printf("   - PROC_IMBALANCE        : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(IMBALANCE_TIME));
-    printf(" - OTHER                   : %6.3f %6.3f %6.3f (%6.3f%%)\n", CAT(OTHER_TIME));
-    fflush(stdout);
+    printf("TOTAL                      : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(TOTAL_TIME));
+    printf(" - TOP_DOWN                : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(TD_TIME));
+    printf(" - BOTTOM_UP               : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(BU_TIME));
+    printf("   - LOCAL_CALC            : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(CALC_TIME));
+    printf("   - TD_EXPAND(allgather)  : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(TD_EXPAND_TIME));
+    printf("   - BU_EXPAND(allgather)  : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(BU_EXPAND_TIME));
+    printf("   - TD_FOLD(alltoall)     : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(TD_FOLD_TIME));
+    printf("   - BU_FOLD(alltoall)     : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(BU_FOLD_TIME));
+    printf("   - BU_NEIGHBOR(sendrecv) : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(BU_NBR_TIME));
+    printf("   - PROC_IMBALANCE        : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(IMBALANCE_TIME));
+    printf(" - OTHER                   : %6.5f %6.5f %6.5f (%6.5f%%)\n", CAT(OTHER_TIME));
   }
+  fflush(stdout);
+  MPI_Barrier(MPI_COMM_WORLD);
 }
