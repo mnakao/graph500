@@ -2037,11 +2037,12 @@ public:
 	}
 	T sum(T* base_offset = NULL) {
 		const int width = buffer_width_;
+		const int max_threads = omp_get_max_threads();
 		// compute sum of thread local count values
 #pragma omp parallel for
 		for(int r = 0; r < num_partitions_; ++r) {
 			int sum = 0;
-			for(int t = 0; t < max_threads_; ++t) {
+			for(int t = 0; t < max_threads; ++t) {
 				sum += thread_counts_[t*width + r];
 			}
 			partition_size_[r] = sum;
@@ -2053,10 +2054,11 @@ public:
 				partition_offsets_[r] = base_offset[r];
 				base_offset[r] += partition_size_[r];
 			}
+
 #pragma omp parallel for
 			for(int r = 0; r < num_partitions_; ++r) {
 				thread_offsets_[0*width + r] = partition_offsets_[r];
-				for(int t = 0; t < max_threads_; ++t) {
+				for(int t = 0; t < max_threads; ++t) {
 					thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
 				}
 			}
@@ -2072,7 +2074,7 @@ public:
 	#pragma omp parallel for
 			for(int r = 0; r < num_partitions_; ++r) {
 				thread_offsets_[0*width + r] = partition_offsets_[r];
-				for(int t = 0; t < max_threads_; ++t) {
+				for(int t = 0; t < max_threads; ++t) {
 					thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
 				}
 				assert (thread_offsets_[max_threads_*width + r] == partition_offsets_[r + 1]);
@@ -2154,11 +2156,12 @@ public:
 
 	void sum() {
 		const int width = buffer_width_;
+		const int max_threads = omp_get_max_threads();
 		// compute sum of thread local count values
 #pragma omp parallel for if(comm_size_ > 1000)
 		for(int r = 0; r < comm_size_; ++r) {
 			int sum = 0;
-			for(int t = 0; t < max_threads_; ++t) {
+			for(int t = 0; t < max_threads; ++t) {
 				sum += thread_counts_[t*width + r];
 			}
 			send_counts_[r] = sum;
@@ -2173,7 +2176,7 @@ public:
 #pragma omp parallel for if(comm_size_ > 1000)
 		for(int r = 0; r < comm_size_; ++r) {
 			thread_offsets_[0*width + r] = send_offsets_[r];
-			for(int t = 0; t < max_threads_; ++t) {
+			for(int t = 0; t < max_threads; ++t) {
 				thread_offsets_[(t+1)*width + r] = thread_offsets_[t*width + r] + thread_counts_[t*width + r];
 			}
 			assert (thread_offsets_[max_threads_*width + r] == send_offsets_[r + 1]);
