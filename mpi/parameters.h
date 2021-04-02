@@ -44,16 +44,11 @@
 #define TOP_DOWN_RECV_LB 1
 #define BOTTOM_UP_OVERLAP_PFS 1
 
-// for Fugaku
 #define ENABLE_UTOFU 0
-#define FUGAKU_MPI_PRINT_STATS 0
 
-// for K computer
-#define ENABLE_FJMPI_RDMA 0
 // 0: disable, 1: 1D, 2: 2D
 #define ENABLE_MY_ALLGATHER 0
 #define ENABLE_INLINE_ATOMICS 0
-#define ENABLE_FUJI_PROF 0
 
 // root switch to on/off debug print
 #define DEBUG_PRINT 0
@@ -107,20 +102,8 @@
 
 #define SGI_OMPLACE_BUG 0
 
-#ifdef __FUJITSU
-
 #define LOW_LEVEL_FUNCTION 1
 #define STREAM_UPDATE 1
-
-//#	define ENABLE_FJMPI 1
-#     define ENABLE_FJMPI 0
-#else // #ifdef __FUJITSU
-#	define ENABLE_FJMPI 0
-#	undef ENABLE_FUJI_PROF
-#	define ENABLE_FUJI_PROF 0
-//#	undef ENABLE_FJMPI_RDMA
-//#	define ENABLE_FJMPI_RDMA 0
-#endif // #ifdef __FUJITSU
 
 #if VTRACE
 #	undef REPORT_GEN_RPGRESS

@@ -1,3 +1,4 @@
+#SW=FUGAKU
 SW =GNU3
 VAMP = false
 SCOREP = false
@@ -6,7 +7,6 @@ SCOREP = false
 LDFLAGS := -fopenmp -g # -pg
 NVCCFLAGS := -Drestrict=__restrict__ -Xcompiler -fopenmp,-ffast-math,-Wall -arch=compute_20 -code=sm_20
 
-FUGAKU_POWER_MEASUREMENT=false
 VERBOSE = false
 VERTEX_REORDERING = 2
 REAL_BENCHMARK = false
@@ -21,11 +21,6 @@ REAL_BENCHMARK_OPT =
 else
 REAL_BENCHMARK_OPT = -DREAL_BENCHMARK
 endif
-ifeq ($(FUGAKU_POWER_MEASUREMENT), true)
-FUGAKU_POWER_CFLAGS=-D_FUGAKU_POWER_MEASUREMENT
-FUGAKU_POWER_CLINK=-lpwr
-endif
-
 
 GCC_BASE := -fopenmp -g -Wall -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -ffast-math $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT) # -pg
 FCC_BASE := -Kopenmp -Xg -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -g #-Nquickdbg=heapchk # -Koptmsg=2
@@ -41,64 +36,16 @@ CFLAGS := $(GCC_BASE) -O3 -DNDEBUG -DPROFILE_REGIONS
 NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LIBS := $(LIBS) -lnuma
 endif
-ifeq ($(SW), GNU0)
-CFLAGS := $(GCC_BASE) -O0
-#NVCCFLAGS := $(NVFLAG_BASE) -g -G -O0
-NVCCFLAGS := $(NVFLAG_BASE) -g -O0
-LIBS := $(LIBS) -lnuma
-endif
-ifeq ($(SW), FUJI3)
-ifeq ($(PJM_JOBNAME), STDIN)
-MPICC := mpifcc
-MPICPP := mpiFCC
-else
-MPICC := mpifccpx
-MPICPP := mpiFCCpx
-endif
-CFLAGS := $(FCC_BASE) -Kfast -Klargepage -O3 -DNDEBUG
-LDFLAGS := $(CFLAGS)
-endif
-ifeq ($(SW), FUJI0)
-ifeq ($(PJM_JOBNAME), STDIN)
-MPICC := mpifcc
-MPICPP := mpiFCC
-else
-MPICC := mpifccpx
-MPICPP := mpiFCCpx
-endif
-CFLAGS := $(FCC_BASE) -g -O0
-LDFLAGS := $(CFLAGS)
-endif
+
 ifeq ($(SW), FUGAKU)
 MPICC := mpifccpx
 MPICPP := mpiFCCpx
 FCC_BASE := -Kopenmp -Drestrict=__restrict__  $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT)
-CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG -DPROFILE_REGIONS $(FUGAKU_POWER_CFLAGS)
-LDFLAGS := $(CFLAGS) -Nfjomplib $(FUGAKU_POWER_CLINK)
+CFLAGS := $(FCC_BASE) -Kfast -DNDEBUG -DPROFILE_REGIONS
+LDFLAGS := $(CFLAGS) -Nfjomplib
 #LDFLAGS := $(CFLAGS)
 endif
 
-ifeq ($(SW), UVGNU3)
-MPICC := mpicc-gcc4.7
-MPICPP := mpicxx-gcc4.7
-CFLAGS := $(GCC_BASE) -O3 -DNDEBUG
-LIBS := $(LIBS) -lnuma -lmpi
-endif
-ifeq ($(SW), UVGNU0)
-MPICC := mpicc-gcc4.7
-MPICPP := mpicxx-gcc4.7
-CFLAGS := $(GCC_BASE) -O0
-LIBS :=  $(LIBS) -lnuma -lmpi
-endif
-#ifeq ($(SW), INTEL3)
-#MPICC := icc
-#MPICPP := icpc
-#CFLAGS := -ipo -no-prec-div -openmp -g3 -Drestrict=__restrict__ -O3 -DNDEBUG
-##CFLAGS := -ipo -openmp -g3 -Drestrict=__restrict__ -O2 -DNDEBUG
-#NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
-#LDFLAGS := -openmp -g
-#LIBS := $(LIBS) -lnuma -lmpi
-#endif
 ifeq ($(SW), INTEL3)
 MPICC := mpiicc
 MPICPP := mpiicpc
@@ -107,34 +54,6 @@ CFLAGS := -ipo -no-prec-div -qopenmp -g3 -Drestrict=__restrict__ -O3 -DNDEBUG $(
 NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LDFLAGS := -qopenmp -g
 LIBS := $(LIBS) -lnuma -lmpi
-endif
-ifeq ($(SW), INTEL0)
-MPICC := icc
-MPICPP := icpc
-CFLAGS := -ipo -no-prec-div -openmp -g3 -Drestrict=__restrict__ -O0
-NVCCFLAGS := $(NVFLAG_BASE) -g -G -O0
-LDFLAGS := -openmp -g
-LIBS := $(LIBS) -lnuma -lmpi
-endif
-ifeq ($(SW), FXGNU3)
-MPICC := gcc
-MPICPP := g++
-CFLAGS := -fopenmp -g -Wall -Drestrict=__restrict__ -O3 -DNDEBUG -ffast-math # -g -pg
-NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
-LDFLAGS := -fopenmp -g # -g -pg
-INC := $(INC) -I/opt/FJSVtclang/GM-1.2.0-16/include/mpi/fujitsu
-LIBS := -L/opt/FJSVtclang/GM-1.2.0-16/lib64 -lm -lmpi -lmpi_cxx #-ltrt -ltrtmetcpp -ltrtmet_c
-endif
-ifeq ($(SW), FXGNU0)
-MPICC := gcc
-MPICPP := g++
-CFLAGS := -fopenmp -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
-#CFLAGS := -g3 -Wall -Drestrict=__restrict__ -O0 -ffast-math
-#NVCCFLAGS := $(NVFLAG_BASE) -g -G -O0
-NVCCFLAGS := $(NVFLAG_BASE) -g -O0
-LDFLAGS := -fopenmp -g # -g -pg
-INC := $(INC) -I/opt/FJSVtclang/GM-1.2.0-16/include/mpi/fujitsu
-LIBS := -L/opt/FJSVtclang/GM-1.2.0-16/lib64 -lm -lmpi -lmpi_cxx #-ltrt -ltrtmetcpp -ltrtmet_c
 endif
 
 ifeq ($(VAMP), true)

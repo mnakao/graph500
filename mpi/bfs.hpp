@@ -1,10 +1,3 @@
-/*
- * bfs.hpp
- *
- *  Created on: Mar 5, 2012
- *      Author: koji
- */
-
 #ifndef BFS_HPP_
 #define BFS_HPP_
 #include <pthread.h>
@@ -18,7 +11,6 @@ int current_fold = TD_FOLD_TIME;
 #include "fiber.hpp"
 #include "abstract_comm.hpp"
 #include "mpi_comm.hpp"
-#include "fjmpi_comm.hpp"
 #include "bottom_up_comm.hpp"
 
 #include "low_level_func.h"
@@ -2581,8 +2573,6 @@ public:
 		PRINT_VAL("%d", PROFILING_MODE);
 		PRINT_VAL("%d", DEBUG_PRINT);
 		PRINT_VAL("%d", REPORT_GEN_RPGRESS);
-		PRINT_VAL("%d", ENABLE_FJMPI_RDMA);
-		PRINT_VAL("%d", ENABLE_FUJI_PROF);
 		PRINT_VAL("%d", ENABLE_MY_ALLGATHER);
 		PRINT_VAL("%d", ENABLE_INLINE_ATOMICS);
 
@@ -2717,10 +2707,6 @@ public:
 void BfsBase::run_bfs(int64_t root, int64_t* pred)
 {
 	SET_AFFINITY;
-#if ENABLE_FUJI_PROF
-	fapp_start("initialize", 0, 0);
-	start_collection("initialize");
-#endif
 	TRACER(run_bfs);
 	pred_ = pred;
 #if VERVOSE_MODE
@@ -2763,12 +2749,6 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	expand_time += cur_expand_time; prev_time = tmp;
 #endif
 
-#if ENABLE_FUJI_PROF
-	stop_collection("initialize");
-	fapp_stop("initialize", 0, 0);
-	char *prof_mes[] = { "bottom-up", "top-down" };
-#endif
-
 	while(true) {
 #ifdef PROFILE_REGIONS
 	  current_expand = (forward_or_backward_)? TD_EXPAND_TIME : BU_EXPAND_TIME;
@@ -2780,10 +2760,6 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		num_td_large_edge_ = 0;
 		num_edge_bottom_up_ = 0;
 #endif // #if VERVOSE_MODE
-#if ENABLE_FUJI_PROF
-		fapp_start(prof_mes[(int)forward_or_backward_], 0, 0);
-		start_collection(prof_mes[(int)forward_or_backward_]);
-#endif
 		TRACER(level);
 		// search phase //
 		int64_t prev_global_nq_size = global_nq_size_;
@@ -2869,17 +2845,9 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		num_edge_bottom_up_ = recv_num_edges[2];
 #endif // #if PROFILING_MODE
 #endif // #if VERVOSE_MODE
-#if ENABLE_FUJI_PROF
-		stop_collection(prof_mes[(int)forward_or_backward_]);
-		fapp_stop(prof_mes[(int)forward_or_backward_], 0, 0);
-#endif
 #if !VERVOSE_MODE
 		if(global_nq_size_ == 0)
 			break;
-#endif
-#if ENABLE_FUJI_PROF
-		fapp_start("expand", 0, 0);
-		start_collection("expand");
 #endif
 		int64_t global_unvisited_vertices = graph_.num_global_verts_ - global_visited_vertices;
 		next_bitmap_or_list = !forward_or_backward_;
@@ -2996,10 +2964,6 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		  timer_stop(BU_TIME);
 #endif
 
-#if ENABLE_FUJI_PROF
-		stop_collection("expand");
-		fapp_stop("expand", 0, 0);
-#endif
 #if VERVOSE_MODE
 		tmp = MPI_Wtime();
 		cur_expand_time = tmp - prev_time;
