@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 #SW=FUGAKU
-=======
->>>>>>> 6922983e525a53fca494700db68b1f5307246b7c
 SW =GNU3
 VAMP = false
 SCOREP = false

@@ -44,13 +44,7 @@
 #define TOP_DOWN_RECV_LB 1
 #define BOTTOM_UP_OVERLAP_PFS 1
 
-<<<<<<< HEAD
 #define ENABLE_UTOFU 0
-=======
-// for Fugaku
-#define ENABLE_UTOFU 0
-#define FUGAKU_MPI_PRINT_STATS 0
->>>>>>> 6922983e525a53fca494700db68b1f5307246b7c
 
 // 0: disable, 1: 1D, 2: 2D
 #define ENABLE_MY_ALLGATHER 0
