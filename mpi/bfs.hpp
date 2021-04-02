@@ -501,19 +501,8 @@ public:
 #ifdef PROFILE_REGIONS
 			timer_start(current_expand);
 #endif
-#if ENABLE_MY_ALLGATHER
-			if(mpi.isYdimAvailable()) {
-				if(mpi.isMaster()) print_with_prefix("Error: MY_ALLGATHER does not support shared memory Y dimension.");
-			}
-#if ENABLE_MY_ALLGATHER == 1
-		MpiCol::my_allgather(bitmap, shared_bitmap_width, recv_buffer, mpi.comm_c);
-#else
-		my_allgather_2d(bitmap, shared_bitmap_width, recv_buffer, mpi.comm_c);
-#endif // #if ENABLE_MY_ALLGATHER == 1
-#else
 			MPI_Allgather(bitmap, shared_bitmap_width, get_mpi_type(bitmap[0]),
 					recv_buffer, shared_bitmap_width, get_mpi_type(bitmap[0]), mpi.comm_y);
-#endif
 
 #ifdef PROFILE_REGIONS
 			timer_stop(current_expand);
@@ -530,19 +519,9 @@ public:
 #ifdef PROFILE_REGIONS
 		timer_start(current_expand);
 #endif
-#if ENABLE_MY_ALLGATHER
-		if(mpi.isYdimAvailable()) {
-			if(mpi.isMaster()) print_with_prefix("Error: MY_ALLGATHER does not support shared memory Y dimension.");
-		}
-#if ENABLE_MY_ALLGATHER == 1
-	MpiCol::my_allgather(bitmap, bitmap_width, recv_buffer, mpi.comm_r);
-#else
-	my_allgather_2d(bitmap, bitmap_width, recv_buffer, mpi.comm_r);
-#endif // #if ENABLE_MY_ALLGATHER == 1
-#else
 		MPI_Allgather(bitmap, bitmap_width, get_mpi_type(bitmap[0]),
 				recv_buffer, bitmap_width, get_mpi_type(bitmap[0]), mpi.comm_2dr);
-#endif
+
 #ifdef PROFILE_REGIONS
 		timer_stop(current_expand);
 #endif
@@ -634,14 +613,8 @@ public:
 #ifdef PROFILE_REGIONS
 		timer_start(current_expand);
 #endif
-#if ENABLE_MY_ALLGATHER == 1
-		MpiCol::my_allgatherv(nq, nq_size, recv_buf, recv_size, recv_off, mpi.comm_r);
-#elif ENABLE_MY_ALLGATHER == 2
-		my_allgatherv_2d(nq, nq_size, recv_buf, recv_size, recv_off, mpi.comm_r);
-#else
 		MPI_Allgatherv(nq, nq_size, MpiTypeOf<TwodVertex>::type,
 				recv_buf, recv_size, recv_off, MpiTypeOf<TwodVertex>::type, mpi.comm_r.comm);
-#endif
 #ifdef PROFILE_REGIONS
 		timer_stop(current_expand);
 #endif
@@ -2243,10 +2216,8 @@ public:
 		PRINT_VAL("%d", PRINT_BINDING);
 		PRINT_VAL("%d", SHARED_MEMORY);
 
-		PRINT_VAL("%d", MPI_FUNNELED);
 		PRINT_VAL("%d", DEBUG_PRINT);
 		PRINT_VAL("%d", REPORT_GEN_RPGRESS);
-		PRINT_VAL("%d", ENABLE_MY_ALLGATHER);
 		PRINT_VAL("%d", ENABLE_INLINE_ATOMICS);
 
 		PRINT_VAL("%d", BFELL);

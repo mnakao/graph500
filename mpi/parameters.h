@@ -27,9 +27,6 @@
 #define BOTTOM_UP_OVERLAP_PFS 1
 
 #define ENABLE_UTOFU 0
-
-// 0: disable, 1: 1D, 2: 2D
-#define ENABLE_MY_ALLGATHER 0
 #define ENABLE_INLINE_ATOMICS 0
 
 // root switch to on/off debug print
