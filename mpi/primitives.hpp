@@ -1,10 +1,3 @@
-/*
- * primitives.hpp
- *
- *  Created on: Dec 14, 2011
- *      Author: koji
- */
-
 #ifndef PRIMITIVES_HPP_
 #define PRIMITIVES_HPP_
 

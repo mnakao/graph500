@@ -1,13 +1,5 @@
-/*
- * logfile.h
- *
- *  Created on: 2012/10/27
- *      Author: ueno
- */
-
 #ifndef LOGFILE_H_
 #define LOGFILE_H_
-
 
 static int compare_doubles(const void* a, const void* b) {
   double aa = *(const double*)a;

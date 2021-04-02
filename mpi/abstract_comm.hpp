@@ -62,7 +62,6 @@ public:
 		, buffer_provider_(buffer_provider_)
 		, scatter_(comm_)
 	{
-		CTRACER(AsyncA2A_construtor);
 		MPI_Comm_size(comm_, &comm_size_);
 		node_ = new CommTarget[comm_size_]();
 		d_ = new DynamicDataSet();
@@ -74,7 +73,6 @@ public:
 	}
 
 	void prepare() {
-		CTRACER(prepare);
 		debug("prepare idx=%d", sub_comm);
 		for(int i = 0; i < comm_size_; ++i) {
 			node_[i].reserved_size_ = node_[i].filled_size_ = buffer_size_;
@@ -90,7 +88,6 @@ public:
 	 */
 	void put(void* ptr, int length, int target)
 	{
-		CTRACER(comm_send);
 		if(length == 0) {
 			assert(length > 0);
 			return ;
@@ -139,7 +136,6 @@ public:
 		const int MINIMUM_POINTER_SPACE = 40;
 
 		for(int loop = 0; ; ++loop) {
-			USER_START(a2a_merge);
 #pragma omp parallel
 			{
 				int* counts = scatter_.get_counts();
@@ -227,13 +223,11 @@ public:
 					node.send_data.clear();
 				} // #pragma omp for schedule(static)
 			} // #pragma omp parallel
-			USER_END(a2a_merge);
 
 			void* sendbuf = buffer_provider_->second_buffer();
 			void* recvbuf = buffer_provider_->clear_buffers();
 			MPI_Datatype type = buffer_provider_->data_type();
 			int recvbufsize = buffer_provider_->max_size();
-			USER_START(a2a_comm);
 #ifdef PROFILE_REGIONS
 			timer_start(current_fold);
 #endif
@@ -241,7 +235,6 @@ public:
 #ifdef PROFILE_REGIONS
 			timer_stop(current_fold);
 #endif
-			USER_END(a2a_comm);
 
 			int* recv_offsets = scatter_.get_recv_offsets();
 
@@ -265,7 +258,6 @@ public:
 	void run() {
 		// merge
 		int es = buffer_provider_->element_size();
-		USER_START(a2a_merge);
 #pragma omp parallel
 		{
 			int* counts = scatter_.get_counts();
@@ -299,13 +291,11 @@ public:
 				node.send_data.clear();
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
-		USER_END(a2a_merge);
 
 		void* sendbuf = buffer_provider_->second_buffer();
 		void* recvbuf = buffer_provider_->clear_buffers();
 		MPI_Datatype type = buffer_provider_->data_type();
 		int recvbufsize = buffer_provider_->max_size();
-		USER_START(a2a_comm);
 #ifdef PROFILE_REGIONS
         timer_start(current_fold);
 #endif
@@ -313,8 +303,6 @@ public:
 #ifdef PROFILE_REGIONS
         timer_stop(current_fold);
 #endif
-		USER_END(a2a_comm);
-
 		int* recv_offsets = scatter_.get_recv_offsets();
 
 #pragma omp parallel for schedule(dynamic,1)
@@ -349,7 +337,6 @@ private:
 	}
 
 	void* get_send_buffer() {
-		CTRACER(get_send_buffer);
 		pthread_mutex_lock(&d_->thread_sync_);
 		void* ret = buffer_provider_->get_buffer();
 		pthread_mutex_unlock(&d_->thread_sync_);

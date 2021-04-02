@@ -1,10 +1,3 @@
-/*
- * low_level_func.c
- *
- *  Created on: 2012/10/17
- *      Author: ueno
- */
-
 #ifndef __STDC_CONSTANT_MACROS
 #define __STDC_CONSTANT_MACROS
 #endif

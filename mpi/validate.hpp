@@ -1,9 +1,3 @@
-/*
- * validate.hpp
- *
- *  Created on: Mar 2, 2012
- *      Author: koji
- */
 /* Copyright (C) 2010-2011 The Trustees of Indiana University.             */
 /*                                                                         */
 /* Use, modification and distribution is subject to the Boost Software     */

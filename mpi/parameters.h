@@ -68,7 +68,6 @@
 
 #define PRE_EXEC_TIME 0 // 0 or 600 seconds
 
-#define BACKTRACE_ON_SIGNAL 0
 #define PRINT_BT_SIGNAL SIGTRAP
 
 // org = 1000
@@ -93,11 +92,6 @@
 
 #define LOW_LEVEL_FUNCTION 1
 #define STREAM_UPDATE 1
-
-#if VTRACE
-#	undef REPORT_GEN_RPGRESS
-#	define REPORT_GEN_RPGRESS 0
-#endif // #if VTRACE
 
 #if BFELL
 #	undef ISOLATE_FIRST_EDGE

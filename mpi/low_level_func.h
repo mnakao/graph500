@@ -1,10 +1,3 @@
-/*
- * low_level_func.h
- *
- *  Created on: 2012/10/17
- *      Author: ueno
- */
-
 #ifndef LOW_LEVEL_FUNC_H_
 #define LOW_LEVEL_FUNC_H_
 

@@ -491,7 +491,6 @@ public:
 
 	// expand visited bitmap and receive the shared visited
 	void expand_visited_bitmap() {
-		TRACER(expand_vis_bmp);
 		int bitmap_width = get_bitmap_size_local();
 		if(mpi.isYdimAvailable()) s_.sync->barrier();
 		if(mpi.rank_z == 0 && mpi.comm_y != MPI_COMM_NULL) {
@@ -525,7 +524,6 @@ public:
 
 	// expand visited bitmap and receive the current queue
 	void expand_nq_bitmap() {
-		TRACER(expand_vis_bmp);
 		int bitmap_width = get_bitmap_size_local();
 		BitmapType* const bitmap = (BitmapType*)new_visited_;
 		BitmapType* recv_buffer = shared_visited_;
@@ -551,7 +549,6 @@ public:
 	}
 
 	int expand_visited_list(int node_nq_size) {
-		TRACER(expand_vis_list);
 		if(mpi.rank_z == 0 && mpi.comm_y != MPI_COMM_NULL) {
 #ifdef PROFILE_REGIONS
 		  timer_start(current_expand);
@@ -567,7 +564,6 @@ public:
 	}
 
 	int top_down_make_nq_list(bool with_z, TwodVertex shifted_rc, int bitmap_width, TwodVertex* outbuf) {
-		TRACER(td_make_nq_list);
 		int size_z = with_z ? mpi.size_z : 1;
 		int rank_z = with_z ? mpi.rank_z : 0;
 
@@ -622,7 +618,6 @@ public:
 	}
 
 	void top_down_expand_nq_list(TwodVertex* nq, int nq_size) {
-		TRACER(td_expand_nq_list);
 		int comm_size = mpi.comm_r.size;
 		int recv_size[comm_size];
 		int recv_off[comm_size+1];
@@ -654,7 +649,6 @@ public:
 	}
 
 	void top_down_expand() {
-		TRACER(td_expand);
 		// expand NQ within a processor column
 		// convert NQ to a SRC format
 		TwodVertex shifted_c = TwodVertex(mpi.rank_2dc) << graph_.local_bits_;
@@ -666,7 +660,6 @@ public:
 	}
 
 	void top_down_switch_expand(bool bitmap_or_list) {
-		TRACER(td_sw_expand);
 		// expand NQ within a processor row
 		if(bitmap_or_list) {
 		  // bitmap
@@ -740,7 +733,6 @@ public:
 	};
 
 	int bottom_up_make_nq_list(bool with_z, TwodVertex shifted_rc, TwodVertex* outbuf) {
-		TRACER(bu_make_nq_list);
 		const int bitmap_width = get_bitmap_size_local();
 		int node_nq_size;
 
@@ -826,7 +818,6 @@ public:
 	}
 
   void bottom_up_expand_nq_list() {
-		TRACER(bu_expand_nq_list);
 		assert (mpi.isYdimAvailable() || (visited_buffer_orig_ == visited_buffer_));
 		int lgl = graph_.local_bits_;
 		int L = graph_.num_local_verts_;
@@ -856,7 +847,6 @@ public:
 	}
 
 	void bottom_up_expand(bool bitmap_or_list) {
-		TRACER(bu_expand);
 		if(bitmap_or_list) {
 			// bitmap
 			assert (bitmap_or_list_);
@@ -869,7 +859,6 @@ public:
 	}
 
 	void bottom_up_switch_expand(bool bitmap_or_list) {
-		TRACER(bu_sw_expand);
 		if(bitmap_or_list) {
 			// new_visited - old_visited = nq
 			const int bitmap_width = get_bitmap_size_local();
@@ -944,7 +933,6 @@ public:
 	}
 
 	void top_down_parallel_section(bool bitmap_or_list) {
-		TRACER(td_par_sec);
 		bool clear_packet_buffer = packet_buffer_is_dirty_;
 		packet_buffer_is_dirty_ = false;
 
@@ -1089,8 +1077,6 @@ public:
 	}
 
 	void top_down_search() {
-		TRACER(td);
-
 		td_comm_.prepare();
 		top_down_parallel_section(bitmap_or_list_);
 		td_comm_.run_with_ptr();
@@ -1129,7 +1115,6 @@ public:
 
 #pragma omp parallel
 		{
-			TRACER(td_recv);
 			int tid = omp_get_thread_num();
 			ThreadLocalBuffer* tlb = thread_local_buffer_[tid];
 			QueuedVertexes* buf = tlb->cur_buffer;
@@ -1198,8 +1183,6 @@ public:
 
 	template <bool growing>
 	void top_down_receive(uint32_t* stream, int length, TopDownRow* rows, volatile int* num_rows) {
-		TRACER(td_recv);
-
 		ThreadLocalBuffer* tlb = thread_local_buffer_[omp_get_thread_num()];
 		QueuedVertexes* buf = tlb->cur_buffer;
 		if(buf == NULL) buf = nq_empty_buffer_.get();
@@ -1388,7 +1371,6 @@ public:
 	}
 
 	void flush_bottom_up_send_buffer(LocalPacket* buffer, int target_rank) {
-		TRACER(flush);
 		int bulk_send_size = BottomUpCommHandler::BUF_SIZE;
 		for(int offset = 0; offset < buffer->length; offset += bulk_send_size) {
 			int length = std::min(buffer->length - offset, bulk_send_size);
@@ -1404,7 +1386,6 @@ public:
 			TwodVertex phase_bmp_off,
 			TwodVertex half_bitmap_width)
 	{
-		USER_START(bu_bmp_step);
 		struct BottomUpRow {
 			SortIdx orig, sorted;
 		};
@@ -1507,7 +1488,6 @@ public:
 			visited_count += nq_.stack_[i]->length;
 		}
 #endif
-		USER_END(bu_bmp_step);
 #pragma omp barrier
 		return visited_count;
 	}
@@ -1522,7 +1502,6 @@ public:
 			TwodVertex half_bitmap_width,
 			int* th_offset)
 	{
-		TRACER(bu_list_step);
 		int target_rank = phase_bmp_off / half_bitmap_width / 2;
 
 		int tmp_num_blocks = 0;
@@ -1543,7 +1522,6 @@ public:
 
 		int64_t begin, end;
 		get_partition(phase_size, phase_list, LOG_BFELL_SORT, max_threads, tid, begin, end);
-		USER_START(bu_list_proc);
 		for(int i = begin; i < end; ) {
 			int blk_i_start = i;
 			TwodVertex blk_idx = phase_list[i] >> LOG_BFELL_SORT;
@@ -1619,12 +1597,10 @@ public:
 			}
 		}
 		th_offset[tid+1] = num_enabled;
-		USER_END(bu_list_proc);
 		// TODO: measure wait time
 #pragma omp barrier
 #pragma omp master
 		{
-			TRACER(bu_list_single);
 			th_offset[0] = 0;
 			for(int i = 0; i < max_threads; ++i) {
 				th_offset[i+1] += th_offset[i];
@@ -1632,8 +1608,6 @@ public:
 			assert (th_offset[max_threads] <= int(phase_size));
 		}
 #pragma omp barrier
-
-		USER_START(bu_list_write);
 		// make new list to send
 		int offset = th_offset[tid];
 
@@ -1643,7 +1617,6 @@ public:
 			}
 		}
 
-		USER_END(bu_list_write);
 #if !STREAM_UPDATE
 		tlb->cur_buffer = buf;
 #endif
@@ -1784,8 +1757,6 @@ public:
 			volatile int* process_counter,
 			int target_rank)
 	{
-		USER_START(bu_bmp_step);
-
 		BitmapType* phase_bitmap = (BitmapType*)data.data;
 		int phase_bmp_off = data.tag.region_id * step_bitmap_width;
 		//TwodVertex L = graph_.num_local_verts_;
@@ -1836,7 +1807,6 @@ public:
 		flush_bottom_up_send_buffer(buffer, target_rank);
 
 #endif
-		USER_END(bu_bmp_step);
 #pragma omp barrier
 		return visited_count;
 	}
@@ -1850,7 +1820,6 @@ public:
 			TwodVertex step_bitmap_width,
 			int* th_offset)
 	{
-		TRACER(bu_list_step);
 		int max_threads = omp_get_num_threads();
 		TwodVertex* phase_list = (TwodVertex*)data.data;
 		TwodVertex phase_bmp_off = data.tag.region_id * step_bitmap_width;
@@ -1869,7 +1838,6 @@ public:
 		int64_t begin, end;
 		get_partition(data.tag.length, phase_list, LOG_BFELL_SORT, max_threads, tid, begin, end);
 		int num_enabled = end - begin;
-		USER_START(bu_list_proc);
 		for(int i = begin; i < end; ) {
 			TwodVertex blk_idx = phase_list[i] >> LOG_BFELL_SORT;
 			TwodVertex* phase_row_sums = graph_.row_sums_ + phase_bmp_off;
@@ -1916,11 +1884,9 @@ public:
 		}
 		buffer->length = num_send;
 		th_offset[tid+1] = num_enabled;
-		USER_END(bu_list_proc);
 #pragma omp barrier
 #pragma omp master
 		{
-			TRACER(bu_list_single);
 			th_offset[0] = 0;
 			for(int i = 0; i < max_threads; ++i) {
 				th_offset[i+1] += th_offset[i];
@@ -1929,7 +1895,6 @@ public:
 		}
 #pragma omp barrier
 
-		USER_START(bu_list_write);
 		// make new list to send
 		int offset = th_offset[tid];
 
@@ -1939,7 +1904,6 @@ public:
 			}
 		}
 
-		USER_END(bu_list_write);
 		flush_bottom_up_send_buffer(buffer, target_rank);
 #pragma omp barrier
 		return data.tag.length - th_offset[max_threads];
@@ -1952,7 +1916,6 @@ public:
 	  MPI_Barrier(mpi.comm_2d);
 	  timer_stop(IMBALANCE_TIME);
 #endif
-		TRACER(bu_gather_info);
 #if 1 // which one is faster ?
 		int recv_count[mpi.size_2dc]; for(int i = 0; i < mpi.size_2dc; ++i) recv_count[i] = 1;
 		MPI_Reduce_scatter(visited_count, &nq_size_, recv_count, MPI_INT, MPI_SUM, mpi.comm_2dr);
@@ -2085,7 +2048,6 @@ public:
 	};
 
 	void bottom_up_search_bitmap() {
-		TRACER(bu_bmp);
 		int max_threads = omp_get_max_threads();
 		int comm_size = mpi.size_2dc;
 		int visited_count[comm_size*max_threads];
@@ -2215,8 +2177,6 @@ public:
 	}
 
   void bottom_up_search_list() {
-		TRACER(bu_list);
-
 		int half_bitmap_width = get_bitmap_size_local() / 2;
 		int buffer_size = half_bitmap_width * sizeof(BitmapType) / sizeof(TwodVertex);
 		// TODO: reduce memory allocation
@@ -2238,7 +2198,6 @@ public:
 		BottomUpReceiver(ThisType* this_, int64_t* buffer_, int length_, int src_)
 			: this_(this_), buffer_(buffer_), length_(length_), src_(src_) { }
 		virtual void run() {
-			TRACER(bu_recv);
 			int P = mpi.size_2d;
 			int r_bits = this_->graph_.r_bits_;
 			int64_t r_mask = ((1 << r_bits) - 1);
@@ -2306,10 +2265,6 @@ public:
 
 		PRINT_VAL("%d", PRE_EXEC_TIME);
 
-		PRINT_VAL("%d", BACKTRACE_ON_SIGNAL);
-#if BACKTRACE_ON_SIGNAL
-		PRINT_VAL("%d", PRINT_BT_SIGNAL);
-#endif
 		PRINT_VAL("%d", PACKET_LENGTH);
 		PRINT_VAL("%d", COMM_BUFFER_SIZE);
 		PRINT_VAL("%d", SEND_BUFFER_LIMIT);
@@ -2399,7 +2354,6 @@ public:
 void BfsBase::run_bfs(int64_t root, int64_t* pred)
 {
 	SET_AFFINITY;
-	TRACER(run_bfs);
 	pred_ = pred;
 	initialize_memory(pred);
 	bool next_forward_or_backward = true; // begin with forward search
@@ -2427,7 +2381,6 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	  current_fold   = (forward_or_backward_)? TD_FOLD_TIME   : BU_FOLD_TIME;
 #endif
 		++current_level_;
-		TRACER(level);
 		// search phase //
 		int64_t prev_global_nq_size = global_nq_size_;
 //		bool prev_forward_or_backward = forward_or_backward_;

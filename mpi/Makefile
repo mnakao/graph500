@@ -1,7 +1,5 @@
 #SW=FUGAKU
 SW =GNU3
-VAMP = false
-SCOREP = false
 
 # default values
 LDFLAGS := -fopenmp -g # -pg
@@ -48,15 +46,6 @@ CFLAGS := -ipo -no-prec-div -qopenmp -g3 -Drestrict=__restrict__ -O3 -DNDEBUG $(
 NVCCFLAGS := $(NVFLAG_BASE) -g -O3 -DNDEBUG -keep
 LDFLAGS := -qopenmp -g
 LIBS := $(LIBS) -lnuma -lmpi
-endif
-
-ifeq ($(VAMP), true)
-MPICC := vtcc -vt:cc $(MPICC) -vt:inst manual -vt:hyb -DVTRACE
-MPICPP := vtcc -vt:cc $(MPICPP) -vt:inst manual -vt:hyb -DVTRACE
-endif
-ifeq ($(SCOREP), true)
-MPICC := scorep --nocompiler --user --static $(MPICC) -DSCOREP
-MPICPP := scorep --nocompiler --user --static $(MPICPP) -DSCOREP
 endif
 
 CPPFLAGS := $(CFLAGS)

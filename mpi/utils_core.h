@@ -1,16 +1,8 @@
-/*
- * utils_fwd.h
- *
- *  Created on: Dec 15, 2011
- *      Author: koji
- */
 
 #ifndef UTILS_HPP_
 #define UTILS_HPP_
-
 #include <stdint.h>
 #include <assert.h>
-
 
 // for sorting
 #include <algorithm>

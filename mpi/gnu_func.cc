@@ -1,10 +1,3 @@
-/*
- * gnu_func.c
- *
- *  Created on: Apr 6, 2012
- *      Author: koji
- */
-
 #include <stdint.h>
 
 int32_t my_sync_fetch_and_add(volatile int32_t* ptr, int32_t n) {
