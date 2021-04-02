@@ -149,9 +149,6 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 	const int64_t num_global_chunks = (num_global_edges + EdgeList::CHUNK_SIZE - 1) / EdgeList::CHUNK_SIZE;
 	const int64_t num_iterations = (num_global_chunks + mpi.size_2d - 1) / mpi.size_2d;
 	double logging_time = MPI_Wtime();
-#if REPORT_GEN_RPGRESS
-	ProgressReport* report = new ProgressReport(num_iterations);
-#endif
 	if(mpi.isMaster()) {
 		double global_data_size = (double)num_global_edges * 16.0 / 1000000000.0;
 		double local_data_size = global_data_size / mpi.size_2d;
@@ -163,9 +160,7 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 		print_with_prefix("Communication chunk size: %d", EdgeList::CHUNK_SIZE);
 		print_with_prefix("Generating graph: Total number of iterations: %" PRId64 "", num_iterations);
 	}
-#if REPORT_GEN_RPGRESS
-	report->begin_progress();
-#endif
+
 #pragma omp parallel
 	for(int64_t i = 0; i < num_iterations; ++i) {
 		SET_OMP_AFFINITY;
@@ -185,17 +180,11 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 				print_with_prefix("Time for iteration %" PRId64 " is %f ", i, MPI_Wtime() - logging_time);
 				logging_time = MPI_Wtime();
 			}
-#if REPORT_GEN_RPGRESS
-			report->advace();
-#endif
 		}
 #pragma omp barrier
 
 	}
-#if REPORT_GEN_RPGRESS
-	report->end_progress();
-	delete report; report = NULL;
-#endif
+
 	edge_list->endWrite();
 	free(edge_buffer);
 	if(mpi.isMaster()) print_with_prefix("Finished generating.");

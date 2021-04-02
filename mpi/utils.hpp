@@ -810,14 +810,6 @@ void internal_set_core_affinity(int cpu) {
 
 void* empty_function(void*) { return NULL; }
 
-void launch_dummy_thread(int num_dummy_threads) {
-	for(int i = 0; i < num_dummy_threads; ++i) {
-		pthread_t thread;
-		pthread_create(&thread, NULL, empty_function, NULL);
-		pthread_join(thread, NULL);
-	}
-}
-
 /**
  * This function obtain the current core binding
  * and returns the cpu set the threads are bound to
@@ -833,10 +825,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 	cpu_set.resize(total_threads, 0);
 	bool core_affinity = false, process_affinity = false;
 	int num_procs = sysconf(_SC_NPROCESSORS_CONF);
-
-#if SGI_OMPLACE_BUG
-	launch_dummy_thread(1);
-#endif // #if SGI_OMPLACE_BUG
 
 #pragma omp parallel num_threads(num_omp_threads) reduction(|:core_affinity, process_affinity)
 	{

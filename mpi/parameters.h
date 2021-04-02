@@ -11,7 +11,6 @@
 
 // General Settings
 #define PRINT_WITH_TIME 1
-#define REPORT_GEN_RPGRESS 0
 
 // General Optimizations
 // 0: completely off, 1: only reduce isolated vertices, 2: sort by degree and reduce isolated vertices
@@ -44,7 +43,6 @@
 
 #define PRINT_BT_SIGNAL SIGTRAP
 
-// org = 1000
 //#define DENOM_TOPDOWN_TO_BOTTOMUP 2000.0
 #define DENOM_TOPDOWN_TO_BOTTOMUP 15000.0
 #define DEMON_BOTTOMUP_TO_TOPDOWN 8.0
@@ -61,8 +59,6 @@
 
 #define NETWORK_PROBLEM_AYALISYS 0
 #define WITH_VALGRIND 0
-
-#define SGI_OMPLACE_BUG 0
 
 #define LOW_LEVEL_FUNCTION 1
 #define STREAM_UPDATE 1
