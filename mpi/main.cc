@@ -29,10 +29,7 @@
 #include "validate.hpp"
 #include "benchmark_helper.hpp"
 #include "bfs.hpp"
-#include "bfs_cpu.hpp"
-#if CUDA_ENABLED
-#include "bfs_gpu.hpp"
-#endif
+typedef BfsBase BfsOnCPU;
 
 void graph500_bfs(int SCALE, int edgefactor)
 {

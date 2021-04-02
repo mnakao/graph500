@@ -42,9 +42,6 @@
 #include "mpi_workarounds.h"
 #include "utils_core.h"
 #include "primitives.hpp"
-#if CUDA_ENABLED
-#include "gpu_host.hpp"
-#endif
 
 #if VTRACE
 #include "vt_user.h"
@@ -545,8 +542,6 @@ void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value
 //-------------------------------------------------------------//
 // CPU Affinity Setting
 //-------------------------------------------------------------//
-
-int g_GpuIndex = -1;
 
 namespace numa {
 
@@ -1138,7 +1133,6 @@ void set_affinity()
 	const char* dist_round_robin = getenv("MPI_ROUND_ROBIN");
 	int max_procs_per_node = (mpi.size + num_node - 1) / num_node;
 	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
-	g_GpuIndex = proc_rank;
 
 	if(mpi.isRmaster()) {
 		print_with_prefix("process distribution : %s", dist_round_robin ? "round robin" : "partition");
@@ -1758,20 +1752,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	if(getenv("NO_AFFINITY") == NULL) {
 		numa::set_affinity();
 	}
-
-#if CUDA_ENABLED
-	CudaStreamManager::initialize_cuda(g_GpuIndex);
-
-	MPI_INFO_ON_GPU mpig;
-	mpig.rank = mpi.rank;
-	mpig.size = mpi.size_;
-	mpig.rank_2d = mpi.rank_2d;
-	mpig.rank_2dr = mpi.rank_2dr;
-	mpig.rank_2dc = mpi.rank_2dc;
-	CudaStreamManager::begin_cuda();
-	CUDA_CHECK(cudaMemcpyToSymbol("mpig", &mpig, sizeof(mpig), 0, cudaMemcpyHostToDevice));
-	CudaStreamManager::end_cuda();
-#endif
 }
 
 void cleanup_globals()
@@ -1787,9 +1767,6 @@ void cleanup_globals()
 	UnweightedPackedEdge::uninitialize();
 	WeightedEdge::uninitialize();
 
-#if CUDA_ENABLED
-	CudaStreamManager::finalize_cuda();
-#endif
 #if BACKTRACE_ON_SIGNAL
 	backtrace::thread_join();
 #endif
@@ -2688,132 +2665,6 @@ int decode_signed(const uint8_t* input, int length, uint64_t* output)
 		p += len;
 	}
 	return n;
-}
-
-int encode_gpu_compat(const uint32_t* input, int length, uint8_t* output)
-{
-	enum { MAX_CODE_LENGTH = MAX_CODE_LENGTH_32, SIMD_WIDTH = 32 };
-	uint8_t tmp_buffer[SIMD_WIDTH][MAX_CODE_LENGTH];
-	uint8_t code_length[SIMD_WIDTH];
-	int count[MAX_CODE_LENGTH + 1];
-
-	uint8_t* out_ptr = output;
-	for(int i = 0; i < length; i += SIMD_WIDTH) {
-		int width = std::min(length - i, (int)SIMD_WIDTH);
-
-		for(int k = 0; k < MAX_CODE_LENGTH; ++k) {
-			count[k] = 0;
-		}
-		count[MAX_CODE_LENGTH] = 0;
-
-		for(int k = 0; k < width; ++k) {
-			uint32_t v = input[i + k];
-			uint8_t* dst = tmp_buffer[k];
-			int len;
-			VARINT_ENCODE_MACRO_32(dst, v, len);
-			code_length[k] = len;
-			for(int r = 0; r < len; ++r) {
-				++count[r + 1];
-			}
-		}
-
-		for(int k = 1; k < MAX_CODE_LENGTH; ++k) count[k + 1] += count[k];
-
-		for(int k = 0; k < width; ++k) {
-			for(int r = 0; r < code_length[k]; ++r) {
-				out_ptr[count[r]++] = tmp_buffer[k][r];
-			}
-		}
-
-		out_ptr += count[MAX_CODE_LENGTH];
-	}
-
-	return out_ptr - output;
-}
-
-int encode_gpu_compat(const uint64_t* input, int length, uint8_t* output)
-{
-	enum { MAX_CODE_LENGTH = MAX_CODE_LENGTH_64, SIMD_WIDTH = 32 };
-	uint8_t tmp_buffer[SIMD_WIDTH][MAX_CODE_LENGTH];
-	uint8_t code_length[SIMD_WIDTH];
-	int count[MAX_CODE_LENGTH + 1];
-
-	uint8_t* out_ptr = output;
-	for(int i = 0; i < length; i += SIMD_WIDTH) {
-		int width = std::min(length - i, (int)SIMD_WIDTH);
-
-		for(int k = 0; k < MAX_CODE_LENGTH; ++k) {
-			count[k] = 0;
-		}
-		count[MAX_CODE_LENGTH] = 0;
-
-		for(int k = 0; k < width; ++k) {
-			uint64_t v = input[i + k];
-			uint8_t* dst = tmp_buffer[k];
-			int len;
-			VARINT_ENCODE_MACRO_64(dst, v, len);
-			code_length[k] = len;
-			for(int r = 0; r < len; ++r) {
-				++count[r + 1];
-			}
-		}
-
-		for(int k = 1; k < MAX_CODE_LENGTH; ++k) count[k + 1] += count[k];
-
-		for(int k = 0; k < width; ++k) {
-			for(int r = 0; r < code_length[k]; ++r) {
-				out_ptr[count[r]++] = tmp_buffer[k][r];
-			}
-		}
-
-		out_ptr += count[MAX_CODE_LENGTH];
-	}
-
-	return out_ptr - output;
-}
-
-int encode_gpu_compat_signed(const int64_t* input, int length, uint8_t* output)
-{
-	enum { MAX_CODE_LENGTH = MAX_CODE_LENGTH_64, SIMD_WIDTH = 32 };
-	uint8_t tmp_buffer[SIMD_WIDTH][MAX_CODE_LENGTH];
-	uint8_t code_length[SIMD_WIDTH];
-	int count[MAX_CODE_LENGTH + 1];
-
-	uint8_t* out_ptr = output;
-	for(int i = 0; i < length; i += SIMD_WIDTH) {
-		int width = std::min(length - i, (int)SIMD_WIDTH);
-
-		for(int k = 0; k < MAX_CODE_LENGTH; ++k) {
-			count[k] = 0;
-		}
-		count[MAX_CODE_LENGTH] = 0;
-
-		for(int k = 0; k < width; ++k) {
-			int64_t v_raw = input[i + k];
-			uint64_t v = (v_raw < 0) ? ((uint64_t)(~v_raw) << 1) | 1 : ((uint64_t)v_raw << 1);
-		//	uint64_t v = (v_raw << 1) ^ (v_raw >> 63);
-			assert ((int64_t)v >= 0);
-			uint8_t* dst = tmp_buffer[k];
-			int len;
-			VARINT_ENCODE_MACRO_64(dst, v, len);
-			code_length[k] = len;
-			for(int r = 0; r < len; ++r) {
-				++count[r + 1];
-			}
-		}
-
-		for(int k = 1; k < MAX_CODE_LENGTH; ++k) count[k + 1] += count[k];
-
-		for(int k = 0; k < width; ++k) {
-			for(int r = 0; r < code_length[k]; ++r) {
-				out_ptr[count[r]++] = tmp_buffer[k][r];
-			}
-		}
-
-		out_ptr += count[MAX_CODE_LENGTH];
-	}
-
-	return out_ptr - output;
 }
 
 int sparsity_factor(int64_t range, int64_t num_values)
@@ -3723,7 +3574,6 @@ volatile int64_t g_bu_bitmap_comm;
 volatile int64_t g_bu_list_comm;
 volatile int64_t g_expand_bitmap_comm;
 volatile int64_t g_expand_list_comm;
-volatile double g_gpu_busy_time;
 #endif
 
 /* edgefactor = 16, seed1 = 2, seed2 = 3 */

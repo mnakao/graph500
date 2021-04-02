@@ -10,10 +10,6 @@
 #include <pthread.h>
 #include <deque>
 
-#if CUDA_ENABLED
-#include "gpu_host.hpp"
-#endif
-
 #ifdef PROFILE_REGIONS
 static int current_expand = TD_EXPAND_TIME;
 int current_fold = TD_FOLD_TIME;

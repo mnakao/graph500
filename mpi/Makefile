@@ -1,5 +1,4 @@
-#SW =GNU3
-SW=FUGAKU
+SW =GNU3
 VAMP = false
 SCOREP = false
 
@@ -28,21 +27,13 @@ FUGAKU_POWER_CLINK=-lpwr
 endif
 
 
-GCC_BASE := -fopenmp -g -Wall -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -ffast-math -msse4.2 $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT) # -pg
-#GCC_BASE := -g -Wall -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -ffast-math -msse4.2 # -pg
+GCC_BASE := -fopenmp -g -Wall -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -ffast-math $(VERBOSE_OPT) $(VERTEX_REORDERING_OPT) $(REAL_BENCHMARK_OPT) # -pg
 FCC_BASE := -Kopenmp -Xg -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS -g #-Nquickdbg=heapchk # -Koptmsg=2
-#FCC_BASE := -Xg -g -Drestrict=__restrict__ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_FORMAT_MACROS
-
 MPICC := mpicc
 MPICPP := mpicxx
 
-CUDALIB := -L$(CUDA_PATH)/lib64 -lcudart -lcuda
-NVCC := nvcc
-
-INC := # -I$(CUDA_PATH)/include
 BINS := runnable
 OBJS := main.o low_level_func.o ../generator/splittable_mrg.o
-CUOBJ := cuda_kernel.o
 LIBS := -lm
 
 ifeq ($(SW), GNU3)
@@ -162,14 +153,12 @@ all: cpu
 cpu: $(OBJS)
 	$(MPICPP) $(LDFLAGS) -o runnable $(OBJS) $(LIBS)
 
-gpu: $(OBJS) $(CUOBJ)
-	$(MPICPP) $(LDFLAGS) -o runnable $(OBJS) $(CUOBJ) $(LIBS) $(CUDALIB)
 
 gnu_func.o: gnu_func.cc
 	cp ../../$*.o_ $*.o
 #	g++ -c -g -O3 -Wall $< -o $*.o
 
-.SUFFIXES: .o .c .cpp .cc .cu
+.SUFFIXES: .o .c .cpp .cc
 
 .c.o:
 	$(MPICC) $(INC) -c $(CFLAGS) $< -o $*.o
@@ -180,9 +169,6 @@ gnu_func.o: gnu_func.cc
 .cc.o:
 	$(MPICPP) $(INC) -c $(CPPFLAGS) $< -o $*.o
 
-.cu.o:
-	$(NVCC) -c $(NVCCFLAGS) $< -o $*.o
-
 .PHONY: clean
 clean:
-	-rm -f $(BINS) $(OBJS) $(CUOBJ)
+	-rm -f $(BINS) $(OBJS) 

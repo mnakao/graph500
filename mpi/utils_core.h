@@ -394,14 +394,6 @@ struct SeparatedId {
 	}
 };
 
-struct MPI_INFO_ON_GPU {
-	int rank;
-	int size;
-	int rank_2d;
-	int rank_2dr;
-	int rank_2dc;
-};
-
 int64_t get_time_in_microsecond();
 FILE* get_imd_out_file();
 
