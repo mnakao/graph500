@@ -5,8 +5,6 @@
 #include "abstract_comm.hpp"
 #include "utils.hpp"
 
-#define debug(...) debug_print(BUCOM, __VA_ARGS__)
-
 struct BottomUpSubstepTag {
 	int64_t length;
 	int region_id; // < 1024
@@ -40,12 +38,10 @@ public:
 		int left_rank = (rank + size - 1) % size;
 		nodes(0).rank = left_rank;
 		nodes(1).rank = right_rank;
-		debug("left=%d, right=%d", left_rank, right_rank);
 	}
 	void send_first(BottomUpSubstepData* data) {
 		data->tag.routed_count = 0;
 		data->tag.route = send_filled % 2;
-		debug("send_first length=%d, send_filled=%d", data->tag.length, send_filled);
 		send_pair[send_filled++] = *data;
 		if(send_filled == 2) {
 			send_recv();
@@ -53,7 +49,6 @@ public:
 		}
 	}
 	void send(BottomUpSubstepData* data) {
-		debug("send length=%d, send_filled=%d", data->tag.length, send_filled);
 		send_pair[send_filled++] = *data;
 		if(send_filled == 2) {
 			send_recv();
@@ -69,7 +64,6 @@ public:
 			}
 		}
 		*data = recv_pair[recv_tail++ % NBUF];
-		debug("recv length=%d, recv_tail=%d", data->tag.length, recv_tail - 1);
 	}
 	void finish() {
 	}
@@ -126,9 +120,6 @@ protected:
 			free_list.push_back(recv_buffers__[i]);
 		}
 		send_filled = recv_tail = recv_filled = 0;
-
-		debug("begin buffer_count=%d, buffer_width=%d",
-				buffer_count__, buffer_width__);
 	}
 };
 
@@ -237,7 +228,5 @@ protected:
 #endif
 	}
 };
-
-#undef debug
 
 #endif /* BOTTOM_UP_COMM_HPP_ */

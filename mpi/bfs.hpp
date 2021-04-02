@@ -14,7 +14,6 @@ int current_fold = TD_FOLD_TIME;
 
 #include "low_level_func.h"
 
-#define debug(...) debug_print(BFSMN, __VA_ARGS__)
 class BfsBase
 {
 	typedef BfsBase ThisType;
@@ -917,7 +916,6 @@ public:
 #define ELSE
 #endif
 
-		debug("begin parallel");
 #pragma omp parallel
 		{
 			SET_OMP_AFFINITY;
@@ -1046,7 +1044,6 @@ public:
 		} // #pragma omp parallel reduction(+:num_edge_relax)
 #undef IF_LARGE_EDGE
 #undef ELSE
-		debug("finished parallel");
 	}
 
 	void top_down_search() {
@@ -2216,7 +2213,6 @@ public:
 		PRINT_VAL("%d", PRINT_BINDING);
 		PRINT_VAL("%d", SHARED_MEMORY);
 
-		PRINT_VAL("%d", DEBUG_PRINT);
 		PRINT_VAL("%d", REPORT_GEN_RPGRESS);
 		PRINT_VAL("%d", ENABLE_INLINE_ATOMICS);
 
@@ -2448,6 +2444,5 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 	} // while(true) {
 	clear_nq_stack();
 }
-#undef debug
 
 #endif /* BFS_HPP_ */

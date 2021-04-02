@@ -4,7 +4,6 @@
 #include <pthread.h>
 #include <deque>
 
-#define debug(...) debug_print(FIBMN, __VA_ARGS__)
 class Runnable
 {
 public:
@@ -193,6 +192,5 @@ private:
 		return NULL;
 	}
 };
-#undef debug
 
 #endif /* FIBER_HPP_ */

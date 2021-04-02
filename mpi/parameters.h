@@ -29,19 +29,6 @@
 #define ENABLE_UTOFU 0
 #define ENABLE_INLINE_ATOMICS 0
 
-// root switch to on/off debug print
-#define DEBUG_PRINT 0
-
-// switches to control debug print for each module
-// 0: disabled, 1: enabled, 2: enabled but the only root process prints
-#define DEBUG_PRINT_FIBMN 0
-#define DEBUG_PRINT_BFSMN 0
-#define DEBUG_PRINT_ABSCO 0
-#define DEBUG_PRINT_MPICO 0
-#define DEBUG_PRINT_MPIBU 0
-#define DEBUG_PRINT_FJA2A 0
-#define DEBUG_PRINT_BUCOM 0
-
 #define BFELL 0
 
 // Optimization for CSR

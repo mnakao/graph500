@@ -8,7 +8,6 @@ extern int current_fold;
 #include "utils.hpp"
 #include "fiber.hpp"
 
-#define debug(...) debug_print(ABSCO, __VA_ARGS__)
 class AlltoallBufferHandler {
 public:
 	virtual ~AlltoallBufferHandler() { }
@@ -73,7 +72,6 @@ public:
 	}
 
 	void prepare() {
-		debug("prepare idx=%d", sub_comm);
 		for(int i = 0; i < comm_size_; ++i) {
 			node_[i].reserved_size_ = node_[i].filled_size_ = buffer_size_;
 		}
@@ -673,7 +671,5 @@ private:
 		complete_count = 0;
 	}
 };
-
-#undef debug
 
 #endif /* ABSTRACT_COMM_HPP_ */

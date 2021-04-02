@@ -33,18 +33,6 @@
 
 void print_with_prefix(const char* format, ...);
 
-#if DEBUG_PRINT
-#define DEBUG_PRINT_SWITCH_0(...)
-#define DEBUG_PRINT_SWITCH_1(...) print_with_prefix(__VA_ARGS__)
-#define DEBUG_PRINT_SWITCH_2(...) do{if(mpi.isMaster())print_with_prefix(__VA_ARGS__);}while(0)
-#define MAKE_DEBUG_PRINT_SWITCH(val) MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val)
-#define MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val) DEBUG_PRINT_SWITCH_ ## val
-#define debug_print(prefix, ...) MAKE_DEBUG_PRINT_SWITCH\
-	(DEBUG_PRINT_ ## prefix)(#prefix " " __VA_ARGS__)
-#else
-#define debug_print(prefix, ...)
-#endif
-
 struct COMM_2D {
 	MPI_Comm comm;
 	int rank, rank_x, rank_y;
