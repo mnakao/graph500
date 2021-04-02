@@ -758,14 +758,6 @@ void initialize_core_id() {
 	my_apic_id = get_apic_id();
 }
 
-bool ensure_my_apic_id() {
-	int cur_id = get_apic_id();
-	if(my_apic_id != cur_id) {
-		throw_exception("Fatal error: Affinity is changed unexpectedly!!!(%d -> %d)\n", my_apic_id, cur_id);
-	}
-	return false;
-}
-
 #else
 AffinityMode affinity_mode = USE_EXISTING_AFFINITY;
 void initialize_core_id() { }
@@ -813,11 +805,6 @@ void internal_set_core_affinity(int cpu) {
 	sched_setaffinity(0, sizeof(initial_affinity), &initial_affinity);
 	sleep(0);
 	initialize_core_id();
-#if PRINT_BINDING
-	std::string str_affinity;
-	cpu_set_to_string(&initial_affinity, str_affinity, sysconf(_SC_NPROCESSORS_CONF));
-	print_with_prefix("th:%d thread started [%s](%d)", thread_id, str_affinity.c_str(), cpu);
-#endif // #if PRINT_BINDING
 	check_affinity_setting();
 }
 
@@ -865,9 +852,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 		if(cnt == 1) {
 			// Core affinity is set
 			core_affinity = true;
-#if PRINT_BINDING
-			print_current_binding("detected core binding");
-#endif
 			for(int i = 0; i < num_procs; i++) {
 				if(CPU_ISSET(i, &set)) {
 					cpu_set[thread_id] = i;
@@ -879,9 +863,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 		else if(cnt >= total_threads) {
 			// Process affinity is set.
 			process_affinity = true;
-#if PRINT_BINDING
-			print_current_binding("detected process binding");
-#endif
 			if(thread_id == 0) {
 				int cpu_idx = 0;
 				for(int i = 0; i < num_procs; i++) {
@@ -896,9 +877,6 @@ bool detect_core_affinity(std::vector<int>& cpu_set) {
 		}
 		else {
 			// Affinity is set ???
-#if PRINT_BINDING
-			print_current_binding("??? binding");
-#endif
 			core_affinity = process_affinity = true;
 		}
 	}
@@ -939,20 +917,10 @@ void set_core_affinity() {
 				internal_set_core_affinity(cpu);
 			}
 		}
-		else {
-#if PRINT_BINDING
-			print_current_binding("started");
-#endif
-		}
 		if((mpi.thread_level == MPI_THREAD_SINGLE) || thread_id == 0) {
 			omp_set_num_threads(num_bfs_threads);
 		}
 	}
-#if CPU_BIND_CHECK
-	else if(core_affinity_enabled) {
-		ensure_my_apic_id();
-	}
-#endif
 }
 
 void set_omp_core_affinity() {
@@ -971,16 +939,8 @@ void set_omp_core_affinity() {
 		}
 		else {
 			thread_id = __sync_fetch_and_add(&next_thread_id, 1);
-#if PRINT_BINDING
-			print_current_binding("started");
-#endif
 		}
 	}
-#if CPU_BIND_CHECK
-	else if(core_affinity_enabled) {
-		ensure_my_apic_id();
-	}
-#endif
 }
 
 #define SET_AFFINITY numa::set_core_affinity()

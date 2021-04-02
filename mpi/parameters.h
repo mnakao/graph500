@@ -5,9 +5,6 @@
 #define NUMA_BIND 0
 #define SHARED_MEMORY 0
 
-#define CPU_BIND_CHECK 0
-#define PRINT_BINDING 0
-
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
 #define VALIDATION_LEVEL 2

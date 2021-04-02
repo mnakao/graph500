@@ -2209,8 +2209,6 @@ public:
 		PRINT_VAL("%zd", sizeof(TwodVertex));
 
 		PRINT_VAL("%d", NUMA_BIND);
-		PRINT_VAL("%d", CPU_BIND_CHECK);
-		PRINT_VAL("%d", PRINT_BINDING);
 		PRINT_VAL("%d", SHARED_MEMORY);
 
 		PRINT_VAL("%d", REPORT_GEN_RPGRESS);
