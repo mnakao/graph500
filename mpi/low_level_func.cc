@@ -62,7 +62,6 @@ void backward_isolated_edge(
 			BitmapType vis_bit = bit_flags & (-bit_flags);
 			BitmapType mask = vis_bit - 1;
 			bit_flags &= ~vis_bit;
-			int idx = __builtin_popcountl(mask);
 			TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
 			LocalVertex tgt_orig = orig_vertexes[non_zero_idx];
 			// short cut

@@ -10,7 +10,6 @@ int current_fold = TD_FOLD_TIME;
 #include "utils.hpp"
 #include "fiber.hpp"
 #include "abstract_comm.hpp"
-#include "mpi_comm.hpp"
 #include "bottom_up_comm.hpp"
 
 #include "low_level_func.h"
@@ -417,28 +416,6 @@ public:
 			recv.run();
 		}
 	};
-
-	/*
-	void do_in_parallel(Runnable* main, Runnable* sub, bool inverse) {
-		if(inverse) {
-			std::swap(main, sub);
-		}
-#if OPENMP_SUB_THREAD
-#pragma omp parallel num_threads(2)
-		{
-			SET_AFFINITY;
-			if(omp_get_thread_num() == 0) {
-				main->run();
-			}
-			else {
-				sub->run();
-			}
-		}
-#else
-		compute_thread_.do_in_parallel(main, sub);
-#endif
-	}
-	*/
 
 	//-------------------------------------------------------------//
 	// expand phase
@@ -1039,8 +1016,6 @@ public:
 						BitmapType cq_bit = bit_flags & (-bit_flags);
 						BitmapType low_mask = cq_bit - 1;
 						bit_flags &= ~cq_bit;
-						int bit_idx = __builtin_popcountl(low_mask);
-						TwodVertex compact = word_idx * NBPE + bit_idx;
 						TwodVertex src_c = word_idx / get_bitmap_size_local(); // TODO:
 						TwodVertex non_zero_off = bmp_row_sums + __builtin_popcountl(row_bitmap_i & low_mask);
 						int64_t src_orig =
@@ -1542,111 +1517,6 @@ public:
 			for( ; num_active_rows > 0; ++c) {
 				SortIdx next_col_len = col_len[c + 1];
 				int i = num_active_rows - 1;
-#if 0
-				for( ; i >= 7; i -= 8) {
-					BottomUpRow* cur_rows = &rows[i-7];
-					TwodVertex src = {
-							col_edge_array[cur_rows[0].sorted],
-							col_edge_array[cur_rows[1].sorted],
-							col_edge_array[cur_rows[2].sorted],
-							col_edge_array[cur_rows[3].sorted],
-							col_edge_array[cur_rows[4].sorted],
-							col_edge_array[cur_rows[5].sorted],
-							col_edge_array[cur_rows[6].sorted],
-							col_edge_array[cur_rows[7].sorted],
-					};
-					bool connected = {
-							shared_visited_[src[0] >> LOG_NBPE] & (BitmapType(1) << (src[0] & NBPE_MASK)),
-							shared_visited_[src[1] >> LOG_NBPE] & (BitmapType(1) << (src[1] & NBPE_MASK)),
-							shared_visited_[src[2] >> LOG_NBPE] & (BitmapType(1) << (src[2] & NBPE_MASK)),
-							shared_visited_[src[3] >> LOG_NBPE] & (BitmapType(1) << (src[3] & NBPE_MASK)),
-							shared_visited_[src[4] >> LOG_NBPE] & (BitmapType(1) << (src[4] & NBPE_MASK)),
-							shared_visited_[src[5] >> LOG_NBPE] & (BitmapType(1) << (src[5] & NBPE_MASK)),
-							shared_visited_[src[6] >> LOG_NBPE] & (BitmapType(1) << (src[6] & NBPE_MASK)),
-							shared_visited_[src[7] >> LOG_NBPE] & (BitmapType(1) << (src[7] & NBPE_MASK)),
-					};
-					for(int s = 7; s >= 0; --s) {
-						if(connected[s]) {
-							// add to next queue
-							int orig = cur_rows[s].orig;
-							blk_bitmap[orig >> LOG_NBPE] |= (BitmapType(1) << (orig & NBPE_MASK));
-#if STREAM_UPDATE
-							if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
-								visited_count += packet.length;
-								PROF(profiling::TimeKeeper tk_commit);
-								comm_.send<false>(packet.data.b, packet.length, target_rank);
-								PROF(ts_commit += tk_commit);
-								packet.length = 0;
-							}
-							packet.data.b[packet.length+0] = src[s];
-							packet.data.b[packet.length+1] = blk_vertex_base + orig;
-							packet.length += 2;
-#else // #if STREAM_UPDATE
-							if(buf->full()) {
-								nq_.push(buf); buf = nq_empty_buffer_.get();
-							}
-							buf->append_nocheck(src[s], blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-						else if(cur_rows[s].sorted >= next_col_len) {
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-					}
-				}
-#elif 0
-				for( ; i >= 3; i -= 4) {
-					BottomUpRow* cur_rows = &rows[i-3];
-					TwodVertex src[4] = {
-							col_edge_array[cur_rows[0].sorted],
-							col_edge_array[cur_rows[1].sorted],
-							col_edge_array[cur_rows[2].sorted],
-							col_edge_array[cur_rows[3].sorted],
-					};
-					bool connected[4] = {
-							shared_visited_[src[0] >> LOG_NBPE] & (BitmapType(1) << (src[0] & NBPE_MASK)),
-							shared_visited_[src[1] >> LOG_NBPE] & (BitmapType(1) << (src[1] & NBPE_MASK)),
-							shared_visited_[src[2] >> LOG_NBPE] & (BitmapType(1) << (src[2] & NBPE_MASK)),
-							shared_visited_[src[3] >> LOG_NBPE] & (BitmapType(1) << (src[3] & NBPE_MASK)),
-					};
-					for(int s = 0; s < 4; ++s) {
-						if(connected[s]) { // TODO: use conditional branch
-							// add to next queue
-							int orig = cur_rows[s].orig;
-							blk_bitmap[orig >> LOG_NBPE] |= (BitmapType(1) << (orig & NBPE_MASK));
-#if STREAM_UPDATE
-							if(packet.length == LocalPacket::BOTTOM_UP_LENGTH) {
-								visited_count += packet.length;
-								PROF(profiling::TimeKeeper tk_commit);
-								comm_.send<false>(packet.data.b, packet.length, target_rank);
-								PROF(ts_commit += tk_commit);
-								packet.length = 0;
-							}
-							packet.data.b[packet.length+0] = src[s];
-							packet.data.b[packet.length+1] = blk_vertex_base + orig;
-							packet.length += 2;
-#else // #if STREAM_UPDATE
-							if(buf->full()) { // TODO: remove this branch
-								nq_.push(buf); buf = nq_empty_buffer_.get();
-							}
-							buf->append_nocheck(src[s], blk_vertex_base + orig);
-#endif // #if STREAM_UPDATE
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-						else if(cur_rows[s].sorted >= next_col_len) {
-							// end this row
-							VERVOSE(tmp_edge_relax += c + 1);
-							cur_rows[s] = rows[--num_active_rows];
-						}
-					}
-				}
-#endif
 				for( ; i >= 0; --i) {
 					SortIdx row = rows[i].sorted;
 					TwodVertex src = col_edge_array[row];
@@ -1722,7 +1592,6 @@ public:
 			int* th_offset)
 	{
 		TRACER(bu_list_step);
-		int max_threads = omp_get_num_threads();
 		int target_rank = phase_bmp_off / half_bitmap_width / 2;
 
 		int tmp_num_blocks = 0;
@@ -1899,7 +1768,6 @@ public:
 				BitmapType vis_bit = bit_flags & (-bit_flags);
 				BitmapType mask = vis_bit - 1;
 				bit_flags &= ~vis_bit;
-				int idx = __builtin_popcountl(mask);
 				TwodVertex non_zero_idx = bmp_row_sums + __builtin_popcountl(row_bmp_i & mask);
 				LocalVertex tgt_orig = orig_vertexes[non_zero_idx];
 				// short cut
@@ -2020,8 +1888,6 @@ public:
 #pragma omp barrier
 #endif
 		int tid = omp_get_thread_num();
-		int num_threads = omp_get_num_threads();
-
 #if 1 // dynamic partitioning
 		int visited_count = 0;
 		int block_width = step_bitmap_width / 40 + 1;
@@ -2479,19 +2345,8 @@ public:
 		} // #pragma omp parallel
 		PROF(parallel_reg_time_ += tk_all);
 	}
-/*
-	struct BottomUpListParallelSection : public Runnable {
-		ThisType* this_; int* visited_count; int8_t* vertex_enabled;
-		int64_t num_blocks; int64_t num_vertexes;
-		BottomUpListParallelSection(ThisType* this__, int* visited_count_, int8_t* vertex_enabled_)
-			: this_(this__), visited_count(visited_count_) , vertex_enabled(vertex_enabled_)
-			, num_blocks(0), num_vertexes(0) { }
-		virtual void run() {
-			this_->b;
-		}
-	};
-*/
-	void bottom_up_search_list() {
+
+  void bottom_up_search_list() {
 		TRACER(bu_list);
 
 		int half_bitmap_width = get_bitmap_size_local() / 2;

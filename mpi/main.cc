@@ -183,34 +183,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 
 	free(pred);
 }
-#if 0
-void test02(int SCALE, int edgefactor)
-{
-	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
-			(INT64_C(1) << SCALE) * edgefactor / mpi.size, getenv("TMPFILE"));
-	RmatGraphGenerator<UnweightedPackedEdge> graph_generator(
-//	RandomGraphGenerator<UnweightedPackedEdge> graph_generator(
-				SCALE, edgefactor, 2, 3, InitialEdgeType::NONE);
-	Graph2DCSR<Pack40bit, uint32_t> graph;
-
-	double generation_time = MPI_Wtime();
-	generate_graph(&edge_list, &graph_generator);
-	generation_time = MPI_Wtime() - generation_time;
-
-	double construction_time = MPI_Wtime();
-	construct_graph(&edge_list, true, graph);
-	construction_time = MPI_Wtime() - construction_time;
-
-	if(mpi.isMaster()) {
-		print_with_prefix("TEST02");
-		fprintf(stdout, "SCALE:                          %d\n", SCALE);
-		fprintf(stdout, "edgefactor:                     %d\n", edgefactor);
-		fprintf(stdout, "graph_generation:               %g\n", generation_time);
-		fprintf(stdout, "num_mpi_processes:              %d\n", mpi.size);
-		fprintf(stdout, "construction_time:              %g\n", construction_time);
-	}
-}
-#endif
 
 int main(int argc, char** argv)
 {

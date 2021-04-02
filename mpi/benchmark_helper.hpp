@@ -186,13 +186,6 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 		// There is the implicit barrier on the end of for loops.
 #pragma omp master
 		{
-#if 0
-			for(int64_t i = start_edge; i < end_edge; ++i) {
-				if( edge_buffer[i-start_edge].weight_ != 0xBEEF ) {
-		//			print_with_prefix("Weight > 32: idx: %" PRId64 "", i);
-				}
-			}
-#endif
 			edge_list->write(edge_buffer, end_edge - start_edge);
 
 			if(mpi.isMaster()) {

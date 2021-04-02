@@ -1,10 +1,3 @@
-/*
- * abstract_comm.hpp
- *
- *  Created on: 2014/05/17
- *      Author: ueno
- */
-
 #ifndef ABSTRACT_COMM_HPP_
 #define ABSTRACT_COMM_HPP_
 

@@ -1,10 +1,3 @@
-/*
- * utils.hpp
- *
- *  Created on: Dec 9, 2011
- *      Author: koji
- */
-
 #ifndef UTILS_IMPL_HPP_
 #define UTILS_IMPL_HPP_
 
@@ -524,18 +517,6 @@ void get_partition(int64_t size, T* sorted, int log_blk,
 		while(end < size && (sorted[end] >> log_blk) == piv) ++end;
 	}
 }
-/*
-template <typename T>
-void get_partition(int64_t size, T* sorted, int64_t min_value, int64_t max_value,
-		int64_t min_blk_size, int num_part, int part_idx, T*& begin, T*& end)
-{
-	T blk_size = std::max(min_blk_size, (max_value - min_value + num_part - 1) / num_part);
-	int64_t begin_value = min_value + blk_size * part_idx;
-	int64_t end_value = begin_value + blk_size;
-	begin = std::lower_bound(sorted, sorted + size, begin_value);
-	end = std::lower_bound(sorted, sorted + size, end_value);
-}
-*/
 
 //-------------------------------------------------------------//
 // CPU Affinity Setting
@@ -798,15 +779,6 @@ public:
 		if(mpi.isMaster()) {
 			print_with_prefix("CPU Topology: # of socket: %d, # of cores: %d, # of SMT: %d",
 					num_numa_nodes, num_cores_within_numa, num_logical_CPUs_within_core);
-/*
-			// print detected numa rank
-			fprintf(IMD_OUT, "NUMA Rank:[");
-			for(int i = 0; i < num_procs; i++) {
-				if((i % 100) == 0) fprintf(IMD_OUT, "\n%d-%d: ", i, i+100);
-				fprintf(IMD_OUT, "%d,", numa_node_of_cpu(i));
-			}
-			fprintf(IMD_OUT, "\n]\n");
-			*/
 		}
 
 		this->numa_node_rank = numa_node_rank;
@@ -1118,19 +1090,14 @@ void set_omp_core_affinity() {
 void set_affinity()
 {
 	const char* num_node_str = getenv("MPI_NUM_NODE");
-	int num_node;
 	if(num_node_str != NULL) {
-		num_node = atoi(num_node_str);
 	}
 	else {
-		num_node = mpi.size;
 		if(mpi.isRmaster()) {
 			print_with_prefix("Warning: failed to get # of node (MPI_NUM_NODE=<# of node>). We assume 1 process per node");
 		}
 	}
 	const char* dist_round_robin = getenv("MPI_ROUND_ROBIN");
-	int max_procs_per_node = (mpi.size + num_node - 1) / num_node;
-	int proc_rank = (dist_round_robin ? (mpi.rank / num_node) : (mpi.rank % max_procs_per_node));
 
 	if(mpi.isRmaster()) {
 		print_with_prefix("process distribution : %s", dist_round_robin ? "round robin" : "partition");
@@ -1207,19 +1174,6 @@ void set_affinity()
 								NUM_SOCKET, topology->num_numa_nodes);
 					}
 				}
-				/*
-				cpu_set_t set; CPU_ZERO(&set);
-				if(proc_rank < topology->num_numa_nodes) {
-					for(int core = 0; core < topology->num_cores_within_numa; core++)
-						for(int smt = 0; smt < topology->num_cores_within_numa; smt++)
-							CPU_SET(topology->cpu(proc_rank, core, smt), &set);
-				}
-				else {
-					for(int i = 0; i < topology->num_procs; i++)
-						CPU_SET(i, &set);
-				}
-				sched_setaffinity(0, sizeof(set), &set);
-				*/
 				// disable core binding
 				delete topology; topology = NULL;
 
@@ -1276,10 +1230,6 @@ void set_affinity()
 }
 
 } // namespace numa
-
-//-------------------------------------------------------------//
-// ?
-//-------------------------------------------------------------//
 
 /**
  * compute rank that is assigned continuously in the field
@@ -1794,13 +1744,6 @@ void alltoall(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm) {
 			recvbuf, sendcount, MpiTypeOf<T>::type, comm);
 }
 
-/**
- * @param sendbuf [in]
- * @param sendcount [in]
- * @param sendoffset [out]
- * @param recvcount [out]
- * @param recvoffset [out]
- */
 template <typename T>
 T* alltoallv(T* sendbuf, int* sendcount,
 		int* sendoffset, int* recvcount, int* recvoffset, MPI_Comm comm, int comm_size)
@@ -1853,76 +1796,6 @@ void my_allgatherv(T *buffer, int* count, int* offset, MPI_Comm comm, int rank, 
 		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
 	}
 }
-
-#if 0
-template <typename T>
-void my_allgather(T *sendbuf, int count, T *recvbuf, MPI_Comm comm)
-{
-	int size; MPI_Comm_size(comm, &size);
-	int rank; MPI_Comm_rank(comm, &rank);
-	int left = (rank + size - 1) % size;
-	int right = (rank + size + 1) % size;
-	int l_sendidx = rank;
-	int l_recvidx = right;
-	int r_sendidx = rank;
-	int r_recvidx = left;
-	int l_count = count / 2;
-	int r_count = count - l_count;
-
-	memcpy(&recvbuf[count * rank], sendbuf, sizeof(T) * count);
-	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
-		if(l_sendidx >= size) l_sendidx -= size;
-		if(l_recvidx >= size) l_recvidx -= size;
-		if(r_sendidx < 0) r_sendidx += size;
-		if(r_recvidx < 0) r_recvidx += size;
-
-		MPI_Request req[4];
-		MPI_Irecv(&recvbuf[count * l_recvidx], l_count, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
-		MPI_Irecv(&recvbuf[count * r_recvidx + l_count], r_count, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
-		MPI_Isend(&recvbuf[count * l_sendidx], l_count, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
-		MPI_Isend(&recvbuf[count * r_sendidx + l_count], r_count, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
-		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
-	}
-}
-
-template <typename T>
-void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, MPI_Comm comm)
-{
-	int size; MPI_Comm_size(comm, &size);
-	int rank; MPI_Comm_rank(comm, &rank);
-	int left = (rank + size - 1) % size;
-	int right = (rank + size + 1) % size;
-	int l_sendidx = rank;
-	int l_recvidx = right;
-	int r_sendidx = rank;
-	int r_recvidx = left;
-
-	memcpy(&recvbuf[recv_offset[rank]], sendbuf, sizeof(T) * send_count);
-	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
-		if(l_sendidx >= size) l_sendidx -= size;
-		if(l_recvidx >= size) l_recvidx -= size;
-		if(r_sendidx < 0) r_sendidx += size;
-		if(r_recvidx < 0) r_recvidx += size;
-
-		int l_send_off = recv_offset[l_sendidx];
-		int l_send_cnt = recv_count[l_sendidx] / 2;
-		int l_recv_off = recv_offset[l_recvidx];
-		int l_recv_cnt = recv_count[l_recvidx] / 2;
-
-		int r_send_off = recv_offset[r_sendidx] + recv_count[r_sendidx] / 2;
-		int r_send_cnt = recv_count[r_sendidx] - recv_count[r_sendidx] / 2;
-		int r_recv_off = recv_offset[r_recvidx] + recv_count[r_recvidx] / 2;
-		int r_recv_cnt = recv_count[r_recvidx] - recv_count[r_recvidx] / 2;
-
-		MPI_Request req[4];
-		MPI_Irecv(&recvbuf[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
-		MPI_Irecv(&recvbuf[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
-		MPI_Isend(&recvbuf[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
-		MPI_Isend(&recvbuf[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
-		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
-	}
-}
-#endif
 
 template <typename T>
 void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, COMM_2D comm)

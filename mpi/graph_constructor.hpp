@@ -992,34 +992,7 @@ private:
 			edges_to_send[(offsets[edge_owner(v1,v0)])++].set(v1_src.value, v0_dst.value);
 		} // #pragma omp for schedule(static)
 	}
-/*
-	// using SFINAE
-	// function #1
-	template<typename EdgeType>
-	void addEdges(EdgeType* edges, int num_edges, GraphType& g, typename EdgeType::has_weight dummy = 0)
-	{
-		const int64_t L = g.num_local_verts_;
-		const int lgl = local_bits_;
-		const int log_local_src = local_bits_ + get_msb_index(mpi.size_2dc-1) + 1;
-#pragma omp parallel for schedule(static)
-		for(int i = 0; i < num_edges; ++i) {
-			const SeparatedId v0(edges[i].v0());
-			const SeparatedId v1(edges[i].v1());
-			const int weight = edges[i].weight_;
 
-			const int src_high = v0.compact(lgl, L) >> LOG_EDGE_PART_SIZE;
-			const uint16_t src_low = v0.compact(lgl, L) & EDGE_PART_SIZE_MASK;
-			const int64_t pos = __sync_fetch_and_add(&wide_row_starts_[src_high], 1);
-
-			// random access (write)
-#ifndef NDEBUG
-			assert( g.edge_array_[pos] == 0 );
-#endif
-			src_vertexes_[pos] = src_low;
-			g.edge_array_[pos] = (weight << log_local_src) | v1.value;
-		}
-	}
-*/
 	// function #2
 	void addEdges(int64_t* src_converted, int64_t* tgt_converted, int num_edges, GraphType& g)
 	{
@@ -1243,80 +1216,6 @@ private:
 	template<typename EdgeType>
 	void sortEdgesInner(GraphType& g, typename EdgeType::has_weight dummy = 0)
 	{
-		/*
-		int64_t sort_buffer_length = 2*1024;
-		int64_t* restrict sort_buffer = (int64_t*)cache_aligned_xmalloc(sizeof(int64_t)*sort_buffer_length);
-		const int64_t num_local_verts = (int64_t(1) << g.log_local_verts());
-		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
-		const int64_t num_wide_rows = std::max<int64_t>(1, src_region_length >> LOG_EDGE_PART_SIZE);
-
-		const int64_t num_edge_lists = (int64_t(1) << g.log_edge_lists());
-		const int log_weight_bits = g.log_packing_edge_lists_;
-		const int log_packing_edge_lists = g.log_packing_edge_lists();
-		const int index_bits = g.log_global_verts() - get_msb_index(mpi.size_2dr);
-		const int64_t mask_packing_edge_lists = (int64_t(1) << log_packing_edge_lists) - 1;
-		const int64_t mask_weight = (int64_t(1) << log_weight_bits) - 1;
-		const int64_t mask_index = (int64_t(1) << index_bits) - 1;
-		const int64_t mask_index_compare =
-				(mask_index << (log_packing_edge_lists + log_weight_bits)) |
-				mask_packing_edge_lists;
-
-#define ENCODE(v) \
-		(((((v & mask_packing_edge_lists) << log_weight_bits) | \
-		((v >> log_packing_edge_lists) & mask_weight)) << index_bits) | \
-		(v >> (log_packing_edge_lists + log_weight_bits)))
-#define DECODE(v) \
-		(((((v & mask_index) << log_weight_bits) | \
-		((v >> index_bits) & mask_weight)) << log_packing_edge_lists) | \
-		(v >> (index_bits + log_weight_bits)))
-
-#pragma omp for
-		for(int64_t i = 0; i < num_edge_lists; ++i) {
-			const int64_t edge_count = wide_row_starts_[i];
-			const int64_t rowstart_i = g.row_starts_[i];
-			assert (g.row_starts_[i+1] - g.row_starts_[i] == wide_row_starts_[i]);
-
-			if(edge_count > sort_buffer_length) {
-				free(sort_buffer);
-				while(edge_count > sort_buffer_length) sort_buffer_length *= 2;
-				sort_buffer = (int64_t*)cache_aligned_xmalloc(sizeof(int64_t)*sort_buffer_length);
-			}
-
-			for(int64_t c = 0; c < edge_count; ++c) {
-				const int64_t v = g.edge_array_(rowstart_i + c);
-				sort_buffer[c] = ENCODE(v);
-				assert(v == DECODE(ENCODE(v)));
-			}
-			// sort sort_buffer
-			std::sort(sort_buffer, sort_buffer + edge_count);
-
-			int64_t idx = rowstart_i;
-			int64_t prev_v = -1;
-			for(int64_t c = 0; c < edge_count; ++c) {
-				const int64_t sort_v = sort_buffer[c];
-				// TODO: now duplicated edges are not merged because sort order is
-				// v0 row bits > weight > index
-				// To reduce parallel edges, sort by the order of
-				// v0 row bits > index > weight
-				// and if you want to optimize SSSP, sort again by the order of
-				// v0 row bits > weight > index
-			//	if((prev_v & mask_index_compare) != (sort_v & mask_index_compare)) {
-					assert (prev_v < sort_v);
-					const int64_t v = DECODE(sort_v);
-					g.edge_array_.set(idx, v);
-			//		prev_v = sort_v;
-					idx++;
-			//	}
-			}
-		//	if(wide_row_starts_[i] > idx - rowstart_i) {
-				wide_row_starts_[i] = idx - rowstart_i;
-		//	}
-		} // #pragma omp for
-
-#undef ENCODE
-#undef DECODE
-		free(sort_buffer);
-*/
 	}
 
 	struct SortEdgeCompair {
