@@ -33,12 +33,6 @@
 #define DEGREE_ORDER_ONLY_IE 0
 #define CONSOLIDATE_IFE_PROC 1
 
-// We omit initialize predecessor array when this option is enabled.
-// WARNING: In the most case, BFS generates correct answer without initializing predecessor array
-// because all the vertexes reached in the previous would be reached in the current run.
-// But this is not true in the general case. BFS may generate wrong answer in some situation.
-#define INIT_PRED_ONCE 0
-
 #define PRE_EXEC_TIME 0 // 0 or 600 seconds
 
 #define PRINT_BT_SIGNAL SIGTRAP

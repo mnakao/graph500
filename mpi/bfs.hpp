@@ -238,12 +238,10 @@ public:
 
 #pragma omp parallel
 		{
-#if !INIT_PRED_ONCE	// Only Spec2010 needs this initialization
 #pragma omp for nowait
-			for(int64_t i = 0; i < num_orig_local_vertices; ++i) {
+			for(int64_t i = 0; i < num_orig_local_vertices; ++i) 
 				pred[i] = -1;
-			}
-#endif
+
 			// clear NQ and visited
 #pragma omp for nowait
 			for(int64_t i = 0; i < bitmap_width; ++i) {
@@ -2222,9 +2220,6 @@ public:
 
 		PRINT_VAL("%d", ISOLATE_FIRST_EDGE);
 		PRINT_VAL("%d", CONSOLIDATE_IFE_PROC);
-
-		PRINT_VAL("%d", INIT_PRED_ONCE);
-
 		PRINT_VAL("%d", PRE_EXEC_TIME);
 
 		PRINT_VAL("%d", PACKET_LENGTH);

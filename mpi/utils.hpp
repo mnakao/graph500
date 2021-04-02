@@ -5,28 +5,21 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <malloc.h>
-
-// for affinity setting //
 #include <unistd.h>
-
 #include <sched.h>
 #if NUMA_BIND
 #include <numa.h>
 #endif
-
 #include <omp.h>
 #if ENABLE_UTOFU
 #include <mpi-ext.h>
 #endif
-
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/shm.h>
-
 #include <algorithm>
 #include <vector>
 #include <deque>
-
 #include "mpi_workarounds.h"
 #include "utils_core.h"
 #include "primitives.hpp"
@@ -235,7 +228,6 @@ void print_max_memory_usage() {
 		fprintf(IMD_OUT, "[MEM-MAX] %f MB\n", (double)g_max / (1024*1024));
 	}
 }
-////
 
 void* xMPI_Alloc_mem(size_t nbytes) {
   void* p = NULL;
