@@ -441,11 +441,7 @@ namespace numa {
 
 int num_omp_threads = 2; // # of threads available
 int num_bfs_threads = 1; // # of threads for BFS
-#if OPENMP_SUB_THREAD
-bool is_extra_omp = true;
-#else
 bool is_extra_omp = false;
-#endif
 int next_base_thread_id = 0;
 int next_thread_id = 1;
 
@@ -1485,11 +1481,7 @@ void cleanup_2dcomm()
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 {
-#if MPI_FUNNELED
 	int reqeust_level = MPI_THREAD_FUNNELED;
-#else
-	int reqeust_level = MPI_THREAD_SINGLE;
-#endif
 	MPI_Init_thread(&argc, &argv, reqeust_level, &mpi.thread_level);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size);
@@ -1530,10 +1522,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		print_with_prefix("Clock started at %s\n", buf);
 #endif
 	}
-
-#if OPENMP_SUB_THREAD
-	omp_set_nested(1);
-#endif
 
 	if(getenv("THREED_MAP")) {
 		setup_2dcomm_on_3d();

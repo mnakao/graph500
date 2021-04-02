@@ -8,13 +8,6 @@
 #define CPU_BIND_CHECK 0
 #define PRINT_BINDING 0
 
-// Switching the task assignment for the main thread and the sub thread
-// 0: MPI is single mode: Main -> MPI, Sub: OpenMP
-// 1: MPI is funneled mode: Main -> OpenMP, Sub: MPI
-// Since communication and computation is overlapped, we cannot have main thread do both tasks.
-#define MPI_FUNNELED 1
-#define OPENMP_SUB_THREAD 0
-
 // Validation Level: 0: No validation, 1: validate at first time only, 2: validate all results
 // Note: To conform to the specification, you must set 2
 #define VALIDATION_LEVEL 2
@@ -100,11 +93,6 @@
 #	define DEGREE_ORDER 0
 #endif
 
-#ifndef _OPENMP
-// turn OFF when OpenMP is not enabled
-#	undef OPENMP_SUB_THREAD
-#	define OPENMP_SUB_THREAD 0
-#endif
 #ifdef __FUJITSU
 #define CACHE_LINE 256
 #define PAGE_SIZE 65536
