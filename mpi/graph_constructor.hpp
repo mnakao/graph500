@@ -1,10 +1,3 @@
-/*
- * graph_constructor.hpp
- *
- *  Created on: Dec 14, 2011
- *      Author: koji
- */
-
 #ifndef GRAPH_CONSTRUCTOR_HPP_
 #define GRAPH_CONSTRUCTOR_HPP_
 
@@ -418,20 +411,6 @@ private:
 			total_vertexes_ += num_vertexes_[i];
 		}
 
-#if VERVOSE_MODE
-		int64_t send_rowbmp[3] = { total_vertexes_, src_bitmap_size*NBPE, 0 };
-		int64_t max_rowbmp[3];
-		int64_t sum_rowbmp[3];
-		MPI_Reduce(send_rowbmp, sum_rowbmp, 3, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
-		MPI_Reduce(send_rowbmp, max_rowbmp, 3, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
-		if(mpi.isMaster()) {
-			print_with_prefix("DC total vertexes. Total %f M / %f M = %f %% Avg %f M / %f M Max %f %%+",
-					to_mega(sum_rowbmp[0]), to_mega(sum_rowbmp[1]), to_mega(sum_rowbmp[0]) / to_mega(sum_rowbmp[1]) * 100,
-					to_mega(sum_rowbmp[0]) / mpi.size_2d, to_mega(sum_rowbmp[1]) / mpi.size_2d,
-					diff_percent(max_rowbmp[0], sum_rowbmp[0], mpi.size_2d));
-		}
-#endif // #if VERVOSE_MODE
-
 		orig_vertexes_ = static_cast<LocalVertex*>(
 				cache_aligned_xcalloc(total_vertexes_*sizeof(LocalVertex)));
 
@@ -842,17 +821,6 @@ private:
 		const int64_t num_local_verts = g.num_local_verts_;
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
 		const int64_t row_bitmap_length = src_region_length >> LOG_NBPE;
-		VERVOSE(const int64_t num_local_edges = wide_row_starts_[num_wide_rows_]);
-
-		VERVOSE(if(mpi.isMaster()) {
-			print_with_prefix("num_local_verts %f M", to_mega(num_local_verts));
-			print_with_prefix("src_region_length %f M", to_mega(src_region_length));
-			print_with_prefix("num_wide_rows %f M", to_mega(num_wide_rows_));
-			print_with_prefix("row_bitmap_length %f M", to_mega(row_bitmap_length));
-			print_with_prefix("local_bits=%d", local_bits_);
-			print_with_prefix("correspond to %f M", to_mega(int64_t(1) << local_bits_));
-		});
-
 		const int64_t non_zero_rows = g.row_sums_[row_bitmap_length];
 		int64_t* row_starts = static_cast<int64_t*>
 			(cache_aligned_xmalloc((non_zero_rows+1)*sizeof(int64_t)));
@@ -915,37 +883,6 @@ private:
 #if ISOLATE_FIRST_EDGE
 		isolateFirstEdge(g);
 #endif // #if ISOLATE_FIRST_EDGE || DEGREE_ORDER
-
-#if VERVOSE_MODE
-		int64_t send_rowbmp[5] = { non_zero_rows, row_bitmap_length*NBPE, num_local_edges, 0, 0 };
-		int64_t max_rowbmp[5];
-		int64_t sum_rowbmp[5];
-		MPI_Reduce(send_rowbmp, sum_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_SUM, 0, mpi.comm_2d);
-		MPI_Reduce(send_rowbmp, max_rowbmp, 5, MpiTypeOf<int64_t>::type, MPI_MAX, 0, mpi.comm_2d);
-		if(mpi.isMaster()) {
-			int64_t local_bits_max = int64_t(1) << local_bits_;
-			print_with_prefix("non zero rows. Total %f M / %f M = %f %% Avg %f M / %f M Max %f %%+",
-					to_mega(sum_rowbmp[0]), to_mega(sum_rowbmp[1]), to_mega(sum_rowbmp[0]) / to_mega(sum_rowbmp[1]) * 100,
-					to_mega(sum_rowbmp[0]) / mpi.size_2d, to_mega(sum_rowbmp[1]) / mpi.size_2d,
-					diff_percent(max_rowbmp[0], sum_rowbmp[0], mpi.size_2d));
-			print_with_prefix("distributed edges. Total %f M Avg %f M Max %f %%+",
-					to_mega(sum_rowbmp[2]), to_mega(sum_rowbmp[2]) / mpi.size_2d,
-					diff_percent(max_rowbmp[2], sum_rowbmp[2], mpi.size_2d));
-			print_with_prefix("Type requirements:");
-			print_with_prefix("Global vertex id %s using %s", minimum_type(num_local_verts * mpi.size_2d), TypeName<int64_t>::value);
-			print_with_prefix("Local vertex id %s using %s", minimum_type(num_local_verts), TypeName<uint32_t>::value);
-			print_with_prefix("Index for local edges %s using %s", minimum_type(max_rowbmp[2]), TypeName<int64_t>::value);
-			print_with_prefix("*Index for src local region %s using %s", minimum_type(local_bits_max * mpi.size_2dc), TypeName<TwodVertex>::value);
-			print_with_prefix("*Index for dst local region %s using %s", minimum_type(local_bits_max * mpi.size_2dr), TypeName<TwodVertex>::value);
-			print_with_prefix("Index for non zero rows %s using %s", minimum_type(max_rowbmp[0]), TypeName<TwodVertex>::value);
-			print_with_prefix("*BFELL sort region size %s using %s", minimum_type(BFELL_SORT), TypeName<SortIdx>::value);
-			print_with_prefix("Memory consumption:");
-			print_with_prefix("row_bitmap %f MB", to_mega(row_bitmap_length*sizeof(BitmapType)));
-			print_with_prefix("row_sums %f MB", to_mega((row_bitmap_length+1)*sizeof(TwodVertex)));
-			print_with_prefix("edge_array %f MB", to_mega(max_rowbmp[2]*sizeof(TwodVertex)));
-			print_with_prefix("row_starts %f MB", to_mega(max_rowbmp[0]*sizeof(int64_t)));
-		}
-#endif // #if VERVOSE_MODE
 	}
 
 	// using SFINAE
@@ -1315,23 +1252,13 @@ private:
 		}
 		int64_t tmp_send_num_vertices = num_vertices;
 		MPI_Allreduce(&tmp_send_num_vertices, &num_vertices, 1, MpiTypeOf<int64_t>::type, MPI_SUM, mpi.comm_2d);
-		VERVOSE(int64_t num_virtual_vertices = int64_t(1) << g.log_orig_global_verts_);
-		VERVOSE(if(mpi.isMaster()) print_with_prefix("# of actual vertices %f G %f %%", to_giga(num_vertices),
-				(double)num_vertices / (double)num_virtual_vertices * 100.0));
 		g.num_global_verts_ = num_vertices;
 	}
-
-	//const int log_size_;
-	//const int rmask_;
-	//const int cmask_;
 	int log_local_verts_unit_;
 	int64_t num_wide_rows_;
-
 	int org_local_bits_; // local bits for original vertex id
 	int local_bits_; // local bits for reordered vertex id
-
 	DegreeCalculation* degree_calc_;
-
 	uint16_t* src_vertexes_;
 	int64_t* wide_row_starts_;
 	int64_t* row_starts_sup_;

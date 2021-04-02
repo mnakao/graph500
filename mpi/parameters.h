@@ -1,10 +1,3 @@
-/*
- * parameters.h
- *
- *  Created on: Mar 2, 2012
- *      Author: koji
- */
-
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
@@ -28,10 +21,6 @@
 
 // General Settings
 #define PRINT_WITH_TIME 1
-#ifndef VERVOSE_MODE
-#define VERVOSE_MODE 1
-#endif
-#define PROFILING_MODE 0
 #define REPORT_GEN_RPGRESS 0
 
 // General Optimizations

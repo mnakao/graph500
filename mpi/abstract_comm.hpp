@@ -133,11 +133,8 @@ public:
 	}
 
 	void run_with_ptr() {
-		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
 		int max_size = buffer_provider_->max_size() / (es * comm_size_);
-		VERVOSE(last_send_size_ = 0);
-		VERVOSE(last_recv_size_ = 0);
 
 		const int MINIMUM_POINTER_SPACE = 40;
 
@@ -236,9 +233,7 @@ public:
 			void* recvbuf = buffer_provider_->clear_buffers();
 			MPI_Datatype type = buffer_provider_->data_type();
 			int recvbufsize = buffer_provider_->max_size();
-			PROF(merge_time_ += tk_all);
 			USER_START(a2a_comm);
-			VERVOSE(if(loop > 0 && mpi.isMaster()) print_with_prefix("Alltoall with pointer (Again)"));
 #ifdef PROFILE_REGIONS
 			timer_start(current_fold);
 #endif
@@ -246,11 +241,7 @@ public:
 #ifdef PROFILE_REGIONS
 			timer_stop(current_fold);
 #endif
-			PROF(comm_time_ += tk_all);
 			USER_END(a2a_comm);
-
-			VERVOSE(last_send_size_ += scatter_.get_send_count() * es);
-			VERVOSE(last_recv_size_ += scatter_.get_recv_count() * es);
 
 			int* recv_offsets = scatter_.get_recv_offsets();
 
@@ -260,10 +251,7 @@ public:
 				int length = recv_offsets[i+1] - offset;
 				buffer_provider_->received(recvbuf, offset, length, i);
 			}
-			PROF(recv_proc_time_ += tk_all);
-
 			buffer_provider_->finish();
-			PROF(recv_proc_large_time_ += tk_all);
 		}
 
 		// clear
@@ -276,10 +264,7 @@ public:
 
 	void run() {
 		// merge
-		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
-		VERVOSE(last_send_size_ = 0);
-		VERVOSE(last_recv_size_ = 0);
 		USER_START(a2a_merge);
 #pragma omp parallel
 		{
@@ -320,7 +305,6 @@ public:
 		void* recvbuf = buffer_provider_->clear_buffers();
 		MPI_Datatype type = buffer_provider_->data_type();
 		int recvbufsize = buffer_provider_->max_size();
-		PROF(merge_time_ += tk_all);
 		USER_START(a2a_comm);
 #ifdef PROFILE_REGIONS
         timer_start(current_fold);
@@ -329,11 +313,7 @@ public:
 #ifdef PROFILE_REGIONS
         timer_stop(current_fold);
 #endif
-		PROF(comm_time_ += tk_all);
 		USER_END(a2a_comm);
-
-		VERVOSE(last_send_size_ = scatter_.get_send_count() * es);
-		VERVOSE(last_recv_size_ = scatter_.get_recv_count() * es);
 
 		int* recv_offsets = scatter_.get_recv_offsets();
 
@@ -343,23 +323,7 @@ public:
 			int length = recv_offsets[i+1] - offset;
 			buffer_provider_->received(recvbuf, offset, length, i);
 		}
-		PROF(recv_proc_time_ += tk_all);
 	}
-#if PROFILING_MODE
-	void submit_prof_info(int level, bool with_ptr) {
-		merge_time_.submit("merge a2a data", level);
-		comm_time_.submit("a2a comm", level);
-		recv_proc_time_.submit("proc recv data", level);
-		if(with_ptr) {
-			recv_proc_large_time_.submit("proc recv large data", level);
-		}
-		VERVOSE(profiling::g_pis.submitCounter(last_send_size_, "a2a send data", level);)
-		VERVOSE(profiling::g_pis.submitCounter(last_recv_size_, "a2a recv data", level);)
-	}
-#endif
-#if VERVOSE_MODE
-	int get_last_send_size() { return last_send_size_; }
-#endif
 private:
 
 	struct DynamicDataSet {
@@ -369,21 +333,12 @@ private:
 	} *d_;
 
 	MPI_Comm comm_;
-
 	int buffer_size_;
 	int comm_size_;
-
 	int node_list_length_;
 	CommTarget* node_;
 	AlltoallBufferHandler* buffer_provider_;
 	ScatterContext scatter_;
-
-	PROF(profiling::TimeSpan merge_time_);
-	PROF(profiling::TimeSpan comm_time_);
-	PROF(profiling::TimeSpan recv_proc_time_);
-	PROF(profiling::TimeSpan recv_proc_large_time_);
-	VERVOSE(int last_send_size_);
-	VERVOSE(int last_recv_size_);
 
 	void flush(CommTarget& node) {
 		if(node.cur_buf.ptr != NULL) {

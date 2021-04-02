@@ -1,11 +1,3 @@
-/*
- * main.cc
- *
- *  Created on: Dec 9, 2011
- *      Author: koji
- */
-
-// C includes
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,10 +5,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <math.h>
-
-// C++ includes
 #include <string>
-
 #include "parameters.h"
 #include "utils_core.h"
 #include "primitives.hpp"
@@ -114,16 +103,11 @@ void graph500_bfs(int SCALE, int edgefactor)
 	timer_clear();
 #endif
 	for(int i = root_start; i < num_bfs_roots; ++i) {
-	//for(int i = 0; i < num_bfs_roots; ++i) {
-		VERVOSE(print_max_memory_usage());
-
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
 		MPI_Barrier(mpi.comm_2d);
-		PROF(profiling::g_pis.reset());
 		bfs_times[i] = MPI_Wtime();
 		benchmark->run_bfs(bfs_roots[i], pred);
 		bfs_times[i] = MPI_Wtime() - bfs_times[i];
-		PROF(profiling::g_pis.printResult());
 		if(mpi.isMaster()) {
 			print_with_prefix("Time for BFS %d is %f", i, bfs_times[i]);
 			print_with_prefix("Validating BFS %d", i);

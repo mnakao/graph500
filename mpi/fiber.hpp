@@ -1,15 +1,7 @@
-/*
- * fiber.hpp
- *
- *  Created on: Mar 6, 2012
- *      Author: koji
- */
-
 #ifndef FIBER_HPP_
 #define FIBER_HPP_
 
 #include <pthread.h>
-
 #include <deque>
 
 #define debug(...) debug_print(FIBMN, __VA_ARGS__)
@@ -71,9 +63,7 @@ public:
 					if( terminated_ ) { pthread_mutex_unlock(&thread_sync_); break; }
 					++suspended_;
 					TRACER(fib_wait);
-					PROF(profiling::TimeKeeper wait_);
 					pthread_cond_wait(&thread_state_, &thread_sync_);
-					PROF(wait_time_ += wait_);
 					--suspended_;
 				}
 				pthread_mutex_unlock(&thread_sync_);
@@ -148,14 +138,6 @@ public:
 		pthread_mutex_unlock(&thread_sync_);
 		if(num_suspended > 0) pthread_cond_broadcast(&thread_state_);
 	}
-#if PROFILING_MODE
-	void submit_wait_time(const char* content, int number) {
-		wait_time_.submit(content, number);
-	}
-	void reset_wait_time() {
-		wait_time_.reset();
-	}
-#endif
 private:
 	//
 	bool cleanup_;
@@ -169,7 +151,6 @@ private:
 	int max_priority_;
 
 	std::deque<Runnable*> command_queue_[MAX_PRIORITY];
-	PROF(profiling::TimeSpan wait_time_);
 
 	bool pop_command(Runnable** cmd, int priority_lower_bound) {
 		int i = max_priority_ + 1;

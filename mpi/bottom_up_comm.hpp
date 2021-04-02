@@ -1,10 +1,3 @@
-/*
- * bottom_up_comm.hpp
- *
- *  Created on: 2014/06/04
- *      Author: ueno
- */
-
 #ifndef BOTTOM_UP_COMM_HPP_
 #define BOTTOM_UP_COMM_HPP_
 
@@ -82,27 +75,6 @@ public:
 	}
 
 	virtual void print_stt() {
-#if VERVOSE_MODE
-		int steps = compute_time_.size();
-		int64_t sum_compute[steps];
-		int64_t sum_wait_comm[steps];
-		int64_t max_compute[steps];
-		int64_t max_wait_comm[steps];
-		MPI_Reduce(&compute_time_[0], sum_compute, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&comm_wait_time_[0], sum_wait_comm, steps, MpiTypeOf<int64_t>::type, MPI_SUM, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&compute_time_[0], max_compute, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
-		MPI_Reduce(&comm_wait_time_[0], max_wait_comm, steps, MpiTypeOf<int64_t>::type, MPI_MAX, 0, MPI_COMM_WORLD);
-		if(mpi.isMaster()) {
-			for(int i = 0; i < steps; ++i) {
-				double comp_avg = (double)sum_compute[i] / mpi.size_2d / 1000.0;
-				double comm_wait_avg = (double)sum_wait_comm[i] / mpi.size_2d / 1000.0;
-				double comp_max = (double)max_compute[i] / 1000.0;
-				double comm_wait_max = (double)max_wait_comm[i] / 1000.0;
-				print_with_prefix("step, %d, max-step, %d, avg-compute, %f, max-compute, %f, avg-wait-comm, %f, max-wait-comm, %f, (ms)",
-						i+1, steps, comp_avg, comp_max, comm_wait_avg, comm_wait_max);
-			}
-		}
-#endif
 	}
 protected:
 	enum {
@@ -118,9 +90,6 @@ protected:
 	std::vector<void*> free_list;
 	BottomUpSubstepData send_pair[NBUF];
 	BottomUpSubstepData recv_pair[NBUF];
-	VERVOSE(profiling::TimeKeeper tk_);
-	VERVOSE(std::vector<int64_t> compute_time_);
-	VERVOSE(std::vector<int64_t> comm_wait_time_);
 
 	int element_size;
 	int buffer_width;
@@ -160,12 +129,6 @@ protected:
 
 		debug("begin buffer_count=%d, buffer_width=%d",
 				buffer_count__, buffer_width__);
-#if VERVOSE_MODE
-		if(mpi.isMaster()) print_with_prefix("Bottom-up substep buffer count: %d", buffer_count__);
-#endif
-		VERVOSE(tk_.getSpanAndReset());
-		VERVOSE(compute_time_.clear());
-		VERVOSE(comm_wait_time_.clear());
 	}
 };
 
@@ -251,9 +214,7 @@ protected:
 	}
 
 	virtual void send_recv() {
-		VERVOSE(compute_time_.push_back(tk_.getSpanAndReset()));
 		next_recv_probe(true);
-		VERVOSE(comm_wait_time_.push_back(tk_.getSpanAndReset()));
 		int recv_0 = recv_top++ % NBUF;
 		int recv_1 = recv_top++ % NBUF;
 		recv_pair[recv_0].data = get_buffer();
