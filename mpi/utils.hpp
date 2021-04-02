@@ -1166,18 +1166,6 @@ static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c)
 	c.size = size;
 }
 
-static int compute_rank_2d(int x, int y, int sx, int sy) {
-	if(x >= sx) x -= sx;
-	if(x < 0) x += sx;
-	if(y >= sy) y -= sy;
-	if(y < 0) y += sy;
-
-	if(y % 2)
-		return y * sx + (sx - 1 - x);
-	else
-		return y * sx + x;
-}
-
 static void setup_rank_map(COMM_2D& comm) {
 	int send_rank = comm.rank_x + comm.rank_y * comm.size_x;
 	int recv_rank[comm.size];
@@ -1647,90 +1635,6 @@ T* alltoallv(T* sendbuf, int* sendcount,
 	MPI_Alltoallv(sendbuf, sendcount, sendoffset, MpiTypeOf<T>::type,
 			recv_data, recvcount, recvoffset, MpiTypeOf<T>::type, comm);
 	return recv_data;
-}
-
-template <typename T>
-void my_allgatherv(T *buffer, int* count, int* offset, MPI_Comm comm, int rank, int size, int left, int right)
-{
-	int l_sendidx = rank;
-	int l_recvidx = (rank + size + 1) % size;
-	int r_sendidx = rank;
-	int r_recvidx = (rank + size - 1) % size;
-
-	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
-		if(l_sendidx >= size) l_sendidx -= size;
-		if(l_recvidx >= size) l_recvidx -= size;
-		if(r_sendidx < 0) r_sendidx += size;
-		if(r_recvidx < 0) r_recvidx += size;
-
-		int l_send_off = offset[l_sendidx];
-		int l_send_cnt = count[l_sendidx] / 2;
-		int l_recv_off = offset[l_recvidx];
-		int l_recv_cnt = count[l_recvidx] / 2;
-
-		int r_send_off = offset[r_sendidx] + count[r_sendidx] / 2;
-		int r_send_cnt = count[r_sendidx] - count[r_sendidx] / 2;
-		int r_recv_off = offset[r_recvidx] + count[r_recvidx] / 2;
-		int r_recv_cnt = count[r_recvidx] - count[r_recvidx] / 2;
-
-		MPI_Request req[4];
-		MPI_Irecv(&buffer[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG1, comm, &req[2]);
-		MPI_Irecv(&buffer[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG1, comm, &req[3]);
-		MPI_Isend(&buffer[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG1, comm, &req[0]);
-		MPI_Isend(&buffer[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG1, comm, &req[1]);
-		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
-	}
-}
-
-template <typename T>
-void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, COMM_2D comm)
-{
-	memcpy(&recvbuf[recv_offset[comm.rank]], sendbuf, sizeof(T) * send_count);
-	if(mpi.isMultiDimAvailable == false) {
-		int size; MPI_Comm_size(comm.comm, &size);
-		int rank; MPI_Comm_rank(comm.comm, &rank);
-		int left = (rank + size - 1) % size;
-		int right = (rank + size + 1) % size;
-		my_allgatherv(recvbuf, recv_count, recv_offset, comm.comm, rank, size, left, right);
-		return ;
-	}
-	{
-		int size = comm.size_x;
-		int rank = comm.rank % comm.size_x;
-		int base = comm.rank - rank;
-		int left = (rank + size - 1) % size + base;
-		int right = (rank + size + 1) % size + base;
-		my_allgatherv(recvbuf, &recv_count[base], &recv_offset[base], comm.comm, rank, size, left, right);
-	}
-	{
-		int size = comm.size_y;
-		int rank = comm.rank / comm.size_x;
-		int left = compute_rank_2d(comm.rank_x, comm.rank_y - 1, comm.size_x, comm.size_y);
-		int right = compute_rank_2d(comm.rank_x, comm.rank_y + 1, comm.size_x, comm.size_y);
-		int count[comm.size_y];
-		int offset[comm.size_y];
-		for(int y = 0; y < comm.size_y; ++y) {
-			int start = y * comm.size_x;
-			int last = start + comm.size_x - 1;
-			offset[y] = recv_offset[start];
-			count[y] = recv_offset[last] + recv_count[last] - offset[y];
-		}
-		my_allgatherv(recvbuf, count, offset, comm.comm, rank, size, left, right);
-	}
-}
-
-template <typename T>
-void my_allgather(T *sendbuf, int count, T *recvbuf, COMM_2D comm)
-{
-	memcpy(&recvbuf[count * comm.rank], sendbuf, sizeof(T) * count);
-	int recv_count[comm.size];
-	int recv_offset[comm.size+1];
-	recv_offset[0] = 0;
-	for(int i = 0; i < comm.size; ++i) {
-		recv_count[i] = count;
-		recv_offset[i+1] = recv_offset[i] + count;
-	}
-	my_allgatherv(sendbuf, count, recvbuf, recv_count, recv_offset, comm);
 }
 
 } // namespace MpiCol {
