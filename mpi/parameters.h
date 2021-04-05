@@ -21,10 +21,7 @@
 #define TOP_DOWN_SEND_LB 2
 #define TOP_DOWN_RECV_LB 1
 #define BOTTOM_UP_OVERLAP_PFS 1
-
 #define ENABLE_UTOFU 0
-#define ENABLE_INLINE_ATOMICS 0
-
 #define BFELL 0
 
 // Optimization for CSR

@@ -1,4 +1,3 @@
-
 #ifndef UTILS_HPP_
 #define UTILS_HPP_
 #include <stdint.h>
@@ -17,15 +16,12 @@ using std::ptrdiff_t;
 //-------------------------------------------------------------//
 // For generic typing
 //-------------------------------------------------------------//
-
 template <typename T> struct MpiTypeOf { };
 
 //-------------------------------------------------------------//
 // Bit manipulation functions
 //-------------------------------------------------------------//
-
 #if defined(__INTEL_COMPILER)
-
 #define get_msb_index _bit_scan_reverse
 #define get_lsb_index _bit_scan
 
@@ -45,217 +41,9 @@ inline int get_msb_index(int64_t value) {
 #undef NLEADING_ZERO_BITSLL
 #endif // #ifdef __GNUC__
 
-#ifdef __sparc_v9__
-
-inline int __builtin_popcountl_asm(uint64_t n) {
-	int c;
-	__asm__(
-			"popc %1, %0\n\t"
-			:"=r"(c)
-			:"r"(n)
-			);
-	assert(__builtin_popcountl(n) == c);
-	return c;
-}
-
-inline int __builtin_popcount_asm(uint32_t n) {
-	int c;
-	__asm__(
-			"popc %1, %0\n\t"
-			:"=r"(c)
-			:"r"(n)
-			);
-	assert(__builtin_popcount(n) == c);
-	return c;
-}
-
-inline int __builtin_ctzl_asm(uint64_t n) {
-	return __builtin_popcountl_asm((n&(-n))-1);
-}
-
-inline int __builtin_ctz_asm(uint32_t n) {
-	return __builtin_popcount_asm((n&(-n))-1);
-}
-
-#define __builtin_popcountl __builtin_popcountl_asm
-#define __builtin_popcount32bit __builtin_popcount_asm
-#define __builtin_popcount64bit __builtin_popcountl_asm
-
-#define __builtin_ctzl __builtin_ctzl_asm
-#define __builtin_ctz32bit __builtin_ctz_asm
-#define __builtin_ctz64bit __builtin_ctzl_asm
-
-#if ENABLE_INLINE_ATOMICS
-inline int32_t __sync_fetch_and_add(volatile int32_t* ptr, int32_t n) {
-	int32_t old_value;
-	__asm__ (
-		"ld     [%2], %0\n"
-	"1:\n\t"
-		"add    %0, %3, %%l0\n\t"
-			"membar 15\n\t"
-		"cas    [%2], %0, %%l0\n\t"
-		"cmp    %0, %%l0\n\t"
-		"bne,a,pn %%icc, 1b\n\t"
-		"mov    %%l0, %0\n\t"
-		:"=&r"(old_value),"=m"(*ptr)
-		:"r"(ptr),"r"(n)
-		:"%l0","cc"
-	);
-	return old_value;
-}
-inline int64_t __sync_fetch_and_add(volatile int64_t* ptr, int64_t n) {
-	int64_t old_value;
-	__asm__ (
-		"ldx    [%2], %0\n"
-	"1:\n\t"
-		"add    %0, %3, %%l0\n\t"
-			"membar 15\n\t"
-		"casx  [%2], %0, %%l0\n\t"
-		"cmp    %0, %%l0\n\t"
-		"bne,a,pn %%xcc, 1b\n\t"
-		"mov    %%l0, %0\n\t"
-		:"=&r"(old_value),"=m"(*ptr)
-		:"r"(ptr),"r"(n)
-		:"%l0","cc"
-	);
-	return old_value;
-}
-
-inline int32_t __sync_add_and_fetch(volatile int32_t* ptr, int32_t n) {
-	int32_t old_value;
-	__asm__ (
-		"ld     [%2], %0\n"
-	"1:\n\t"
-		"add    %0, %3, %%l0\n\t"
-			"membar 15\n\t"
-		"cas    [%2], %0, %%l0\n\t"
-		"cmp    %0, %%l0\n\t"
-		"bne,a,pn %%icc, 1b\n\t"
-		"mov    %%l0, %0\n\t"
-		:"=&r"(old_value),"=m"(*ptr)
-		:"r"(ptr),"r"(n)
-		:"%l0","cc"
-	);
-	return old_value + n;
-}
-inline int64_t __sync_add_and_fetch(volatile int64_t* ptr, int64_t n) {
-	int64_t old_value;
-	__asm__ (
-		"ldx    [%2], %0\n"
-	"1:\n\t"
-		"add    %0, %3, %%l0\n\t"
-			"membar 15\n\t"
-		"casx  [%2], %0, %%l0\n\t"
-		"cmp    %0, %%l0\n\t"
-		"bne,a,pn %%xcc, 1b\n\t"
-		"mov    %%l0, %0\n\t"
-		:"=&r"(old_value),"=m"(*ptr)
-		:"r"(ptr),"r"(n)
-		:"%l0","cc"
-	);
-	return old_value + n;
-}
-
-inline uint32_t __sync_fetch_and_or(volatile uint32_t* ptr, uint32_t n) {
-	int32_t old_value;
-	__asm__ (
-		"ld     [%2], %0\n"
-	"1:\n\t"
-		"or     %0, %3, %%l0\n\t"
-			"membar 15\n\t"
-		"cas    [%2], %0, %%l0\n\t"
-		"cmp    %0, %%l0\n\t"
-		"bne,a,pn %%icc, 1b\n\t"
-		"mov    %%l0, %0\n\t"
-		:"=&r"(old_value),"=m"(*ptr)
-		:"r"(ptr),"r"(n)
-		:"%l0","cc"
-	);
-	return old_value;
-}
-inline uint64_t __sync_fetch_and_or(volatile uint64_t* ptr, uint64_t n) {
-	int64_t old_value;
-	__asm__ (
-		"ldx    [%2], %0\n"
-	"1:\n\t"
-		"or     %0, %3, %%l0\n\t"
-			"membar 15\n\t"
-		"casx  [%2], %0, %%l0\n\t"
-		"cmp    %0, %%l0\n\t"
-		"bne,a,pn %%xcc, 1b\n\t"
-		"mov    %%l0, %0\n\t"
-		:"=&r"(old_value),"=m"(*ptr)
-		:"r"(ptr),"r"(n)
-		:"%l0","cc"
-	);
-	return old_value;
-}
-
-inline bool __sync_bool_compare_and_swap(volatile int32_t* ptr, int32_t old_value, int32_t new_value) {
-	bool ret;
-	__asm__ (
-		"membar 15\n\t"
-		"cas    [%2], %3, %4\n\t"
-		"cmp    %3, %4\n\t"
-		"or     %%g0, 1, %0\n\t"
-		"movne  %%icc, 0, %0\n\t"
-		:"=r"(ret),"=m"(*ptr)
-		:"r"(ptr),"r"(old_value),"r"(new_value)
-		:"cc"
-	);
-	return ret;
-}
-inline bool __sync_bool_compare_and_swap(volatile int64_t* ptr, int64_t old_value, int64_t new_value) {
-	bool ret;
-	__asm__ (
-		"membar 15\n\t"
-		"casx  [%2], %3, %4\n\t"
-		"cmp    %3, %4\n\t"
-		"or     %%g0, 1, %0\n\t"
-		"movne  %%xcc, 0, %0\n\t"
-		:"=r"(ret),"=m"(*ptr)
-		:"r"(ptr),"r"(old_value),"r"(new_value)
-		:"cc"
-	);
-	return ret;
-}
-#endif
-
-// Since Fujitsu compiler does not support __sync_synchronize.
-// We define here.
-static __thread uint this_is_not_used_ = 0;
-#define __sync_synchronize() do { __sync_fetch_and_or(&this_is_not_used_, 1); } while(false)
-
-#define NEXT_BIT(flags__, flag__, mask__, idx__) do {\
-	flag__ = flags__ & (-flags__);\
-	mask__ = flag__ - 1;\
-	flags__ &= ~flag__;\
-	idx__ = __builtin_popcountl(mask__); } while(false)\
-
-#else // #ifdef __sparc_v9__
-
-#define NEXT_BIT(flags__, flag__, mask__, idx__) do {\
-	idx__ = __builtin_ctzl(flags__);\
-	flag__ = BitmapType(1) << idx__;\
-	mask__ = flag__ - 1;\
-	flags__ &= ~flag__; } while(false)\
-
-#define __builtin_popcount32bit __builtin_popcount
-#define __builtin_popcount64bit __builtin_popcountl
-
-#define __builtin_ctz32bit __builtin_ctz
-#define __builtin_ctz64bit __builtin_ctzl
-
-#endif // #ifdef __sparc_v9__
-
-// Clear the bit size of each built-in function.
-#define __builtin_popcount THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
-#define __builtin_ctz THIS_IS_FOR_32BIT_INT_AND_NOT_64BIT
-
 //-------------------------------------------------------------//
 // Memory Allocation
 //-------------------------------------------------------------//
-
 void* xMPI_Alloc_mem(size_t nbytes);
 void* cache_aligned_xcalloc(const size_t size);
 void* cache_aligned_xmalloc(const size_t size);
@@ -265,7 +53,6 @@ void* page_aligned_xmalloc(const size_t size);
 //-------------------------------------------------------------//
 // Sort
 //-------------------------------------------------------------//
-
 template <typename T1, typename T2>
 class pointer_pair_value
 {
