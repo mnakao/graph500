@@ -23,13 +23,8 @@ void graph500_bfs(int SCALE, int edgefactor)
 	SET_AFFINITY;
 
 	double bfs_times[64], validate_times[64], edge_counts[64];
-	LogFileFormat log = {0};
-	int root_start = read_log_file(&log, SCALE, edgefactor, bfs_times, validate_times, edge_counts);
-	if(mpi.isMaster() && root_start != 0)
-		print_with_prefix("Resume from %d th run", root_start);
-
+	int root_start = 0;
 	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
-//	EdgeListStorage<UnweightedPackedEdge, 512*1024> edge_list(
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
 	BfsOnCPU::printInformation();
@@ -68,9 +63,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 #endif
 
 	bool result_ok = true;
-
-	if(root_start == 0)
-		init_log(SCALE, edgefactor, generation_time, construction_time, redistribution_time, &log);
 
 	benchmark->prepare_bfs();
 	
@@ -144,8 +136,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 		if(result_ok == false) {
 			break;
 		}
-
-		update_log_file(&log, bfs_times[i], validate_times[i], edge_visit_count);
 	}
 	benchmark->end_bfs();
 
