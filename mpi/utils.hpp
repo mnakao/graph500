@@ -33,12 +33,6 @@ struct COMM_2D {
 	int* rank_map; // Index: rank_x + rank_y * size_x
 };
 
-static void swap(COMM_2D& a, COMM_2D& b) {
-	COMM_2D tmp = b;
-	b = a;
-	a = tmp;
-}
-
 struct MPI_GLOBALS {
 	int rank;
 	int size;
@@ -1070,30 +1064,6 @@ void set_affinity()
 
 } // namespace numa
 
-/**
- * compute rank that is assigned continuously in the field
- * the last dimension size should be even.
- */
-static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c) {
-	int size = 1;
-	int rank = 0;
-	for(int i = ss.size() - 1; i >= 0; --i) {
-		if(rank % 2) {
-			rank = rank * ss[i] + (ss[i] - 1 - rs[i]);
-		}
-		else {
-			rank = rank * ss[i] + rs[i];
-		}
-		size *= ss[i];
-	}
-	c.size_x = ss[0];
-	c.size_y = size / c.size_x;
-	c.rank_x = rs[0];
-	c.rank_y = rank / c.size_x;
-	c.rank = rank;
-	c.size = size;
-}
-
 static void setup_rank_map(COMM_2D& comm) {
 	int send_rank = comm.rank_x + comm.rank_y * comm.size_x;
 	int recv_rank[comm.size];
@@ -1105,6 +1075,30 @@ static void setup_rank_map(COMM_2D& comm) {
 }
 
 #if ENABLE_UTOFU
+/**
+ * compute rank that is assigned continuously in the field
+ * the last dimension size should be even.
+ */
+static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c) {
+        int size = 1;
+        int rank = 0;
+	for(int i = ss.size() - 1; i >= 0; --i) {
+                if(rank % 2) {
+                        rank = rank * ss[i] + (ss[i] - 1 - rs[i]);
+                }
+                else {
+                        rank = rank * ss[i] + rs[i];
+	        }
+	        size *= ss[i];
+        }
+	c.size_x = ss[0];
+        c.size_y = size / c.size_x;
+        c.rank_x = rs[0];
+	c.rank_y = rank / c.size_x;
+	c.rank = rank;
+        c.size = size;
+}
+
 static void parse_row_dims(bool* rdim, const char* input) {
 	memset(rdim, 0x00, sizeof(bool)*6);
 	while(*input) {
@@ -1203,95 +1197,11 @@ static void setup_2dcomm()
 			mpi.rank_2dr = mpi.comm_c.rank;
 			mpi.rank_2dc = mpi.comm_r.rank;
 			mpi.isMultiDimAvailable = true;
-
-			//print_with_prefix("rank: (%d,%d,%d,%d,%d,%d) -> (%d,%d)",
-			//		rank6d[0], rank6d[1], rank6d[2], rank6d[3], rank6d[4], rank6d[5], mpi.rank_2dr, mpi.rank_2dc);
-
 			success = true;
 		}
 	}
-
-	const char* tofu_3d_div_y = getenv("TOFU_3D_DIV_Y"); // Number of divisions for Y axis. e.g. When TOFU_3D_DIV_Y=4, (R x C) = (Z*4, X*Y/4)
-	if(!success && tofu_3d_div_y) {
-	  int div, size;
-	  sscanf(tofu_3d_div_y, "%d", &div);
-	  FJMPI_Topology_get_dimension(&size);
-	  if(size != 3){
-		if(mpi.isMaster())
-		  print_with_prefix("TOFU_3D_DIV_Y : dimension must be 3\n");
-		MPI_Finalize();
-		exit(1);
-	  }
-	  
-	  int X, Y, Z;
-	  FJMPI_Topology_get_shape(&X, &Y, &Z);
-	  if(Y%div != 0){
-		if(mpi.isMaster())
-		  print_with_prefix("TOFU_3D_DIV_Y : Y must be multiple of %d\n", div);
-		MPI_Finalize();
-		exit(1);
-	  }
-	  else if((Y/div)%2 != 0 && (Y/div) != 1){  // Y/div = 1 is OK because network topology is torus.
-		if(mpi.isMaster())
-		  print_with_prefix("TOFU_3D_DIV_Y : Y must be multiple of 2*%d\n", div);
-        MPI_Finalize();
-        exit(1);
-      }
-
-	  int DY = Y / div;
-	  mpi.comm_c.size = mpi.size_2dr = Z * div;
-	  mpi.comm_r.size = mpi.size_2dc = X * DY;
-	  if(mpi.isMaster())
-		print_with_prefix("Dimension (R x C) = %d x %d is mapped to (X x Y x Z) = %d x %d x %d\n", mpi.size_2dr, mpi.size_2dc, X, Y, Z);
-
-	  int x  = mpi.rank % X;
-	  int y  = (mpi.rank % (X*Y)) / X;
-	  mpi.comm_c.rank = mpi.rank_2dr = mpi.rank/(X*Y) + (mpi.rank%(X*Y))/(X*DY) * Z;
-	  if(x == 0 && y%DY == 0) mpi.comm_r.rank = mpi.rank_2dc = 0;
-	  else if(x == 0)         mpi.comm_r.rank = mpi.rank_2dc = X * DY - (y%DY);
-	  else if((y%DY)%2 == 0)  mpi.comm_r.rank = mpi.rank_2dc = (X-1) * (y%DY) + x;
-	  else	      	          mpi.comm_r.rank = mpi.rank_2dc = (X-1) * (y%DY) + (X-x);
-	  
-	  success = true;
-	}
 #endif // #if ENABLE_UTOFU
 	
-	const char* virt_4d = getenv("VIRT_4D");
-	if(!success && virt_4d) {
-		int RX, RY, CX, CY;
-		sscanf(virt_4d, "%dx%dx%dx%d", &RX, &RY, &CX, &CY);
-		if(mpi.isMaster()) print_with_prefix("Provided dimension (RXxRYxCXxCY) = %dx%dx%dx%d = %d", RX, RY, CX, CY, mpi.size);
-		if(RX*RY*CX*CY != mpi.size) {
-			if(mpi.isMaster()) print_with_prefix("Mismatch error!");
-		}
-
-		int psr = RX * RY;
-		int pr = mpi.rank % psr;
-		int pc = mpi.rank / psr;
-
-		std::vector<int> ss, rs;
-		ss.push_back(RX);
-		ss.push_back(RY);
-		rs.push_back(pr % RX);
-		rs.push_back(pr / RX);
-		compute_rank(ss, rs, mpi.comm_c);
-		ss.clear(); rs.clear();
-
-		ss.push_back(CX);
-		ss.push_back(CY);
-		rs.push_back(pc % CX);
-		rs.push_back(pc / CX);
-		compute_rank(ss, rs, mpi.comm_r);
-
-		mpi.size_2dr = mpi.comm_c.size;
-		mpi.size_2dc = mpi.comm_r.size;
-		mpi.rank_2dr = mpi.comm_c.rank;
-		mpi.rank_2dc = mpi.comm_r.rank;
-		mpi.isMultiDimAvailable = true;
-
-		success = true;
-	}
-
 	if(!success) {
 		int twod_r = 1, twod_c = 1;
 		const char* twod_r_str = getenv("TWOD_R");
@@ -1325,13 +1235,6 @@ static void setup_2dcomm()
 	if(mpi.isMaster()) print_with_prefix("Dimension: (R x C) = (%dx%d)", mpi.size_2dr, mpi.size_2dc);
 
 	mpi.isRowMajor = false;
-	if(getenv("INVERT_RC")) {
-		mpi.isRowMajor = true;
-		std::swap(mpi.size_2dr, mpi.size_2dc);
-		std::swap(mpi.rank_2dr, mpi.rank_2dc);
-		swap(mpi.comm_r, mpi.comm_c);
-		if(mpi.isMaster()) print_with_prefix("Inverted: (%dx%d)", mpi.size_2dr, mpi.size_2dc);
-	}
 
 	mpi.rank_2d = mpi.rank_2dr + mpi.rank_2dc * mpi.size_2dr;
 	mpi.size_2d = mpi.size_2dr * mpi.size_2dc;
