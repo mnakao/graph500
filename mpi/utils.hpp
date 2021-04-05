@@ -11,9 +11,6 @@
 #include <numa.h>
 #endif
 #include <omp.h>
-#if ENABLE_UTOFU
-#include <mpi-ext.h>
-#endif
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/shm.h>
@@ -1074,134 +1071,11 @@ static void setup_rank_map(COMM_2D& comm) {
 	}
 }
 
-#if ENABLE_UTOFU
-/**
- * compute rank that is assigned continuously in the field
- * the last dimension size should be even.
- */
-static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c) {
-        int size = 1;
-        int rank = 0;
-	for(int i = ss.size() - 1; i >= 0; --i) {
-                if(rank % 2) {
-                        rank = rank * ss[i] + (ss[i] - 1 - rs[i]);
-                }
-                else {
-                        rank = rank * ss[i] + rs[i];
-	        }
-	        size *= ss[i];
-        }
-	c.size_x = ss[0];
-        c.size_y = size / c.size_x;
-        c.rank_x = rs[0];
-	c.rank_y = rank / c.size_x;
-	c.rank = rank;
-        c.size = size;
-}
-
-static void parse_row_dims(bool* rdim, const char* input) {
-	memset(rdim, 0x00, sizeof(bool)*6);
-	while(*input) {
-		switch(*(input++)) {
-		case 'x':
-			rdim[0] = true;
-			break;
-		case 'y':
-			rdim[1] = true;
-			break;
-		case 'z':
-			rdim[2] = true;
-			break;
-		case 'a':
-			rdim[3] = true;
-			break;
-		case 'b':
-			rdim[4] = true;
-			break;
-		case 'c':
-			rdim[5] = true;
-			break;
-		}
-	}
-}
-
-static void print_dims(const char* prefix, std::vector<int>& dims) {
-	print_prefix();
-	fprintf(IMD_OUT, "%s%d", prefix, dims[0]);
-	for(int i = 1; i < int(dims.size()); ++i) {
-		fprintf(IMD_OUT, "x%d", dims[i]);
-	}
-	fprintf(IMD_OUT, "\n");
-}
-#endif
-
 static void setup_2dcomm()
 {
 	bool success = false;
 	mpi.isMultiDimAvailable = false;
 
-#if ENABLE_UTOFU
-	const char* tofu_6d = getenv("TOFU_6D");  // R-axis. e.g. TOFU_6D=yz
-	if(!success && tofu_6d) {
-		int rank6d[6];
-		int size6d[6];
-		// FJMPI_Topology_rel_rank2xyzabc(mpi.rank, &rank6d[0], &rank6d[1], &rank6d[2], &rank6d[3], &rank6d[4], &rank6d[5]);
-		FJMPI_Topology_get_coords(MPI_COMM_WORLD, mpi.rank, FJMPI_TOFU_REL, 6, rank6d);
-		MPI_Allreduce(rank6d, size6d, 6, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-		int total = 1;
-		for(int i = 0; i < 6; ++i) {
-			total *= ++size6d[i];
-		}
-		if(mpi.isMaster()) print_with_prefix("Detected dimension %dx%dx%dx%dx%dx%d = %d", size6d[0], size6d[1], size6d[2], size6d[3], size6d[4], size6d[5], mpi.size);
-		if(total != mpi.size) {
-			if(mpi.isMaster()) print_with_prefix("TOFU_6D Mismatch error!");
-			MPI_Finalize();
-			exit(0);
-		}
-		else {
-			bool rdim[6] = {0};
-			parse_row_dims(rdim, tofu_6d);
-			std::vector<int> ss_r, rs_r;
-			std::vector<int> ss_c, rs_c;
-			for(int i = 0; i < 6; ++i) {
-				if(rdim[i]) {
-					ss_r.push_back(size6d[i]);
-					rs_r.push_back(rank6d[i]);
-				}
-				else {
-					ss_c.push_back(size6d[i]);
-					rs_c.push_back(rank6d[i]);
-				}
-			}
-
-			if(ss_r.size() != 1 && ss_r.back() != 1 && ss_r.back()%2 != 0){
-			  if(mpi.isMaster())
-				print_with_prefix("Last dimension of R must be multiple of 2. But it is %d.\n", ss_r.back());
-			  MPI_Finalize();
-			  exit(1);
-			}
-			else if(ss_c.size() != 1 && ss_c.back() != 1 && ss_c.back()%2 != 0){
-			  if(mpi.isMaster())
-				print_with_prefix("Last dimension of C must be multiple of 2. But it is %d,\n", ss_c.back());
-			  MPI_Finalize();
-			  exit(1);
-			}
-			  
-			compute_rank(ss_c, rs_c, mpi.comm_r);
-			if(mpi.isMaster()) print_dims("R: ", ss_r);
-			compute_rank(ss_r, rs_r, mpi.comm_c);
-			if(mpi.isMaster()) print_dims("C: ", ss_c);
-
-			mpi.size_2dr = mpi.comm_c.size;
-			mpi.size_2dc = mpi.comm_r.size;
-			mpi.rank_2dr = mpi.comm_c.rank;
-			mpi.rank_2dc = mpi.comm_r.rank;
-			mpi.isMultiDimAvailable = true;
-			success = true;
-		}
-	}
-#endif // #if ENABLE_UTOFU
-	
 	if(!success) {
 		int twod_r = 1, twod_c = 1;
 		const char* twod_r_str = getenv("TWOD_R");
