@@ -5,6 +5,7 @@
  *      Author: koji
  */
 
+double _lambda, _kappa;
 // C includes
 #include <mpi.h>
 #include <stdio.h>
@@ -286,16 +287,19 @@ int main(int argc, char** argv)
 	// Parse arguments.
 	int SCALE = 16;
 	int edgefactor = 16; // nedges / nvertices, i.e., 2*avg. degree
-	if (argc >= 2) SCALE = atoi(argv[1]);
-	if (argc >= 3) edgefactor = atoi(argv[2]);
-	if (argc <= 1 || argc >= 4 || SCALE == 0 || edgefactor == 0) {
-		fprintf(IMD_OUT, "Usage: %s SCALE edgefactor\n"
-				"SCALE = log_2(# vertices) [integer, required]\n"
-				"edgefactor = (# edges) / (# vertices) = .5 * (average vertex degree) [integer, defaults to 16]\n"
-				"(Random number seed are in main.c)\n",
-				argv[0]);
-		return 0;
+	if (argc != 4){
+	  fprintf(IMD_OUT, "Usage: %s SCALE [lambda] [kappa]\n", argv[0]);
+	  return 0;
 	}
+
+	SCALE   = atoi(argv[1]);
+	_lambda = atof(argv[2]);
+	_kappa  = atof(argv[3]);
+	if(mpi.isMaster()) {
+	  printf("SCALE = %d LAMDA = %d KAPPA = %d\n", SCALE, _lambda, _kappa);
+	  fflush(stdout);
+	}
+	MPI_Barrier(MPI_COMM_WORLD);
 
 	setup_globals(argc, argv, SCALE, edgefactor);
 	graph500_bfs(SCALE, edgefactor);
