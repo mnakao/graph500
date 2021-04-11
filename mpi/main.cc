@@ -5,7 +5,8 @@
  *      Author: koji
  */
 
-double _lambda, _kappa;
+int _lambda_num = 0, _kappa_num = 0;
+double _lambda = 1.0, _kappa = 1.0;
 // C includes
 #include <mpi.h>
 #include <stdio.h>
@@ -287,7 +288,7 @@ int main(int argc, char** argv)
 	// Parse arguments.
 	int SCALE = 16;
 	int edgefactor = 16; // nedges / nvertices, i.e., 2*avg. degree
-	if (argc != 4){
+	if (argc != 4 && mpi.isMaster()) {
 	  fprintf(IMD_OUT, "Usage: %s SCALE [lambda] [kappa]\n", argv[0]);
 	  return 0;
 	}
@@ -295,13 +296,11 @@ int main(int argc, char** argv)
 	SCALE   = atoi(argv[1]);
 	_lambda = atof(argv[2]);
 	_kappa  = atof(argv[3]);
-	if(mpi.isMaster()) {
-	  printf("SCALE = %d LAMDA = %d KAPPA = %d\n", SCALE, _lambda, _kappa);
-	  fflush(stdout);
-	}
-	MPI_Barrier(MPI_COMM_WORLD);
-
 	setup_globals(argc, argv, SCALE, edgefactor);
+	if(mpi.isMaster()) {
+          printf("SCALE = %d LAMBDA = %f KAPPA = %f\n", SCALE, _lambda, _kappa);
+          fflush(stdout);
+        }
 	graph500_bfs(SCALE, edgefactor);
 	cleanup_globals();
 	return 0;
@@ -373,4 +372,5 @@ void timer_print(double *bfs_times, const int num_bfs_roots)
   }
   fflush(stdout);
   MPI_Barrier(MPI_COMM_WORLD);
+   if(mpi.isMaster()) printf("LAMBDA = %d KAPPA = %d\n", _lambda_num, _kappa_num);
 }

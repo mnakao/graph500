@@ -5,6 +5,7 @@
  *      Author: koji
  */
 extern double _lambda, _kappa;
+extern int _lambda_num, _kappa_num;
 #ifndef BFS_HPP_
 #define BFS_HPP_
 #include <pthread.h>
@@ -2888,33 +2889,45 @@ void BfsBase::run_bfs(int64_t root, int64_t* pred)
 		int64_t global_unvisited_vertices = graph_.num_global_verts_ - global_visited_vertices;
 		next_bitmap_or_list = !forward_or_backward_;
 		if(growing_or_shrinking_ && global_nq_size_ > prev_global_nq_size) { // growing
-			if(forward_or_backward_ // forward ?
-			   && global_nq_size_ > _lambda * graph_.num_global_verts_ / denom_to_bottom_up_ // NQ is large ?
-				) { // switch to backward
-				next_forward_or_backward = false;
-				packet_buffer_is_dirty_ = true;
-			}
+		  if(forward_or_backward_ && mpi.isMaster())
+		    printf("LL %.2f > %.2f ? : %s\n",
+			   (double)global_nq_size_,
+			   _lambda * graph_.num_global_verts_ / denom_to_bottom_up_,
+			   (global_nq_size_ > _lambda * graph_.num_global_verts_ / denom_to_bottom_up_)? "Yes" : "No");
+		  if(forward_or_backward_ // forward ?
+		     && global_nq_size_ > _lambda * graph_.num_global_verts_ / denom_to_bottom_up_ // NQ is large ?
+		     ) { // switch to backward
+		    next_forward_or_backward = false;
+		    packet_buffer_is_dirty_ = true;
+		    _lambda_num++;
+		  }
 		}
 		else { // shrinking
-			if(!forward_or_backward_  // backward ?
-				&& _kappa * global_unvisited_vertices < int64_t(graph_.num_global_verts_ / DEMON_BOTTOMUP_TO_TOPDOWN) // NQ is small ?
-				) { // switch to topdown
-				next_forward_or_backward = true;
-				growing_or_shrinking_ = false;
-
-				// Enabled if we compress lists with VLQ
-				//int max_capacity = vlq::BitmapEncoder::calc_capacity_of_values(
-				//		bitmap_width, NBPE, bitmap_width*sizeof(BitmapType));
-				//int threashold = std::min<int>(max_capacity, bitmap_width*sizeof(BitmapType)/2);
-				int bitmap_width = get_bitmap_size_local();
-				double threashold = bitmap_width*sizeof(BitmapType)/sizeof(TwodVertex)/denom_bitmap_to_list_;
-				next_bitmap_or_list = (max_nq_size_ >= threashold);
-			}
+		  if(!forward_or_backward_ && mpi.isMaster())
+		    printf("KK %.2f < %.2f ? : %s\n",
+			   _kappa * global_unvisited_vertices,
+			   (double)graph_.num_global_verts_ / DEMON_BOTTOMUP_TO_TOPDOWN,
+			   (_kappa * global_unvisited_vertices < int64_t(graph_.num_global_verts_ / DEMON_BOTTOMUP_TO_TOPDOWN))? "Yes" : "No");
+		  if(!forward_or_backward_  // backward ?
+		     && _kappa * global_unvisited_vertices < int64_t(graph_.num_global_verts_ / DEMON_BOTTOMUP_TO_TOPDOWN) // NQ is small ?
+		     ) { // switch to topdown
+		    _kappa_num++;
+		    next_forward_or_backward = true;
+		    growing_or_shrinking_ = false;
+		    
+		    // Enabled if we compress lists with VLQ
+		    //int max_capacity = vlq::BitmapEncoder::calc_capacity_of_values(
+		    //		bitmap_width, NBPE, bitmap_width*sizeof(BitmapType));
+		    //int threashold = std::min<int>(max_capacity, bitmap_width*sizeof(BitmapType)/2);
+		    int bitmap_width = get_bitmap_size_local();
+		    double threashold = bitmap_width*sizeof(BitmapType)/sizeof(TwodVertex)/denom_bitmap_to_list_;
+		    next_bitmap_or_list = (max_nq_size_ >= threashold);
+		  }
 		}
 		if(next_forward_or_backward == false) {
-			// bottom-up only with bitmap
-			// do not use top_down_switch_expand with list since it is very slow!!
-			next_bitmap_or_list = true;
+		  // bottom-up only with bitmap
+		  // do not use top_down_switch_expand with list since it is very slow!!
+		  next_bitmap_or_list = true;
 		}
 
 #if VERVOSE_MODE
