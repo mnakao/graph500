@@ -1,9 +1,3 @@
-/*
- * graph_generator.hpp
- *
- *  Created on: Dec 9, 2011
- *      Author: koji
- */
 /* Copyright (C) 2009-2010 The Trustees of Indiana University.             */
 /*                                                                         */
 /* Use, modification and distribution is subject to the Boost Software     */
@@ -18,14 +12,11 @@
 
 #include <stdint.h>
 #include <assert.h>
-
 #include <algorithm>
-
 #include "../mpi/mpi_workarounds.h"
 
 #define FAST_64BIT_ARITHMETIC
 #include "splittable_mrg.h"
-
 #include "../mpi/primitives.hpp"
 
 //-------------------------------------------------------------//

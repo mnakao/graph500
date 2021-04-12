@@ -34,6 +34,14 @@ void graph500_bfs(int SCALE, int edgefactor)
 	generate_graph_spec2010(&edge_list, SCALE, edgefactor);
 	generation_time = MPI_Wtime() - generation_time;
 
+	int num_loops = edge_list.beginRead(true);
+	UnweightedPackedEdge* edge_data;
+	const int edge_data_length = edge_list.read(&edge_data);
+	printf("%d\n", edge_data_length);
+        for(int i=0;i<100;++i)
+	  printf("%d %d\n", (int)edge_data[i].v0(), (int)edge_data[i].v1());
+	exit(0);
+	
 	if(mpi.isMaster()) print_with_prefix("Graph construction");
 	// Create BFS instance and the *COMMUNICATION THREAD*.
 	BfsOnCPU* benchmark = new BfsOnCPU();
