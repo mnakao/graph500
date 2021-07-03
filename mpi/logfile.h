@@ -8,7 +8,6 @@
 #ifndef LOGFILE_H_
 #define LOGFILE_H_
 
-
 static int compare_doubles(const void* a, const void* b) {
   double aa = *(const double*)a;
   double bb = *(const double*)b;

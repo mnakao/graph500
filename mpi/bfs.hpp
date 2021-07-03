@@ -15,12 +15,19 @@ static int current_expand = TD_EXPAND_TIME;
 int current_fold = TD_FOLD_TIME;
 #endif
 #include "utils.hpp"
-#include "fiber.hpp"
 #include "abstract_comm.hpp"
 #include "bottom_up_comm.hpp"
 #include "low_level_func.h"
 
 #define debug(...) debug_print(BFSMN, __VA_ARGS__)
+
+class Runnable
+{
+public:
+        virtual ~Runnable() { }
+        virtual void run() = 0;
+};
+
 class BfsBase
 {
 	typedef BfsBase ThisType;
@@ -918,12 +925,10 @@ public:
 #define IF_LARGE_EDGE
 #define ELSE
 #endif
-
 		debug("begin parallel");
 #pragma omp parallel
 		{
 			SET_OMP_AFFINITY;
-			//int max_threads = omp_get_num_threads();
 			int64_t* edge_array = graph_.edge_array_;
 			LocalPacket* packet_array =
 					thread_local_buffer_[omp_get_thread_num()]->fold_packet;
@@ -934,7 +939,6 @@ public:
 				}
 			}
 			int lgl = graph_.local_bits_;
-			//int vertex_bits = graph_.r_bits_ + lgl;
 			int r_mask = (1 << graph_.r_bits_) - 1;
 			int P = mpi.size_2d;
 			int R = mpi.size_2dr;
@@ -2286,7 +2290,6 @@ public:
 	// size = 2
 	int new_visited_list_size_[BU_SUBSTEP];
 	int old_visited_list_size_[BU_SUBSTEP];
-
 
 	// 1. CQ at the top-down phase
 	// 2. NQ receive buffer at the bottom-up expand phase

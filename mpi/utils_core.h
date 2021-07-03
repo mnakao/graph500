@@ -11,7 +11,6 @@
 #include <stdint.h>
 #include <assert.h>
 
-
 // for sorting
 #include <algorithm>
 #include <functional>
@@ -392,14 +391,6 @@ struct SeparatedId {
 		int64_t mid_v = (value >> lgl) & ((1 << mid) - 1);
 		return (mid_v << lgl) | low_v;
 	}
-};
-
-struct MPI_INFO_ON_GPU {
-	int rank;
-	int size;
-	int rank_2d;
-	int rank_2dr;
-	int rank_2dc;
 };
 
 int64_t get_time_in_microsecond();
