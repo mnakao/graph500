@@ -22,9 +22,6 @@
 #endif
 
 #include <omp.h>
-#if BACKTRACE_ON_SIGNAL
-#include <signal.h>
-#endif
 #if ENABLE_UTOFU
 #include <mpi-ext.h>
 #elif FUGAKU_MPI_PRINT_STATS
@@ -42,53 +39,6 @@
 #include "mpi_workarounds.h"
 #include "utils_core.h"
 #include "primitives.hpp"
-#if CUDA_ENABLED
-#include "gpu_host.hpp"
-#endif
-
-#if VTRACE
-#include "vt_user.h"
-#define USER_START(s) VT_USER_START(#s)
-#define USER_END(s) VT_USER_END(#s)
-#define TRACER(s) VT_TRACER(#s)
-#define CTRACER(s)
-#elif SCOREP
-#include <scorep/SCOREP_User.h>
-#define USER_START(s) SCOREP_USER_REGION_DEFINE( scorep_region_##s ); SCOREP_USER_REGION_BEGIN( scorep_region_##s, #s, SCOREP_USER_REGION_TYPE_COMMON )
-#define USER_END(s) SCOREP_USER_REGION_END( scorep_region_##s )
-#define TRACER(s) SCOREP_USER_REGION( #s, SCOREP_USER_REGION_TYPE_COMMON )
-#define CTRACER(s)
-#elif BACKTRACE_ON_SIGNAL
-extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD);
-
-struct ScopedRegion {
-	const char* name_;
-	int line_;
-	ScopedRegion(const char* name, int line) {
-		int flag = 102;
-		name_ = name;
-		line_ = line;
-		user_defined_proc(&flag, name_, &line_, NULL);
-	}
-	~ScopedRegion() {
-		int flag = 103;
-		user_defined_proc(&flag, name_, &line_, NULL);
-	}
-};
-
-#define USER_START(s) do { int line = __LINE__; int flag = 102;\
-		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
-#define USER_END(s) do { int line = __LINE__; int flag = 103;\
-		user_defined_proc(&flag, __FILE__, &line, NULL); } while (false)
-#define TRACER(s) ScopedRegion my_trace_obj(__FILE__, __LINE__)
-
-#else // #if VTRACE
-#define USER_START(s)
-#define USER_END(s)
-#define TRACER(s)
-#define CTRACER(s)
-#endif // #if VTRACE
-
 
 #if VERVOSE_MODE
 #define VERVOSE(s) s
@@ -96,32 +46,9 @@ struct ScopedRegion {
 #define VERVOSE(s)
 #endif
 
-#if PROFILING_MODE
-#define PROF(s) s
-#else
-#define PROF(s)
-#endif
-
 void print_with_prefix(const char* format, ...);
 
-#if DEBUG_PRINT
-#define DEBUG_PRINT_SWITCH_0(...)
-#define DEBUG_PRINT_SWITCH_1(...) print_with_prefix(__VA_ARGS__)
-#define DEBUG_PRINT_SWITCH_2(...) do{if(mpi.isMaster())print_with_prefix(__VA_ARGS__);}while(0)
-#define MAKE_DEBUG_PRINT_SWITCH(val) MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val)
-#define MAKE_DEBUG_PRINT_SWITCH_ASSIGN(val) DEBUG_PRINT_SWITCH_ ## val
-#define debug_print(prefix, ...) MAKE_DEBUG_PRINT_SWITCH\
-	(DEBUG_PRINT_ ## prefix)(#prefix " " __VA_ARGS__)
-#else
 #define debug_print(prefix, ...)
-#endif
-
-#if BACKTRACE_ON_SIGNAL
-namespace backtrace {
-void start_thread();
-void thread_join();
-}
-#endif
 
 struct COMM_2D {
 	MPI_Comm comm;
@@ -1313,18 +1240,6 @@ static void compute_rank(std::vector<int>& ss, std::vector<int>& rs, COMM_2D& c)
 	c.size = size;
 }
 
-static int compute_rank_2d(int x, int y, int sx, int sy) {
-	if(x >= sx) x -= sx;
-	if(x < 0) x += sx;
-	if(y >= sy) y -= sy;
-	if(y < 0) y += sy;
-
-	if(y % 2)
-		return y * sx + (sx - 1 - x);
-	else
-		return y * sx + x;
-}
-
 static void setup_rank_map(COMM_2D& comm) {
 	int send_rank = comm.rank_x + comm.rank_y * comm.size_x;
 	int recv_rank[comm.size];
@@ -1628,15 +1543,6 @@ void cleanup_2dcomm()
 
 void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 {
-#if BACKTRACE_ON_SIGNAL
-	{ // block PRINT_BT_SIGNAL so that only dedicated thread receive the signal
-		sigset_t set;
-		sigemptyset(&set);
-		sigaddset(&set, PRINT_BT_SIGNAL);
-		int s = pthread_sigmask(SIG_BLOCK, &set, NULL);
-		if(s != 0) throw_exception("failed to set sigmask");
-	}
-#endif
 #if MPI_FUNNELED
 	int reqeust_level = MPI_THREAD_FUNNELED;
 #else
@@ -1645,9 +1551,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	MPI_Init_thread(&argc, &argv, reqeust_level, &mpi.thread_level);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi.size);
-#if ENABLE_FJMPI_RDMA
-	FJMPI_Rdma_init();
-#endif
 #if PRINT_WITH_TIME
 	global_clock.init();
 #endif
@@ -1685,10 +1588,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 		print_with_prefix("Clock started at %s\n", buf);
 #endif
 	}
-
-#if BACKTRACE_ON_SIGNAL
-	backtrace::start_thread();
-#endif
 
 #if OPENMP_SUB_THREAD
 	omp_set_nested(1);
@@ -1758,20 +1657,6 @@ void setup_globals(int argc, char** argv, int SCALE, int edgefactor)
 	if(getenv("NO_AFFINITY") == NULL) {
 		numa::set_affinity();
 	}
-
-#if CUDA_ENABLED
-	CudaStreamManager::initialize_cuda(g_GpuIndex);
-
-	MPI_INFO_ON_GPU mpig;
-	mpig.rank = mpi.rank;
-	mpig.size = mpi.size_;
-	mpig.rank_2d = mpi.rank_2d;
-	mpig.rank_2dr = mpi.rank_2dr;
-	mpig.rank_2dc = mpi.rank_2dc;
-	CudaStreamManager::begin_cuda();
-	CUDA_CHECK(cudaMemcpyToSymbol("mpig", &mpig, sizeof(mpig), 0, cudaMemcpyHostToDevice));
-	CudaStreamManager::end_cuda();
-#endif
 }
 
 void cleanup_globals()
@@ -1786,16 +1671,6 @@ void cleanup_globals()
 	UnweightedEdge::uninitialize();
 	UnweightedPackedEdge::uninitialize();
 	WeightedEdge::uninitialize();
-
-#if CUDA_ENABLED
-	CudaStreamManager::finalize_cuda();
-#endif
-#if BACKTRACE_ON_SIGNAL
-	backtrace::thread_join();
-#endif
-#if ENABLE_FJMPI_RDMA
-	FJMPI_Rdma_finalize();
-#endif
 	MPI_Finalize();
 }
 
@@ -1807,7 +1682,6 @@ namespace MpiCol {
 
 template <typename T>
 int allgatherv(T* sendbuf, T* recvbuf, int sendcount, MPI_Comm comm, int comm_size) {
-	TRACER(MpiCol::allgatherv);
 	int recv_off[comm_size+1], recv_cnt[comm_size];
 	MPI_Allgather(&sendcount, 1, MPI_INT, recv_cnt, 1, MPI_INT, comm);
 	recv_off[0] = 0;
@@ -1850,160 +1724,6 @@ T* alltoallv(T* sendbuf, int* sendcount,
 	MPI_Alltoallv(sendbuf, sendcount, sendoffset, MpiTypeOf<T>::type,
 			recv_data, recvcount, recvoffset, MpiTypeOf<T>::type, comm);
 	return recv_data;
-}
-
-template <typename T>
-void my_allgatherv(T *buffer, int* count, int* offset, MPI_Comm comm, int rank, int size, int left, int right)
-{
-	int l_sendidx = rank;
-	int l_recvidx = (rank + size + 1) % size;
-	int r_sendidx = rank;
-	int r_recvidx = (rank + size - 1) % size;
-
-	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
-		if(l_sendidx >= size) l_sendidx -= size;
-		if(l_recvidx >= size) l_recvidx -= size;
-		if(r_sendidx < 0) r_sendidx += size;
-		if(r_recvidx < 0) r_recvidx += size;
-
-		int l_send_off = offset[l_sendidx];
-		int l_send_cnt = count[l_sendidx] / 2;
-		int l_recv_off = offset[l_recvidx];
-		int l_recv_cnt = count[l_recvidx] / 2;
-
-		int r_send_off = offset[r_sendidx] + count[r_sendidx] / 2;
-		int r_send_cnt = count[r_sendidx] - count[r_sendidx] / 2;
-		int r_recv_off = offset[r_recvidx] + count[r_recvidx] / 2;
-		int r_recv_cnt = count[r_recvidx] - count[r_recvidx] / 2;
-
-		MPI_Request req[4];
-		MPI_Irecv(&buffer[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG1, comm, &req[2]);
-		MPI_Irecv(&buffer[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG1, comm, &req[3]);
-		MPI_Isend(&buffer[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG1, comm, &req[0]);
-		MPI_Isend(&buffer[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG1, comm, &req[1]);
-		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
-	}
-}
-
-#if 0
-template <typename T>
-void my_allgather(T *sendbuf, int count, T *recvbuf, MPI_Comm comm)
-{
-	int size; MPI_Comm_size(comm, &size);
-	int rank; MPI_Comm_rank(comm, &rank);
-	int left = (rank + size - 1) % size;
-	int right = (rank + size + 1) % size;
-	int l_sendidx = rank;
-	int l_recvidx = right;
-	int r_sendidx = rank;
-	int r_recvidx = left;
-	int l_count = count / 2;
-	int r_count = count - l_count;
-
-	memcpy(&recvbuf[count * rank], sendbuf, sizeof(T) * count);
-	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
-		if(l_sendidx >= size) l_sendidx -= size;
-		if(l_recvidx >= size) l_recvidx -= size;
-		if(r_sendidx < 0) r_sendidx += size;
-		if(r_recvidx < 0) r_recvidx += size;
-
-		MPI_Request req[4];
-		MPI_Irecv(&recvbuf[count * l_recvidx], l_count, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
-		MPI_Irecv(&recvbuf[count * r_recvidx + l_count], r_count, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
-		MPI_Isend(&recvbuf[count * l_sendidx], l_count, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
-		MPI_Isend(&recvbuf[count * r_sendidx + l_count], r_count, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
-		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
-	}
-}
-
-template <typename T>
-void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, MPI_Comm comm)
-{
-	int size; MPI_Comm_size(comm, &size);
-	int rank; MPI_Comm_rank(comm, &rank);
-	int left = (rank + size - 1) % size;
-	int right = (rank + size + 1) % size;
-	int l_sendidx = rank;
-	int l_recvidx = right;
-	int r_sendidx = rank;
-	int r_recvidx = left;
-
-	memcpy(&recvbuf[recv_offset[rank]], sendbuf, sizeof(T) * send_count);
-	for(int i = 1; i < size; ++i, ++l_sendidx, ++l_recvidx, --r_sendidx, --r_recvidx) {
-		if(l_sendidx >= size) l_sendidx -= size;
-		if(l_recvidx >= size) l_recvidx -= size;
-		if(r_sendidx < 0) r_sendidx += size;
-		if(r_recvidx < 0) r_recvidx += size;
-
-		int l_send_off = recv_offset[l_sendidx];
-		int l_send_cnt = recv_count[l_sendidx] / 2;
-		int l_recv_off = recv_offset[l_recvidx];
-		int l_recv_cnt = recv_count[l_recvidx] / 2;
-
-		int r_send_off = recv_offset[r_sendidx] + recv_count[r_sendidx] / 2;
-		int r_send_cnt = recv_count[r_sendidx] - recv_count[r_sendidx] / 2;
-		int r_recv_off = recv_offset[r_recvidx] + recv_count[r_recvidx] / 2;
-		int r_recv_cnt = recv_count[r_recvidx] - recv_count[r_recvidx] / 2;
-
-		MPI_Request req[4];
-		MPI_Irecv(&recvbuf[l_recv_off], l_recv_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[2]);
-		MPI_Irecv(&recvbuf[r_recv_off], r_recv_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[3]);
-		MPI_Isend(&recvbuf[l_send_off], l_send_cnt, MpiTypeOf<T>::type, left, PRM::MY_EXPAND_TAG, comm, &req[0]);
-		MPI_Isend(&recvbuf[r_send_off], r_send_cnt, MpiTypeOf<T>::type, right, PRM::MY_EXPAND_TAG, comm, &req[1]);
-		MPI_Waitall(4, req, MPI_STATUS_IGNORE);
-	}
-}
-#endif
-
-template <typename T>
-void my_allgatherv(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, COMM_2D comm)
-{
-	memcpy(&recvbuf[recv_offset[comm.rank]], sendbuf, sizeof(T) * send_count);
-	if(mpi.isMultiDimAvailable == false) {
-		int size; MPI_Comm_size(comm.comm, &size);
-		int rank; MPI_Comm_rank(comm.comm, &rank);
-		int left = (rank + size - 1) % size;
-		int right = (rank + size + 1) % size;
-		my_allgatherv(recvbuf, recv_count, recv_offset, comm.comm, rank, size, left, right);
-		return ;
-	}
-	{
-		int size = comm.size_x;
-		int rank = comm.rank % comm.size_x;
-		int base = comm.rank - rank;
-		int left = (rank + size - 1) % size + base;
-		int right = (rank + size + 1) % size + base;
-		my_allgatherv(recvbuf, &recv_count[base], &recv_offset[base], comm.comm, rank, size, left, right);
-	}
-	{
-		int size = comm.size_y;
-		int rank = comm.rank / comm.size_x;
-		int left = compute_rank_2d(comm.rank_x, comm.rank_y - 1, comm.size_x, comm.size_y);
-		int right = compute_rank_2d(comm.rank_x, comm.rank_y + 1, comm.size_x, comm.size_y);
-		int count[comm.size_y];
-		int offset[comm.size_y];
-		for(int y = 0; y < comm.size_y; ++y) {
-			int start = y * comm.size_x;
-			int last = start + comm.size_x - 1;
-			offset[y] = recv_offset[start];
-			count[y] = recv_offset[last] + recv_count[last] - offset[y];
-		}
-		my_allgatherv(recvbuf, count, offset, comm.comm, rank, size, left, right);
-	}
-}
-
-template <typename T>
-void my_allgather(T *sendbuf, int count, T *recvbuf, COMM_2D comm)
-{
-	memcpy(&recvbuf[count * comm.rank], sendbuf, sizeof(T) * count);
-	int recv_count[comm.size];
-	int recv_offset[comm.size+1];
-	recv_offset[0] = 0;
-	for(int i = 0; i < comm.size; ++i) {
-		recv_count[i] = count;
-		recv_offset[i+1] = recv_offset[i] + count;
-	}
-	my_allgatherv(sendbuf, count, recvbuf, recv_count, recv_offset, comm);
 }
 
 } // namespace MpiCol {
@@ -3503,218 +3223,6 @@ private:
 };
 
 } // namespace profiling
-
-#if BACKTRACE_ON_SIGNAL
-
-namespace backtrace {
-
-#define SPIN_LOCK(lock) pthread_mutex_lock(&(lock))
-#define SPIN_UNLOCK(lock) pthread_mutex_unlock(&(lock))
-
-struct StackFrame {
-	PROF(int64_t enter_clock;)
-	const char* name;
-	int line;
-};
-
-struct PrintBuffer {
-	char* buffer;
-	int length;
-	int capacity;
-
-	PrintBuffer() {
-		length = 0;
-		capacity = 16*1024*1024;
-		buffer = (char*)malloc(capacity);
-		buffer[0] = '\0';
-	}
-
-	~PrintBuffer() {
-		free(buffer); buffer = NULL;
-	}
-
-	void clear() {
-		length = 0;
-		buffer[0] = '\0';
-	}
-
-	void add(const char* fmt, va_list arg) {
-	}
-};
-
-struct ThreadStack {
-	int tid;
-	pthread_mutex_t* lock;
-	std::vector<StackFrame>* frames;
-	PrintBuffer* pbuf;
-};
-
-std::vector<ThreadStack>* thread_stacks = NULL;
-pthread_mutex_t thread_stack_lock = PTHREAD_MUTEX_INITIALIZER;
-volatile int next_thread_id = 0;
-volatile bool finish_backtrace_thread = false;
-pthread_t backtrace_thread;
-
-__thread bool disable_trace = false;
-__thread int thread_id = -1;
-__thread pthread_mutex_t stack_frame_lock = PTHREAD_MUTEX_INITIALIZER;
-__thread std::vector<StackFrame>* stack_frames = NULL;
-__thread PrintBuffer* pbuf;
-
-void* backtrace_thread_routine(void* p) {
-	char filename[300];
-	int print_count = 0;
-	sprintf(filename, "log-backtrace.%d", mpi.rank);
-	FILE* fp = fopen(filename, "w");
-	if(fp == NULL) {
-		throw_exception("failed to open the file %s", filename);
-	}
-	fprintf(fp, "===== Backtrace File Rank=%d =====\n", mpi.rank);
-
-	sigset_t set;
-	sigemptyset(&set);
-	sigaddset(&set, PRINT_BT_SIGNAL);
-
-	int sig;
-	while(sigwait(&set, &sig) == 0) {
-		if(finish_backtrace_thread) {
-			fclose(fp); fp = NULL;
-			return NULL;
-		}
-		fprintf(fp, "======= Print Backtrace (%d-th) =======\n", print_count++);
-
-		// disable tracing to avoid modifying data during printing
-		disable_trace = true;
-		SPIN_LOCK(thread_stack_lock);
-		if(thread_stacks != NULL) {
-			for(int i = 0; i < int(thread_stacks->size()); ++i) {
-				ThreadStack th = (*thread_stacks)[i];
-				SPIN_LOCK(*th.lock);
-				const std::vector<StackFrame>& frames = *(th.frames);
-				int num_frames = int(frames.size());
-				fprintf(fp, "Thread %d:\n", th.tid);
-				for(int s = 0; s < num_frames; ++s) {
-					const StackFrame& frame = frames[num_frames - s - 1];
-					fprintf(fp, "    %2d:"PROF("[%f]")" %s:%d\n", s,
-#if PROFILING_MODE
-							(double)frame.enter_clock / 1000000.0,
-#endif
-							frame.name, frame.line);
-				}
-				SPIN_UNLOCK(*th.lock);
-			}
-		}
-		SPIN_UNLOCK(thread_stack_lock);
-		// restart tracing
-		disable_trace = false;
-
-		fprintf(fp, "============= Backtrace end ===========\n");
-		fflush(fp);
-	}
-
-	throw_exception("Error on sigwait");
-	return NULL;
-}
-
-void buffered_print(const char* format, ...) {
-	char buf[300];
-	SPIN_LOCK(stack_frame_lock);
-	va_list arg;
-	va_start(arg, format);
-    vsnprintf(buf, sizeof(buf), format, arg);
-    va_end(arg);
-	if(pbuf->length + sizeof(buf) + 1 >= pbuf->capacity) {
-		pbuf->capacity *= 2;
-		pbuf->buffer = (char*)realloc(pbuf->buffer, pbuf->capacity);
-	}
-	pbuf->length += snprintf(pbuf->buffer + pbuf->length, sizeof(buf),
-			"[r:%d,%f] %s\n", mpi.rank, global_clock.get() / 1000000.0, buf);
-	SPIN_UNLOCK(stack_frame_lock);
-}
-
-void start_thread() {
-	pthread_create(&backtrace_thread, NULL, backtrace_thread_routine, NULL);
-}
-
-void thread_join() {
-	finish_backtrace_thread = true;
-	pthread_kill(backtrace_thread, PRINT_BT_SIGNAL);
-	pthread_join(backtrace_thread, NULL);
-	SPIN_LOCK(thread_stack_lock);
-	delete thread_stacks; thread_stacks = NULL;
-	SPIN_UNLOCK(thread_stack_lock);
-}
-
-} // namespace backtrace {
-
-extern "C" void user_defined_proc(const int *FLAG, const char *NAME, const int *LINE, const int *THREAD) {
-	using namespace backtrace;
-
-	if(disable_trace) {
-		return ;
-	}
-
-	if(thread_id == -1) {
-		// initialize thread local storage
-		thread_id = __sync_fetch_and_add(&next_thread_id, 1);
-		stack_frames = new std::vector<StackFrame>();
-		pbuf = new PrintBuffer();
-		// add thread info to thread_stacks
-		ThreadStack th;
-		th.tid = thread_id;
-		th.lock = &stack_frame_lock;
-		th.frames = stack_frames;
-		th.pbuf = pbuf;
-
-		SPIN_LOCK(thread_stack_lock);
-		if(finish_backtrace_thread == false) {
-			if(thread_stacks == NULL) {
-				thread_stacks = new std::vector<ThreadStack>();
-			}
-			thread_stacks->push_back(th);
-		}
-		SPIN_UNLOCK(thread_stack_lock);
-	}
-
-	SPIN_LOCK(stack_frame_lock);
-	if(finish_backtrace_thread) {
-		if(stack_frames != NULL) {
-			delete stack_frames; stack_frames = NULL;
-			delete pbuf; pbuf = NULL;
-		}
-	}
-	else {
-		switch(*FLAG) {
-		case 2:
-		case 4:
-		case 102:
-		{
-			StackFrame frame;
-			PROF(frame.enter_clock = global_clock.get());
-			frame.name = NAME;
-			frame.line = *LINE;
-			stack_frames->push_back(frame);
-		}
-			break;
-		case 3:
-		case 5:
-		case 103:
-		{
-			assert(stack_frames->size() > 0);
-			stack_frames->pop_back();
-		}
-			break;
-		default:
-			break;
-		}
-	}
-	SPIN_UNLOCK(stack_frame_lock);
-}
-
-#undef SPIN_LOCK
-#undef SPIN_UNLOCK
-
-#endif // #if BACKTRACE_ON_SIGNAL
 
 #if VERVOSE_MODE
 volatile int64_t g_tp_comm;

@@ -553,7 +553,6 @@ public:
 
 	void construct(EdgeList* edge_list, int log_local_verts_unit, GraphType& g)
 	{
-		TRACER(construction);
 		log_local_verts_unit_ = std::max<int>(log_local_verts_unit, LOG_EDGE_PART_SIZE);
 		g.log_orig_global_verts_ = 0;
 
@@ -571,47 +570,6 @@ public:
 		computeNumVertices(g);
 
 		if(mpi.isMaster()) print_with_prefix("Graph construction complete.");
-	}
-
-	void copy_to_gpu(GraphType& g, bool graph_on_gpu_) {
-#if CUDA_ENABLED
-		// transfer data to GPU
-		const int64_t num_columns = (int64_t(1) << g.log_edge_lists());
-		const int64_t index_size = g.row_starts_[num_columns];
-		const int64_t num_local_vertices = (int64_t(1) << g.log_local_verts());
-
-		CudaStreamManager::begin_cuda();
-		if(graph_on_gpu_) {
-			CUDA_CHECK(cudaMalloc((void**)&g.dev_row_starts_,
-					sizeof(g.dev_row_starts_[0])*(num_columns+2)));
-			CUDA_CHECK(cudaMalloc((void**)&g.dev_edge_array_high_,
-					sizeof(g.dev_edge_array_high_[0])*index_size));
-			CUDA_CHECK(cudaMalloc((void**)&g.dev_edge_array_low_,
-					sizeof(g.dev_edge_array_low_[0])*index_size));
-		}
-		else {
-			g.dev_row_starts_ = NULL;
-			g.dev_edge_array_high_ = NULL;
-			g.dev_edge_array_low_ = NULL;
-		}
-		CUDA_CHECK(cudaMalloc((void**)&g.dev_invert_vertex_mapping_,
-				sizeof(g.dev_invert_vertex_mapping_[0])*num_local_vertices));
-
-		if(graph_on_gpu_) {
-			CUDA_CHECK(cudaMemcpy(g.dev_row_starts_, g.row_starts_,
-					sizeof(g.dev_row_starts_[0])*(num_columns+1), cudaMemcpyHostToDevice));
-			CUDA_CHECK(cudaMemcpy(g.dev_edge_array_high_, g.edge_array_.get_ptr_high(),
-					sizeof(g.dev_edge_array_high_[0])*index_size, cudaMemcpyHostToDevice));
-			CUDA_CHECK(cudaMemcpy(g.dev_edge_array_low_, g.edge_array_.get_ptr_low(),
-					sizeof(g.dev_edge_array_low_[0])*index_size, cudaMemcpyHostToDevice));
-			// add an empty column
-			CUDA_CHECK(cudaMemcpy(g.dev_row_starts_ + num_columns + 1, &index_size,
-					sizeof(g.dev_row_starts_[0]), cudaMemcpyHostToDevice));
-		}
-		CUDA_CHECK(cudaMemcpy(g.dev_invert_vertex_mapping_, g.invert_vertex_mapping_,
-				sizeof(g.dev_invert_vertex_mapping_[0])*num_local_vertices, cudaMemcpyHostToDevice));
-		CudaStreamManager::end_cuda();
-#endif
 	}
 
 private:
@@ -733,7 +691,6 @@ private:
 	}
 
 	void searchMaxVertex(EdgeList* edge_list, GraphType& g) {
-		TRACER(scan_vertex);
 		uint64_t max_vertex = 0;
 		int max_weight = 0;
 
@@ -763,7 +720,6 @@ private:
 	}
 
 	void scatterAndScanEdges(EdgeList* edge_list, GraphType& g) {
-		TRACER(scan_edge);
 		ScatterContext scatter(mpi.comm_2d);
 		int64_t* edges_to_send = static_cast<int64_t*>(
 				xMPI_Alloc_mem(2 * EdgeList::CHUNK_SIZE * sizeof(int64_t)));
@@ -879,7 +835,6 @@ private:
 	}
 
 	void constructFromWideCSR(GraphType& g) {
-		TRACER(form_csr);
 		const int64_t num_local_verts = g.num_local_verts_;
 		const int64_t src_region_length = num_local_verts * mpi.size_2dc;
 		const int64_t row_bitmap_length = src_region_length >> LOG_NBPE;
@@ -1181,7 +1136,6 @@ private:
 	};
 
 	void scatterAndStore(EdgeList* edge_list, GraphType& g) {
-		TRACER(store_edge);
 		ScatterContext scatter(mpi.comm_2d);
 		EdgeType* edges_to_send = static_cast<EdgeType*>(
 				xMPI_Alloc_mem(2 * EdgeList::CHUNK_SIZE * sizeof(EdgeType)));
@@ -1412,7 +1366,6 @@ private:
 	}
 
 	void sortEdges(GraphType& g) {
-		TRACER(sort_edge);
 		if(mpi.isMaster()) print_with_prefix("Sorting edges.");
 
 #pragma omp parallel
@@ -1442,7 +1395,6 @@ private:
 	}
 
 	void computeNumVertices(GraphType& g) {
-		TRACER(num_verts);
 		const int64_t num_local_verts = g.num_local_verts_;
 		const int64_t local_bitmap_width = num_local_verts / NBPE;
 		int recvcounts[mpi.size_2dc];

@@ -59,7 +59,6 @@ public:
 				Runnable* cmd;
 				while(pop_command(&cmd, 0)) {
 					pthread_mutex_unlock(&thread_sync_);
-					TRACER(fib_run);
 					cmd->run();
 					pthread_mutex_lock(&thread_sync_);
 				}
@@ -70,10 +69,7 @@ public:
 				if(command_active_ == false) {
 					if( terminated_ ) { pthread_mutex_unlock(&thread_sync_); break; }
 					++suspended_;
-					TRACER(fib_wait);
-					PROF(profiling::TimeKeeper wait_);
 					pthread_cond_wait(&thread_state_, &thread_sync_);
-					PROF(wait_time_ += wait_);
 					--suspended_;
 				}
 				pthread_mutex_unlock(&thread_sync_);
@@ -87,7 +83,6 @@ public:
 			Runnable* cmd;
 			if(pop_command(&cmd, priority_lower_bound)) {
 				pthread_mutex_unlock(&thread_sync_);
-				TRACER(fib_run);
 				cmd->run();
 				return true;
 			}
@@ -148,14 +143,6 @@ public:
 		pthread_mutex_unlock(&thread_sync_);
 		if(num_suspended > 0) pthread_cond_broadcast(&thread_state_);
 	}
-#if PROFILING_MODE
-	void submit_wait_time(const char* content, int number) {
-		wait_time_.submit(content, number);
-	}
-	void reset_wait_time() {
-		wait_time_.reset();
-	}
-#endif
 private:
 	//
 	bool cleanup_;
@@ -169,7 +156,6 @@ private:
 	int max_priority_;
 
 	std::deque<Runnable*> command_queue_[MAX_PRIORITY];
-	PROF(profiling::TimeSpan wait_time_);
 
 	bool pop_command(Runnable** cmd, int priority_lower_bound) {
 		int i = max_priority_ + 1;

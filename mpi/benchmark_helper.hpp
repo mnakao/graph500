@@ -18,95 +18,6 @@
 
 #include "logfile.h"
 
-#if ENABLE_FJMPI_RDMA
-#include <mpi-ext.h>
-
-// Progress report for K computer
-class ProgressReport
-{
-public:
-	ProgressReport(int max_progress)
-		: max_progress_(max_progress)
-	{
-		if(mpi.isMaster()) {
-			g_progress_ = new int[mpi.size_2d]();
-			FJMPI_Rdma_reg_mem(0, g_progress_, sizeof(int)*mpi.size_2d);
-		}
-		local_send_address_ = FJMPI_Rdma_reg_mem(1, &my_progress_, sizeof(int));
-		MPI_Barrier(MPI_COMM_WORLD);
-		remote_write_address_ = FJMPI_Rdma_get_remote_addr(0, 0) + sizeof(int)*mpi.rank_2d;
-	}
-	~ProgressReport() {
-		if(mpi.isMaster()) {
-			FJMPI_Rdma_dereg_mem(0);
-		}
-		FJMPI_Rdma_dereg_mem(1);
-	}
-	void begin_progress() {
-		my_progress_ = 0;
-		if(mpi.isMaster()) {
-			pthread_create(&thread_, NULL, update_status_thread, this);
-			print_with_prefix("Begin Reporting Progress. Info: Rank is 2D rank.");
-		}
-	}
-	void advace() {
-		++my_progress_;
-		FJMPI_Rdma_put(0, 0, remote_write_address_, local_send_address_, sizeof(int),
-				FJMPI_RDMA_LOCAL_NIC0 | FJMPI_RDMA_IMMEDIATE_RETURN);
-		while(FJMPI_Rdma_poll_cq(FJMPI_RDMA_LOCAL_NIC0, NULL)) ;
-	}
-	void end_progress() {
-		if(mpi.isMaster()) {
-			pthread_join(thread_, NULL);
-		}
-		MPI_Barrier(MPI_COMM_WORLD);
-		while(FJMPI_Rdma_poll_cq(FJMPI_RDMA_LOCAL_NIC0, NULL)) ;
-	}
-
-private:
-	pthread_t thread_;
-	int max_progress_;
-	int my_progress_;
-	int* g_progress_; // length=mpi.size
-	uint64_t local_send_address_;
-	uint64_t remote_write_address_;
-
-	static void* update_status_thread(void* this_) {
-		static_cast<ProgressReport*>(this_)->update_status();
-		return NULL;
-	}
-
-	void update_status() {
-		int* tmp_progress = new int[mpi.size_2d];
-		int* node_list = new int[mpi.size_2d];
-		double print_time = MPI_Wtime();
-		while(true) {
-			usleep(400*1000); // sleep 400 ms
-			if(MPI_Wtime() - print_time >= 2.0) {
-				print_time = MPI_Wtime();
-				for(int i = 0; i < mpi.size_2d; ++i) {
-					tmp_progress[i] = g_progress_[i];
-					node_list[i] = i;
-				}
-				sort2(tmp_progress, node_list, mpi.size_2d);
-				print_prefix();
-				fprintf(IMD_OUT, "(Rank,Iter)=");
-				for(int i = 0; i < std::min(mpi.size_2d, 8); ++i) {
-					fprintf(IMD_OUT, "(%d,%d)", node_list[i], tmp_progress[i]);
-				}
-				fprintf(IMD_OUT, "\n");
-				if(tmp_progress[0] == max_progress_) {
-					break;
-				}
-			}
-		}
-		delete [] tmp_progress;
-		delete [] node_list;
-	}
-};
-
-#else // #if ENABLE_FJMPI_RDMA
-
 class ProgressReport
 {
 public:
@@ -232,12 +143,10 @@ private:
 	int* recv_buf_; // length=mpi.size
 	int* g_progress_; // length=mpi.size
 };
-#endif // #if ENABLE_FJMPI_RDMA
 
 template <typename EdgeList>
 void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList::edge_type>* generator)
 {
-	TRACER(generation);
 	typedef typename EdgeList::edge_type EdgeType;
 	EdgeType* edge_buffer = static_cast<EdgeType*>
 						(cache_aligned_xmalloc(EdgeList::CHUNK_SIZE*sizeof(EdgeType)));
@@ -246,9 +155,6 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 	const int64_t num_global_chunks = (num_global_edges + EdgeList::CHUNK_SIZE - 1) / EdgeList::CHUNK_SIZE;
 	const int64_t num_iterations = (num_global_chunks + mpi.size_2d - 1) / mpi.size_2d;
 	double logging_time = MPI_Wtime();
-#if REPORT_GEN_RPGRESS
-	ProgressReport* report = new ProgressReport(num_iterations);
-#endif
 	if(mpi.isMaster()) {
 		double global_data_size = (double)num_global_edges * 16.0 / 1000000000.0;
 		double local_data_size = global_data_size / mpi.size_2d;
@@ -260,9 +166,6 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 		print_with_prefix("Communication chunk size: %d", EdgeList::CHUNK_SIZE);
 		print_with_prefix("Generating graph: Total number of iterations: %" PRId64 "", num_iterations);
 	}
-#if REPORT_GEN_RPGRESS
-	report->begin_progress();
-#endif
 #pragma omp parallel
 	for(int64_t i = 0; i < num_iterations; ++i) {
 		SET_OMP_AFFINITY;
@@ -276,30 +179,16 @@ void generate_graph(EdgeList* edge_list, const GraphGenerator<typename EdgeList:
 		// There is the implicit barrier on the end of for loops.
 #pragma omp master
 		{
-#if 0
-			for(int64_t i = start_edge; i < end_edge; ++i) {
-				if( edge_buffer[i-start_edge].weight_ != 0xBEEF ) {
-		//			print_with_prefix("Weight > 32: idx: %" PRId64 "", i);
-				}
-			}
-#endif
 			edge_list->write(edge_buffer, end_edge - start_edge);
 
 			if(mpi.isMaster()) {
 				print_with_prefix("Time for iteration %" PRId64 " is %f ", i, MPI_Wtime() - logging_time);
 				logging_time = MPI_Wtime();
 			}
-#if REPORT_GEN_RPGRESS
-			report->advace();
-#endif
 		}
 #pragma omp barrier
 
 	}
-#if REPORT_GEN_RPGRESS
-	report->end_progress();
-	delete report; report = NULL;
-#endif
 	edge_list->endWrite();
 	free(edge_buffer);
 	if(mpi.isMaster()) print_with_prefix("Finished generating.");
@@ -326,7 +215,6 @@ void generate_graph_spec2012(EdgeList* edge_list, int scale, int edge_factor, in
 template <typename EdgeList>
 void redistribute_edge_2d(EdgeList* edge_list, typename EdgeList::edge_type::has_weight dummy = 0)
 {
-	TRACER(redistribution);
 	typedef typename EdgeList::edge_type EdgeType;
 	ScatterContext scatter(mpi.comm_2d);
 	EdgeType* edges_to_send = static_cast<EdgeType*>(
@@ -525,71 +413,6 @@ int64_t find_max_used_vertex(GraphType& g)
 	int64_t send_max_used_vertex = max_used_vertex;
 	MPI_Allreduce(&send_max_used_vertex, &max_used_vertex, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
 	return max_used_vertex;
-}
-
-int read_log_file(LogFileFormat* log, int SCALE, int edgefactor, double* bfs_times, double* validate_times, double* edge_counts)
-{
-	int resume_root_idx = 0;
-	const char* logfilename = getenv("LOGFILE");
-	if(logfilename) {
-		if(mpi.isMaster()) {
-			FILE* fp = fopen(logfilename, "rb");
-			if(fp != NULL) {
-				fread(log, sizeof(log[0]), 1, fp);
-				if(log->scale != SCALE || log->edge_factor != edgefactor || log->mpi_size != mpi.size_2d) {
-					print_with_prefix("Log file is not match the current run: params:(current),(log): SCALE:%d,%d, edgefactor:%d,%d, size:%d,%d",
-					SCALE, log->scale, edgefactor, log->edge_factor, mpi.size_2d, log->mpi_size);
-					resume_root_idx = -2;
-				}
-				else {
-					resume_root_idx = log->num_runs;
-					fprintf(IMD_OUT, "===== LOG START =====\n");
-					fprintf(IMD_OUT, "graph_generation:               %f s\n", log->generation_time);
-					fprintf(IMD_OUT, "construction_time:              %f s\n", log->construction_time);
-					int i;
-					for (i = 0; i < resume_root_idx; ++i) {
-						fprintf(IMD_OUT, "Running BFS %d\n", i);
-						fprintf(IMD_OUT, "Time for BFS %d is %f\n", i, log->times[i].bfs_time);
-						fprintf(IMD_OUT, "Validating BFS %d\n", i);
-						fprintf(IMD_OUT, "Validate time for BFS %d is %f\n", i, log->times[i].validate_time);
-						fprintf(IMD_OUT, "TEPS for BFS %d is %g\n", i, log->times[i].edge_counts / log->times[i].bfs_time);
-
-						bfs_times[i] = log->times[i].bfs_time;
-						validate_times[i] = log->times[i].validate_time;
-						edge_counts[i] = log->times[i].edge_counts;
-					}
-					fprintf(IMD_OUT, "=====  LOG END  =====\n");
-
-				}
-				fclose(fp);
-			}
-		}
-		MPI_Bcast(&resume_root_idx, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		if(resume_root_idx == -2) {
-			MPI_Abort(MPI_COMM_WORLD, 1);
-		}
-	}
-	return resume_root_idx;
-}
-
-void update_log_file(LogFileFormat* log, double bfs_time, double validate_time, int64_t edge_counts)
-{
-	const char* logfilename = getenv("LOGFILE");
-	if(logfilename && mpi.isMaster()) {
-		int run_num = log->num_runs++;
-		log->times[run_num].bfs_time = bfs_time;
-		log->times[run_num].validate_time = validate_time;
-		log->times[run_num].edge_counts = edge_counts;
-		// save log;
-		FILE* fp = fopen(logfilename, "wb");
-		if(fp == NULL) {
-			print_with_prefix("Cannot create log file ... skipping");
-		}
-		else {
-			fwrite(log, sizeof(log[0]), 1, fp);
-			fclose(fp);
-		}
-	}
 }
 
 void init_log(int SCALE, int edgefactor, double gen_time, double cons_time, double redis_time, LogFileFormat* log)

@@ -30,9 +30,6 @@
 #include "benchmark_helper.hpp"
 #include "bfs.hpp"
 #include "bfs_cpu.hpp"
-#if CUDA_ENABLED
-#include "bfs_gpu.hpp"
-#endif
 
 void graph500_bfs(int SCALE, int edgefactor)
 {
@@ -41,12 +38,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 
 	double bfs_times[64], validate_times[64], edge_counts[64];
 	LogFileFormat log = {0};
-	int root_start = read_log_file(&log, SCALE, edgefactor, bfs_times, validate_times, edge_counts);
-	if(mpi.isMaster() && root_start != 0)
-		print_with_prefix("Resume from %d th run", root_start);
-
 	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
-//	EdgeListStorage<UnweightedPackedEdge, 512*1024> edge_list(
 			(int64_t(1) << SCALE) * edgefactor / mpi.size_2d, getenv("TMPFILE"));
 
 	BfsOnCPU::printInformation();
@@ -86,9 +78,7 @@ void graph500_bfs(int SCALE, int edgefactor)
 
 	bool result_ok = true;
 
-	if(root_start == 0)
-		init_log(SCALE, edgefactor, generation_time, construction_time, redistribution_time, &log);
-
+	init_log(SCALE, edgefactor, generation_time, construction_time, redistribution_time, &log);
 	benchmark->prepare_bfs();
 	
 	if(PRE_EXEC_TIME != 0){
@@ -126,7 +116,7 @@ void graph500_bfs(int SCALE, int edgefactor)
         print_with_prefix("Start energy loop : %s", ctime(&t));
       }
 	  double time_left = PRE_EXEC_TIME;
-	  for(int c = root_start; time_left > 0.0; ++c) {
+	  for(int c = 0; time_left > 0.0; ++c) {
 		if(mpi.isMaster())
 		  print_with_prefix("========== Pre Running BFS %d ==========", c);
 		MPI_Barrier(mpi.comm_2d);
@@ -165,29 +155,20 @@ void graph500_bfs(int SCALE, int edgefactor)
 #ifdef PROFILE_REGIONS
 	timer_clear();
 #endif
-	for(int i = root_start; i < num_bfs_roots; ++i) {
-	//for(int i = 0; i < num_bfs_roots; ++i) {
+	for(int i = 0; i < num_bfs_roots; ++i) {
 		VERVOSE(print_max_memory_usage());
 
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
-#if ENABLE_FUJI_PROF
-		fapp_start("bfs", i, 1);
-#endif
 		MPI_Barrier(mpi.comm_2d);
 #if FUGAKU_MPI_PRINT_STATS
 		FJMPI_Collection_start();
 #endif
-		PROF(profiling::g_pis.reset());
 		bfs_times[i] = MPI_Wtime();
 		benchmark->run_bfs(bfs_roots[i], pred);
 		bfs_times[i] = MPI_Wtime() - bfs_times[i];
 #if FUGAKU_MPI_PRINT_STATS
                 FJMPI_Collection_stop();
 #endif
-#if ENABLE_FUJI_PROF
-		fapp_stop("bfs", i, 1);
-#endif
-		PROF(profiling::g_pis.printResult());
 		if(mpi.isMaster()) {
 			print_with_prefix("Time for BFS %d is %f", i, bfs_times[i]);
 			print_with_prefix("Validating BFS %d", i);
@@ -224,8 +205,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 		if(result_ok == false) {
 			break;
 		}
-
-		update_log_file(&log, bfs_times[i], validate_times[i], edge_visit_count);
 	}
 	benchmark->end_bfs();
 
@@ -252,34 +231,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 
 	free(pred);
 }
-#if 0
-void test02(int SCALE, int edgefactor)
-{
-	EdgeListStorage<UnweightedPackedEdge, 8*1024*1024> edge_list(
-			(INT64_C(1) << SCALE) * edgefactor / mpi.size, getenv("TMPFILE"));
-	RmatGraphGenerator<UnweightedPackedEdge> graph_generator(
-//	RandomGraphGenerator<UnweightedPackedEdge> graph_generator(
-				SCALE, edgefactor, 2, 3, InitialEdgeType::NONE);
-	Graph2DCSR<Pack40bit, uint32_t> graph;
-
-	double generation_time = MPI_Wtime();
-	generate_graph(&edge_list, &graph_generator);
-	generation_time = MPI_Wtime() - generation_time;
-
-	double construction_time = MPI_Wtime();
-	construct_graph(&edge_list, true, graph);
-	construction_time = MPI_Wtime() - construction_time;
-
-	if(mpi.isMaster()) {
-		print_with_prefix("TEST02");
-		fprintf(stdout, "SCALE:                          %d\n", SCALE);
-		fprintf(stdout, "edgefactor:                     %d\n", edgefactor);
-		fprintf(stdout, "graph_generation:               %g\n", generation_time);
-		fprintf(stdout, "num_mpi_processes:              %d\n", mpi.size);
-		fprintf(stdout, "construction_time:              %g\n", construction_time);
-	}
-}
-#endif
 
 int main(int argc, char** argv)
 {

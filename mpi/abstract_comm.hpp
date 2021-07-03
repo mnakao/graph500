@@ -69,7 +69,6 @@ public:
 		, buffer_provider_(buffer_provider_)
 		, scatter_(comm_)
 	{
-		CTRACER(AsyncA2A_construtor);
 		MPI_Comm_size(comm_, &comm_size_);
 		node_ = new CommTarget[comm_size_]();
 		d_ = new DynamicDataSet();
@@ -81,7 +80,6 @@ public:
 	}
 
 	void prepare() {
-		CTRACER(prepare);
 		debug("prepare idx=%d", sub_comm);
 		for(int i = 0; i < comm_size_; ++i) {
 			node_[i].reserved_size_ = node_[i].filled_size_ = buffer_size_;
@@ -97,7 +95,6 @@ public:
 	 */
 	void put(void* ptr, int length, int target)
 	{
-		CTRACER(comm_send);
 		if(length == 0) {
 			assert(length > 0);
 			return ;
@@ -140,7 +137,6 @@ public:
 	}
 
 	void run_with_ptr() {
-		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
 		int max_size = buffer_provider_->max_size() / (es * comm_size_);
 		VERVOSE(last_send_size_ = 0);
@@ -149,7 +145,6 @@ public:
 		const int MINIMUM_POINTER_SPACE = 40;
 
 		for(int loop = 0; ; ++loop) {
-			USER_START(a2a_merge);
 #pragma omp parallel
 			{
 				int* counts = scatter_.get_counts();
@@ -237,14 +232,11 @@ public:
 					node.send_data.clear();
 				} // #pragma omp for schedule(static)
 			} // #pragma omp parallel
-			USER_END(a2a_merge);
 
 			void* sendbuf = buffer_provider_->second_buffer();
 			void* recvbuf = buffer_provider_->clear_buffers();
 			MPI_Datatype type = buffer_provider_->data_type();
 			int recvbufsize = buffer_provider_->max_size();
-			PROF(merge_time_ += tk_all);
-			USER_START(a2a_comm);
 			VERVOSE(if(loop > 0 && mpi.isMaster()) print_with_prefix("Alltoall with pointer (Again)"));
 #ifdef PROFILE_REGIONS
 			timer_start(current_fold);
@@ -253,8 +245,6 @@ public:
 #ifdef PROFILE_REGIONS
 			timer_stop(current_fold);
 #endif
-			PROF(comm_time_ += tk_all);
-			USER_END(a2a_comm);
 
 			VERVOSE(last_send_size_ += scatter_.get_send_count() * es);
 			VERVOSE(last_recv_size_ += scatter_.get_recv_count() * es);
@@ -267,10 +257,8 @@ public:
 				int length = recv_offsets[i+1] - offset;
 				buffer_provider_->received(recvbuf, offset, length, i);
 			}
-			PROF(recv_proc_time_ += tk_all);
 
 			buffer_provider_->finish();
-			PROF(recv_proc_large_time_ += tk_all);
 		}
 
 		// clear
@@ -283,11 +271,9 @@ public:
 
 	void run() {
 		// merge
-		PROF(profiling::TimeKeeper tk_all);
 		int es = buffer_provider_->element_size();
 		VERVOSE(last_send_size_ = 0);
 		VERVOSE(last_recv_size_ = 0);
-		USER_START(a2a_merge);
 #pragma omp parallel
 		{
 			int* counts = scatter_.get_counts();
@@ -321,14 +307,11 @@ public:
 				node.send_data.clear();
 			} // #pragma omp for schedule(static)
 		} // #pragma omp parallel
-		USER_END(a2a_merge);
 
 		void* sendbuf = buffer_provider_->second_buffer();
 		void* recvbuf = buffer_provider_->clear_buffers();
 		MPI_Datatype type = buffer_provider_->data_type();
 		int recvbufsize = buffer_provider_->max_size();
-		PROF(merge_time_ += tk_all);
-		USER_START(a2a_comm);
 #ifdef PROFILE_REGIONS
         timer_start(current_fold);
 #endif
@@ -336,9 +319,6 @@ public:
 #ifdef PROFILE_REGIONS
         timer_stop(current_fold);
 #endif
-		PROF(comm_time_ += tk_all);
-		USER_END(a2a_comm);
-
 		VERVOSE(last_send_size_ = scatter_.get_send_count() * es);
 		VERVOSE(last_recv_size_ = scatter_.get_recv_count() * es);
 
@@ -350,20 +330,7 @@ public:
 			int length = recv_offsets[i+1] - offset;
 			buffer_provider_->received(recvbuf, offset, length, i);
 		}
-		PROF(recv_proc_time_ += tk_all);
 	}
-#if PROFILING_MODE
-	void submit_prof_info(int level, bool with_ptr) {
-		merge_time_.submit("merge a2a data", level);
-		comm_time_.submit("a2a comm", level);
-		recv_proc_time_.submit("proc recv data", level);
-		if(with_ptr) {
-			recv_proc_large_time_.submit("proc recv large data", level);
-		}
-		VERVOSE(profiling::g_pis.submitCounter(last_send_size_, "a2a send data", level);)
-		VERVOSE(profiling::g_pis.submitCounter(last_recv_size_, "a2a recv data", level);)
-	}
-#endif
 #if VERVOSE_MODE
 	int get_last_send_size() { return last_send_size_; }
 #endif
@@ -385,10 +352,6 @@ private:
 	AlltoallBufferHandler* buffer_provider_;
 	ScatterContext scatter_;
 
-	PROF(profiling::TimeSpan merge_time_);
-	PROF(profiling::TimeSpan comm_time_);
-	PROF(profiling::TimeSpan recv_proc_time_);
-	PROF(profiling::TimeSpan recv_proc_large_time_);
 	VERVOSE(int last_send_size_);
 	VERVOSE(int last_recv_size_);
 
@@ -401,7 +364,6 @@ private:
 	}
 
 	void* get_send_buffer() {
-		CTRACER(get_send_buffer);
 		pthread_mutex_lock(&d_->thread_sync_);
 		void* ret = buffer_provider_->get_buffer();
 		pthread_mutex_unlock(&d_->thread_sync_);
@@ -451,7 +413,7 @@ public:
 		finish_count += finish_count__;
 
 		while(finish_count > 0) {
-			if(empty_list.size() == MAX_REQUESTS) {
+		  if((int)empty_list.size() == MAX_REQUESTS) {
 				fprintf(IMD_OUT, "Error: No active request\n");
 				throw "Error: No active request";
 			}
@@ -738,76 +700,6 @@ private:
 		complete_count = 0;
 	}
 };
-
-template <typename T>
-void my_allgatherv_2d(T *sendbuf, int send_count, T *recvbuf, int* recv_count, int* recv_offset, COMM_2D comm)
-{
-	// copy own data
-	memcpy(&recvbuf[recv_offset[comm.rank]], sendbuf, sizeof(T) * send_count);
-
-	if(mpi.isMultiDimAvailable == false) {
-		MpiRequestManager req_man(8);
-		AllgatherHandler<T> handler;
-		int size; MPI_Comm_size(comm.comm, &size);
-		int rank; MPI_Comm_rank(comm.comm, &rank);
-		int left = (rank + size - 1) % size;
-		int right = (rank + size + 1) % size;
-		handler.start(&req_man, recvbuf, recv_count, recv_offset, comm.comm,
-				rank, size, left, right, PRM::MY_EXPAND_TAG1);
-		req_man.run(1);
-		return ;
-	}
-
-	//MPI_Allgatherv(sendbuf, send_count, MpiTypeOf<T>::type, recvbuf, recv_count, recv_offset, MpiTypeOf<T>::type, comm.comm);
-	//return;
-
-	MpiRequestManager req_man((comm.size_x + comm.size_y)*4);
-	int split_count[4][comm.size];
-	int split_offset[4][comm.size];
-
-	for(int s = 0; s < 4; ++s) {
-		for(int i = 0; i < comm.size; ++i) {
-			int max = recv_count[i];
-			int split = (max + 3) / 4;
-			int start = recv_offset[i] + std::min(max, split * s);
-			int end = recv_offset[i] + std::min(max, split * (s+1));
-			split_count[s][i] = end - start;
-			split_offset[s][i] = start;
-		}
-	}
-
-	{
-		AllgatherStep1Handler<T> handler[4];
-		handler[0].start(&req_man, recvbuf, split_count[0], split_offset[0], comm, 1, 0, comm.size_x, PRM::MY_EXPAND_TAG1);
-		handler[1].start(&req_man, recvbuf, split_count[1], split_offset[1], comm,-1, 0, comm.size_x, PRM::MY_EXPAND_TAG1);
-		handler[2].start(&req_man, recvbuf, split_count[2], split_offset[2], comm, 0, 1, comm.size_y, PRM::MY_EXPAND_TAG2);
-		handler[3].start(&req_man, recvbuf, split_count[3], split_offset[3], comm, 0,-1, comm.size_y, PRM::MY_EXPAND_TAG2);
-		req_man.run(4);
-	}
-	{
-		AllgatherStep2Handler<T> handler[4];
-		handler[0].start(&req_man, recvbuf, split_count[0], split_offset[0], comm, 0, 1, comm.size_y, comm.size_x, PRM::MY_EXPAND_TAG1);
-		handler[1].start(&req_man, recvbuf, split_count[1], split_offset[1], comm, 0,-1, comm.size_y, comm.size_x, PRM::MY_EXPAND_TAG1);
-		handler[2].start(&req_man, recvbuf, split_count[2], split_offset[2], comm, 1, 0, comm.size_x, comm.size_y, PRM::MY_EXPAND_TAG2);
-		handler[3].start(&req_man, recvbuf, split_count[3], split_offset[3], comm,-1, 0, comm.size_x, comm.size_y, PRM::MY_EXPAND_TAG2);
-		req_man.run(4);
-	}
-}
-
-template <typename T>
-void my_allgather_2d(T *sendbuf, int count, T *recvbuf, COMM_2D comm)
-{
-	memcpy(&recvbuf[count * comm.rank], sendbuf, sizeof(T) * count);
-	int recv_count[comm.size];
-	int recv_offset[comm.size+1];
-	recv_offset[0] = 0;
-	for(int i = 0; i < comm.size; ++i) {
-		recv_count[i] = count;
-		recv_offset[i+1] = recv_offset[i] + count;
-	}
-	my_allgatherv_2d(sendbuf, count, recvbuf, recv_count, recv_offset, comm);
-}
-
 #undef debug
 
 #endif /* ABSTRACT_COMM_HPP_ */

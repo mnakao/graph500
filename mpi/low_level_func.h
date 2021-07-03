@@ -23,20 +23,4 @@ struct LocalPacket {
 	} data;
 };
 
-void backward_isolated_edge(
-	int half_bitmap_width,
-	int phase_bmp_off,
-	int phase_vertex_off,
-	int lgl, int L, int r_bits,
-	BitmapType* __restrict__ phase_bitmap,
-	const BitmapType* __restrict__ row_bitmap,
-	const BitmapType* __restrict__ shared_visited,
-	const TwodVertex* __restrict__ row_sums,
-	const int64_t* __restrict__ isolated_edges,
-	const int64_t* __restrict__ row_starts,
-	const LocalVertex* __restrict__ orig_vertexes,
-	const int64_t* __restrict__ edge_array,
-	LocalPacket* buffer
-);
-
 #endif /* LOW_LEVEL_FUNC_H_ */
