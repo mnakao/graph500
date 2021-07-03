@@ -47,8 +47,6 @@
 
 // Optimization for CSR
 #define ISOLATE_FIRST_EDGE 1
-#define DEGREE_ORDER 0
-#define DEGREE_ORDER_ONLY_IE 0
 #define CONSOLIDATE_IFE_PROC 1
 
 // We omit initialize predecessor array when this option is enabled.
@@ -65,34 +63,23 @@
 #define DEMON_BOTTOMUP_TO_TOPDOWN 8.0
 #define DENOM_BITMAP_TO_LIST 2.0 // temp
 
-// atomic level of scanning Shared Visited
-// 0: no atomic operation
-// 1: non atomic read and atomic write
-// 2: atomic read-write
-#define SV_ATOMIC_LEVEL 0
-
-#define SIMPLE_FOLD_COMM 1
-
 #define NETWORK_PROBLEM_AYALISYS 0
 
 #define SGI_OMPLACE_BUG 0
 
 #ifdef __FUJITSU
-# define STREAM_UPDATE 1
-#else
+#define STREAM_UPDATE 1
 #endif
 
 #if BFELL
-#	undef ISOLATE_FIRST_EDGE
-#	define ISOLATE_FIRST_EDGE 0
-#	undef DEGREE_ORDER
-#	define DEGREE_ORDER 0
+#undef ISOLATE_FIRST_EDGE
+#define ISOLATE_FIRST_EDGE 0
 #endif
 
 #ifndef _OPENMP
 // turn OFF when OpenMP is not enabled
-#	undef OPENMP_SUB_THREAD
-#	define OPENMP_SUB_THREAD 0
+#undef OPENMP_SUB_THREAD
+#define OPENMP_SUB_THREAD 0
 #endif
 #ifdef __FUJITSU
 #define CACHE_LINE 256
@@ -112,8 +99,6 @@ typedef uint32_t LocalVertex;
 #ifdef __cplusplus
 namespace PRM { //
 #endif // #ifdef __cplusplus
-
-#define SIZE_OF_SUMMARY_IS_EQUAL_TO_WARP_SIZE
 
 enum {
 #ifdef REAL_BENCHMARK
