@@ -29,8 +29,8 @@
 #include "validate.hpp"
 #include "benchmark_helper.hpp"
 #include "bfs.hpp"
-#include "bfs_cpu.hpp"
 
+typedef BfsBase BfsOnCPU;
 void graph500_bfs(int SCALE, int edgefactor)
 {
 	using namespace PRM;
