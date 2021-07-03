@@ -27,9 +27,6 @@
 
 // General Settings
 #define PRINT_WITH_TIME 1
-#ifndef VERVOSE_MODE
-#define VERVOSE_MODE 1
-#endif
 
 // General Optimizations
 // 0: completely off, 1: only reduce isolated vertices, 2: sort by degree and reduce isolated vertices
@@ -75,19 +72,14 @@
 #define SV_ATOMIC_LEVEL 0
 
 #define SIMPLE_FOLD_COMM 1
-#define KD_PRINT 0
 
 #define NETWORK_PROBLEM_AYALISYS 0
-#define WITH_VALGRIND 0
 
 #define SGI_OMPLACE_BUG 0
 
 #ifdef __FUJITSU
-# define LOW_LEVEL_FUNCTION 1
 # define STREAM_UPDATE 1
-# define ENABLE_FJMPI 0
 #else
-# define ENABLE_FJMPI 0
 #endif
 
 #if BFELL

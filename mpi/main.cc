@@ -156,8 +156,6 @@ void graph500_bfs(int SCALE, int edgefactor)
 	timer_clear();
 #endif
 	for(int i = 0; i < num_bfs_roots; ++i) {
-		VERVOSE(print_max_memory_usage());
-
 		if(mpi.isMaster())  print_with_prefix("========== Running BFS %d ==========", i);
 		MPI_Barrier(mpi.comm_2d);
 #if FUGAKU_MPI_PRINT_STATS

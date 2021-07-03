@@ -40,12 +40,6 @@
 #include "utils_core.h"
 #include "primitives.hpp"
 
-#if VERVOSE_MODE
-#define VERVOSE(s) s
-#else
-#define VERVOSE(s)
-#endif
-
 void print_with_prefix(const char* format, ...);
 
 #define debug_print(prefix, ...)
@@ -260,11 +254,6 @@ void* xMPI_Alloc_mem(size_t nbytes) {
   if (nbytes != 0 && !p) {
 	  throw_exception("MPI_Alloc_mem failed for size%zu (%" PRId64 ") byte(s)", nbytes, (int64_t)nbytes);
   }
-#if VERVOSE_MODE
-  if(mpi.isMaster() && nbytes > 1024*1024) {
-    fprintf(IMD_OUT, "[MEM-MPI] + %f MB\n", (double)nbytes / (1024*1024));
-  }
-#endif
   return p;
 }
 
@@ -273,7 +262,6 @@ void* cache_aligned_xcalloc(const size_t size) {
 	if(posix_memalign(&p, CACHE_LINE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
-	VERVOSE(x_allocate_check(p));
 	memset(p, 0, size);
 	return p;
 }
@@ -282,7 +270,6 @@ void* cache_aligned_xmalloc(const size_t size) {
 	if(posix_memalign(&p, CACHE_LINE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
-	VERVOSE(x_allocate_check(p));
 	return p;
 }
 
@@ -291,7 +278,6 @@ void* page_aligned_xcalloc(const size_t size) {
 	if(posix_memalign(&p, PAGE_SIZE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
-	VERVOSE(x_allocate_check(p));
 	memset(p, 0, size);
 	return p;
 }
@@ -300,19 +286,8 @@ void* page_aligned_xmalloc(const size_t size) {
 	if(posix_memalign(&p, PAGE_SIZE, size)){
 		throw_exception("Out of memory trying to allocate %zu (%" PRId64 ") byte(s)", size, (int64_t)size);
 	}
-	VERVOSE(x_allocate_check(p));
 	return p;
 }
-
-#if VERVOSE_MODE
-
-void xfree(void* p) {
-	x_free_check(p);
-	free(p);
-}
-#define free(p) xfree(p)
-
-#endif // #if VERVOSE_MODE
 
 #if SHARED_MEMORY
 void* shared_malloc(size_t nbytes) {
@@ -2709,7 +2684,6 @@ private:
 			if(O_TO_S(pk_head[i+1].offset - pk_head[i].offset) - L_TO_S(pk_head[i].length) > 32)
 				break;
 		}
-		VERVOSE(print_with_prefix("Move %ld length", out_len - sizeof(PacketIndex) - O_TO_S(pk_head[i+1].offset)));
 		for( ; i < num_packet; ++i) {
 			memmove(outbuf + TO_S(pk_head[i].offset, pk_head[i].length),
 					outbuf + O_TO_S(pk_head[i+1].offset),
@@ -3224,15 +3198,6 @@ private:
 
 } // namespace profiling
 
-#if VERVOSE_MODE
-volatile int64_t g_tp_comm;
-volatile int64_t g_bu_pred_comm;
-volatile int64_t g_bu_bitmap_comm;
-volatile int64_t g_bu_list_comm;
-volatile int64_t g_expand_bitmap_comm;
-volatile int64_t g_expand_list_comm;
-volatile double g_gpu_busy_time;
-#endif
 
 /* edgefactor = 16, seed1 = 2, seed2 = 3 */
 int64_t pf_nedge[] = {
