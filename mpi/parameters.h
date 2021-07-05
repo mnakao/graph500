@@ -43,8 +43,6 @@
 #define FUGAKU_MPI_PRINT_STATS 0
 #define ENABLE_INLINE_ATOMICS 0
 
-#define BFELL 0
-
 // Optimization for CSR
 #define ISOLATE_FIRST_EDGE 1
 #define CONSOLIDATE_IFE_PROC 1
@@ -69,11 +67,6 @@
 
 #ifdef __FUJITSU
 #define STREAM_UPDATE 1
-#endif
-
-#if BFELL
-#undef ISOLATE_FIRST_EDGE
-#define ISOLATE_FIRST_EDGE 0
 #endif
 
 #ifndef _OPENMP
